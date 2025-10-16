@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garmin-health-data"
+version = "1.0.0"
+description = "Extract your Garmin Connect health data to a local SQLite database"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [{name = "Diego Scarabelli"}]
+keywords = ["garmin", "health", "data", "wellness", "fitness", "sqlite", "garmin-connect"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "click>=8.0",
+    "sqlalchemy>=1.4",
+    "garminconnect>=0.2.0",
+    "fitdecode>=0.10.0",
+    "pendulum>=2.1.0",
+    "colorama>=0.4.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-env>=1.0",
+    "python-dotenv>=1.0",
+    "black>=23.0",
+    "autoflake>=2.0",
+    "docformatter>=1.7",
+    "pre-commit>=3.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/diegoscarabelli/garmin-health-data"
+Documentation = "https://github.com/diegoscarabelli/garmin-health-data#readme"
+Repository = "https://github.com/diegoscarabelli/garmin-health-data"
+Issues = "https://github.com/diegoscarabelli/garmin-health-data/issues"
+
+[project.scripts]
+garmin = "garmin_health_data.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["garmin_health_data*"]
+
+[tool.autoflake]
+expand-star-imports = true
+in-place = true
+quiet = true
+recursive = true
+remove-all-unused-imports = true
+remove-duplicate-keys = true
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311', 'py312']
+
+[tool.coverage.report]
+exclude_also = [
+    'if __name__ == "__main__":'
+]
+show_missing = true
+skip_covered = true
+
+[tool.docformatter]
+add-blank-after-docstring = true
+black = true
+close-quotes-on-newline = true
+in-place = true
+make-summary-multi-line = true
+pre-summary-newline = true
+recursive = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --cov=garmin_health_data --cov-report=term-missing"
