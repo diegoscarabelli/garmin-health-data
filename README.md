@@ -1,18 +1,15 @@
-# garmin-health-data
-
-Extract your complete Garmin Connect health data to a local SQLite database.
+Extract your complete Garmin Connect health and activity data to a local SQLite database.
 
 **Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure. Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) for Garmin Connect API usage and [Garth](https://github.com/matin/garth) for OAuth authentication.
 
 ## Features
 
-- ⚡ **Zero Configuration**: Single command to get started
-- 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics
-- 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data
-- 💾 **Local Storage**: SQLite database - your data stays on your machine
-- 🔄 **Auto-Resume**: Automatically detects last update and syncs new data
-- 🖥️ **Cross-Platform**: Works on macOS, Linux, Windows
-- 🛡️ **Privacy-First**: No cloud services, no third parties
+- ⚡ **Zero Configuration**: Single command to get started.
+- 🖥️ **Cross-Platform**: Works on macOS, Linux, Windows.
+- 💾 **Local Storage**: SQLite database - your data stays on your machine.
+- 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics.
+- 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data.
+- 🔄 **Auto-Resume**: Automatically detects last update and syncs new data.
 
 ## Requirements
 
@@ -282,29 +279,35 @@ race_predictions (predicted race times)
 - **All data stays on your machine**: no cloud services involved.
 - **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API using the wrapper [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
 
-## Comparison with Other Tools
+## Comparison With Other Tools
 
-| Feature | garmin-health-data | garmindb | garminexport | garmin-fetch |
-|---------|-------------------|----------|--------------|--------------|
-| **Interface** | CLI | CLI | CLI | GUI |
-| **Setup complexity** | ✅ Single command | ⚠️ Config file + 2 commands | ✅ Single command | ⚠️ Manual setup |
-| **Storage** | SQLite database | SQLite database | File export | Excel export |
-| **Cross-platform** | ✅ | ✅ | ✅ | ✅ |
-| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive | ⚠️ Basic coverage | ❌ Activities only | ❌ Activities only |
-| **Sleep data granularity** | ✅ 6 tables, 1-min intervals | ⚠️ 2 tables, less granular | ❌ | ❌ |
-| **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ | ❌ |
-| **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 29 tables | ⚠️ ~31 tables, mixed normalization | N/A | N/A |
-| **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | N/A | N/A |
-| **Auto-resume** | ✅ | ✅ | ✅ | ❌ |
-| **Active maintenance** | ✅ | ✅ | ✅ | ⚠️ Limited |
+**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 29-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
+
+**[garmy](https://github.com/bes-dev/garmy)** is optimized for programmatic access to the Garmin Connect API, particularly useful for AI assistant integration via its built-in MCP (Model Context Protocol) server. It enables real-time interaction with Claude Desktop or custom chatbots for quick daily insights and summaries. However, it's limited to API-provided metrics (daily aggregates only, no FIT file access), making deep analytics or granular time-series analysis impossible. Best suited for lightweight health monitoring apps that prioritize AI integration over comprehensive data collection.
+
+**[garmindb](https://github.com/tcgoetz/GarminDB)** is a mature and well-documented tool, but has been functionally superseded by garmin-health-data. While it pioneered local Garmin data extraction, it offers less comprehensive schemas (missing power meter data, limited FIT metrics) and uses implicit duplicate handling at the ORM level rather than explicit database constraints. For new projects requiring detailed data extraction and analysis, garmin-health-data is the recommended choice.
 
 **Want the full data pipeline with Airflow, scheduled updates, and TimescaleDB?**
 Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin).
 
-### Detailed Schema Comparison: garmin-health-data vs garmindb
+| Feature | garmin-health-data | garmindb | garmy | garminexport | garmin-fetch |
+|---------|-------------------|----------|-------|--------------|--------------|
+| **Interface** | CLI | CLI | CLI + Python API + MCP | CLI | GUI |
+| **Setup complexity** | ✅ Single command | ⚠️ Config file + 2 commands | ✅ Single command | ✅ Single command | ⚠️ Manual setup |
+| **Storage** | SQLite database | SQLite database | SQLite (optional) | File export | Excel export |
+| **Cross-platform** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive | ⚠️ Basic coverage | ⚠️ Basic coverage | ❌ Activities only | ❌ Activities only |
+| **Sleep data granularity** | ✅ 6 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
+| **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
+| **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
+| **Database schema quality** | ✅ Normalized, 29 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
+| **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |
 
-#### 1. Activity Time-Series Data - Major Differentiator
+### Schema Comparison: garmin-health-data vs garmindb vs garmy
+
+#### Activity Time-Series Data
 
 **garmin-health-data** uses a flexible EAV (Entity-Attribute-Value) schema in the `activity_ts_metric` table:
 - **Schema**: `(activity_id, timestamp, name, value, units)`.
@@ -317,7 +320,26 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - **Missing critical data**: No power data, no advanced running/cycling dynamics, no device-specific metrics.
 - **Limited extensibility**: Requires schema changes and code updates to add new metrics.
 
-#### 2. Sleep Data Granularity
+**garmy** (API-only approach):
+- **No per-second activity data**: API provides only aggregated summaries (avg/max HR, duration, training load).
+- **No FIT file access**: Cannot capture detailed time-series metrics that exist only in device files.
+
+#### Sport-Specific Metrics
+
+**garmin-health-data** provides dedicated tables for each sport:
+- `running_agg_metrics`: Running cadence, vertical oscillation, ground contact time, stride length, VO2 max.
+- `cycling_agg_metrics`: Power metrics (avg/max/normalized), cadence, pedal dynamics, FTP.
+- `swimming_agg_metrics`: Stroke count, SWOLF, pool length, stroke type.
+
+**garmindb** uses activity-type tables:
+- `StepsActivities`, `PaddleActivities`, `CycleActivities`, `ClimbingActivities`
+- Less comprehensive sport-specific metrics
+
+**garmy** uses basic activity records:
+- `activities`: Simple table with activity name, duration, avg HR, training load.
+- **No sport-specific metrics**: API doesn't provide detailed power/cadence/dynamics data.
+
+#### Sleep Data Granularity
 
 **garmin-health-data** provides comprehensive sleep tracking with 6 tables:
 - `sleep`: Main sleep session with scores and metadata.
@@ -331,7 +353,11 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - `Sleep`: Main sleep session data.
 - `SleepEvents`: Sleep events (less granular than garmin-health-data's separate time-series tables).
 
-#### 3. Health Time-Series Organization
+**garmy** uses 1 table with daily aggregates:
+- `daily_health_metrics`: Single row per day with summary columns (total hours, deep/light/REM percentages).
+- **No per-minute data**: Cannot analyze sleep cycles, movement patterns, or SpO2 fluctuations throughout the night.
+
+#### Health Time-Series Organization
 
 **garmin-health-data** uses separate normalized tables for each metric type:
 - Each metric type (`heart_rate`, `stress`, `body_battery`, `respiration`, `steps`, `floors`, `intensity_minutes`) has its own table.
@@ -343,7 +369,12 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - Wide `DailySummary` table containing many aggregated metrics in a single row.
 - Less optimized for granular time-series analysis.
 
-#### 4. Update Strategy & Data Integrity
+**garmy** uses normalized tables optimized for API sync:
+- `daily_health_metrics`: Wide table (~50 columns) for daily summaries.
+- `timeseries`: High-frequency data when available from API (heart rate, stress, body battery).
+- `sync_status`: Tracks which metrics have been synced for each date.
+
+#### Update Strategy & Data Integrity
 
 **garmin-health-data** uses explicit conflict resolution for idempotent reprocessing:
 - **Updatable data** (activities, user profile, training status): Uses `ON CONFLICT UPDATE` to refresh data when reprocessing.
@@ -359,18 +390,10 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - Implementation detail not documented in README or schema documentation.
 - Idempotency behavior exists but is implicit rather than guaranteed at database level.
 
-#### 5. Sport-Specific Metrics
-
-**garmin-health-data** provides dedicated tables for each sport:
-- `running_agg_metrics`: Running cadence, vertical oscillation, ground contact time, stride length, VO2 max.
-- `cycling_agg_metrics`: Power metrics (avg/max/normalized), cadence, pedal dynamics, FTP.
-- `swimming_agg_metrics`: Stroke count, SWOLF, pool length, stroke type.
-
-**garmindb** uses activity-type tables:
-- `StepsActivities`, `PaddleActivities`, `CycleActivities`, `ClimbingActivities`
-- Less comprehensive sport-specific metrics
-
-**Bottom Line**: If you use power meters, care about advanced running/cycling metrics, or want comprehensive sleep analysis, garmin-health-data's superior schema design captures significantly more data at higher granularity.
+**garmy** update strategy:
+- Uses SQLAlchemy `session.merge()` for upserts + `sync_status` table for tracking.
+- **Sync-aware**: Tracks which metrics have been synced for each date to avoid redundant API calls.
+- **Status tracking**: Records `pending`, `completed`, `failed`, or `skipped` status per metric/date.
 
 ## Contributing
 
