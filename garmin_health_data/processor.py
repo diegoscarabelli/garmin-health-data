@@ -2029,7 +2029,6 @@ class GarminProcessor(Processor):
         # Collect all existing latest PR records that need to be set to False.
         all_latest_prs = []
         personal_records = []
-        skipped_records_count = 0
 
         for record in personal_records_data if personal_records_data else []:
             type_id = record.pop("typeId")
@@ -2052,7 +2051,7 @@ class GarminProcessor(Processor):
             if is_steps_record:
                 final_activity_id = None
             else:
-                # Check if activity exists to avoid FK violations.
+                # Check if activity exists (warning only, not blocking).
                 activity_exists = (
                     session.query(Activity)
                     .filter(Activity.activity_id == activity_id)
@@ -2061,14 +2060,13 @@ class GarminProcessor(Processor):
                 )
 
                 if not activity_exists:
-                    skipped_records_count += 1
                     click.secho(
-                        f"⚠️ Skipping personal record for `activity_id` {activity_id} "
-                        f"(`type_id`: {type_id}, `label`: {label}). Activity not found."
-                        f" This is expected during backfilling when only partial "
-                        f"data is processed."
+                        f"⚠️ Activity {activity_id} not found for personal record "
+                        f"(type_id: {type_id}, label: {label}). "
+                        f"Processing anyway. This is expected when the database contains "
+                        f"data for partial time ranges. Activity may be added later.",
+                        fg="yellow",
                     )
-                    continue
 
                 final_activity_id = activity_id
 
@@ -2125,18 +2123,9 @@ class GarminProcessor(Processor):
                 ],
                 on_conflict_update=True,
             )
-            click.echo(
-                f"Processed {len(personal_records)} personal records. "
-                f"Skipped {skipped_records_count} records with missing activities."
-            )
+            click.echo(f"Processed {len(personal_records)} personal records.")
         else:
-            if skipped_records_count > 0:
-                click.secho(
-                    f"⚠️ No personal records processed. "
-                    f"Skipped {skipped_records_count} records with missing activities."
-                )
-            else:
-                click.secho("⚠️ No personal records data found.", fg="yellow")
+            click.secho("⚠️ No personal records data found.", fg="yellow")
 
     def _process_race_predictions(self, file_path: Path, session: Session):
         """

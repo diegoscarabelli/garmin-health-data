@@ -781,7 +781,7 @@ class PersonalRecord(Base, InsertBase):
     __tablename__ = "personal_record"
 
     user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
-    activity_id = Column(BigInteger, ForeignKey("activity.activity_id"))
+    activity_id = Column(BigInteger)
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     type_id = Column(Integer, primary_key=True)
     label = Column(Text)
