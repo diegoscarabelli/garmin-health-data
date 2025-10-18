@@ -92,11 +92,13 @@ def upsert_model_instances(
             if update_columns:
                 update_dict = {col: stmt.excluded[col] for col in update_columns}
             else:
-                # Update all columns except conflict columns.
+                # Update all columns except conflict columns and timestamp columns.
+                # Exclude insert_ts (should never change) and update_ts (handled by DB).
+                excluded_cols = set(conflict_columns) | {"insert_ts", "update_ts"}
                 update_dict = {
                     c.name: stmt.excluded[c.name]
                     for c in model_class.__table__.columns
-                    if c.name not in conflict_columns
+                    if c.name not in excluded_cols
                 }
 
             stmt = stmt.on_conflict_do_update(
