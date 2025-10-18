@@ -198,7 +198,19 @@ $ garmin extract
 
 ## Database Schema
 
-The SQLite database contains 29 tables organized by category. The complete schema is defined in [garmin_health_data/models.py](garmin_health_data/models.py).
+The SQLite database contains 29 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database.
+
+**Viewing inline documentation:**
+
+```bash
+# View schema for a specific table
+sqlite3 ~/garmin_data.db "SELECT sql FROM sqlite_master WHERE type='table' AND name='personal_record';"
+
+# View all table schemas
+sqlite3 ~/garmin_data.db "SELECT sql FROM sqlite_master WHERE type='table';"
+```
+
+The schema is automatically created when you initialize the database.
 
 ### SQLite Adaptations
 

@@ -10,12 +10,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import click
-from sqlalchemy import create_engine, func, text
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 
 from garmin_health_data.models import (
     Activity,
-    Base,
     BodyBattery,
     Floors,
     HeartRate,
@@ -53,149 +52,34 @@ def get_engine(db_path: str = "garmin_data.db"):
 
 def create_tables(db_path: str = "garmin_data.db") -> None:
     """
-    Create all tables in the database.
+    Create all tables in the database by executing the DDL file.
+
+    The schema is defined in tables.ddl which includes inline comments preserved in the
+    database.
 
     :param db_path: Path to SQLite database file.
     """
-    engine = get_engine(db_path)
+    get_engine(db_path)
 
-    # Create all tables.
-    Base.metadata.create_all(engine)
+    # Execute DDL file to create all tables with inline comments.
+    ddl_file = Path(__file__).parent / "tables.ddl"
+    if not ddl_file.exists():
+        raise FileNotFoundError(f"Schema DDL file not found: {ddl_file}")
 
-    # Create indexes for time-series queries.
-    with engine.begin() as conn:
-        # Sleep data indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_sleep_user_start_ts
-            ON sleep(user_id, start_ts DESC)
-        """
-            )
-        )
+    # Read DDL file.
+    ddl_sql = ddl_file.read_text()
 
-        # Heart rate indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_heart_rate_user_timestamp
-            ON heart_rate(user_id, timestamp DESC)
-        """
-            )
-        )
+    # Use raw SQLite connection to execute the script (supports multiple statements).
+    # This preserves inline comments in the database schema.
+    import sqlite3
 
-        # Activity indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_activity_user_start_ts
-            ON activity(user_id, start_ts DESC)
-        """
-            )
-        )
-
-        # Stress indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_stress_user_timestamp
-            ON stress(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Body battery indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_body_battery_user_timestamp
-            ON body_battery(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Steps indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_steps_user_timestamp
-            ON steps(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Respiration indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_respiration_user_timestamp
-            ON respiration(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Floors indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_floors_user_timestamp
-            ON floors(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Intensity minutes indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_intensity_minutes_user_timestamp
-            ON intensity_minutes(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Training readiness indexes.
-        conn.execute(
-            text(
-                """
-            CREATE INDEX IF NOT EXISTS idx_training_readiness_user_timestamp
-            ON training_readiness(user_id, timestamp DESC)
-        """
-            )
-        )
-
-        # Partial UNIQUE indexes for 'latest' flags (matching openetl schema).
-        # These enforce that only one record can have latest=1 for each combination.
-
-        # user_profile: Only one latest profile per user.
-        conn.execute(
-            text(
-                """
-            CREATE UNIQUE INDEX IF NOT EXISTS user_profile_user_id_latest_unique_idx
-            ON user_profile(user_id) WHERE latest = 1
-        """
-            )
-        )
-
-        # personal_record: Only one latest PR per user and type.
-        conn.execute(
-            text(
-                """
-            CREATE UNIQUE INDEX IF NOT EXISTS personal_record_user_id_type_id_latest_idx
-            ON personal_record(user_id, type_id) WHERE latest = 1
-        """
-            )
-        )
-
-        # race_predictions: Only one latest prediction set per user.
-        conn.execute(
-            text(
-                """
-            CREATE UNIQUE INDEX IF NOT EXISTS race_predictions_user_id_latest_unique_idx
-            ON race_predictions(user_id) WHERE latest = 1
-        """
-            )
-        )
+    db_file = Path(db_path).expanduser()
+    conn = sqlite3.connect(str(db_file))
+    try:
+        conn.executescript(ddl_sql)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @contextmanager
@@ -235,6 +119,10 @@ def initialize_database(db_path: str = "garmin_data.db") -> None:
 
     create_tables(db_path)
     click.secho("✅ Database initialized successfully", fg="green")
+    click.echo(
+        "\nSchema includes inline documentation. To view table definitions:\n"
+        f"  sqlite3 {db_file} \"SELECT sql FROM sqlite_master WHERE type='table';\""
+    )
 
 
 def get_last_update_dates(db_path: str = "garmin_data.db") -> Dict[str, Optional[date]]:

@@ -158,7 +158,8 @@ class GarminProcessor(Processor):
         # Check for any unprocessed files in the file set.
         unprocessed_keys = set(file_set.files.keys()) - processed_enum_keys
         for enum_key in unprocessed_keys:
-            click.secho(f"⚠️ Processing Garmin data type {enum_key.name} not supported.")
+            msg = f"⚠️ Processing Garmin data type {enum_key.name} not supported."
+            click.secho(msg)
 
         click.echo("✅ Completed processing Garmin file set.")
 
@@ -2063,8 +2064,9 @@ class GarminProcessor(Processor):
                     click.secho(
                         f"⚠️ Activity {activity_id} not found for personal record "
                         f"(type_id: {type_id}, label: {label}). "
-                        f"Processing anyway. This is expected when the database contains "
-                        f"data for partial time ranges. Activity may be added later.",
+                        f"Processing anyway. This is expected when the database "
+                        f"contains data for partial time ranges. "
+                        f"Activity may be added later.",
                         fg="yellow",
                     )
 
