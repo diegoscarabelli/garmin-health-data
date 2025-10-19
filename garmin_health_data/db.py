@@ -67,8 +67,6 @@ def create_tables(db_path: str = "garmin_data.db") -> None:
 
     :param db_path: Path to SQLite database file.
     """
-    get_engine(db_path)
-
     # Execute DDL file to create all tables with inline comments.
     # Use importlib.resources to read the packaged resource file.
     try:
