@@ -35,6 +35,7 @@ dependencies = [
     "fitdecode>=0.10.0",
     "pendulum>=2.1.0",
     "colorama>=0.4.6",
+    "importlib-resources>=5.0; python_version < '3.9'",
 ]
 
 [project.optional-dependencies]
@@ -65,6 +66,9 @@ garmin = "garmin_health_data.cli:cli"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["garmin_health_data*"]
+
+[tool.setuptools.package-data]
+garmin_health_data = ["tables.ddl"]
 
 [tool.autoflake]
 expand-star-imports = true

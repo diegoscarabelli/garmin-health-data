@@ -4,6 +4,8 @@ Database initialization and management for garmin-health-data.
 Handles SQLite database creation, session management, and query utilities.
 """
 
+import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -12,6 +14,12 @@ from typing import Dict, Optional
 import click
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
+
+# Handle importlib.resources for different Python versions
+if sys.version_info >= (3, 9):
+    from importlib.resources import files
+else:
+    from importlib_resources import files
 
 from garmin_health_data.models import (
     Activity,
@@ -62,17 +70,18 @@ def create_tables(db_path: str = "garmin_data.db") -> None:
     get_engine(db_path)
 
     # Execute DDL file to create all tables with inline comments.
-    ddl_file = Path(__file__).parent / "tables.ddl"
-    if not ddl_file.exists():
-        raise FileNotFoundError(f"Schema DDL file not found: {ddl_file}")
-
-    # Read DDL file.
-    ddl_sql = ddl_file.read_text()
+    # Use importlib.resources to read the packaged resource file.
+    try:
+        ddl_sql = files("garmin_health_data").joinpath("tables.ddl").read_text()
+    except (FileNotFoundError, TypeError):
+        # Fallback for development/editable installs
+        ddl_file = Path(__file__).parent / "tables.ddl"
+        if not ddl_file.exists():
+            raise FileNotFoundError(f"Schema DDL file not found: {ddl_file}")
+        ddl_sql = ddl_file.read_text()
 
     # Use raw SQLite connection to execute the script (supports multiple statements).
     # This preserves inline comments in the database schema.
-    import sqlite3
-
     db_file = Path(db_path).expanduser()
     conn = sqlite3.connect(str(db_file))
     try:
