@@ -603,7 +603,7 @@ WHERE latest = 1;
 CREATE TABLE IF NOT EXISTS activity_ts_metric (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this metric measurement belongs to.
     , timestamp DATETIME NOT NULL          -- Timestamp when the metric measurement was recorded.
-    , name TEXT NOT NULL                   -- Name of the metric, which varies with activity type (e.g., heart_rate, cadence, power, position_lat, position_log).
+    , name TEXT NOT NULL                   -- Name of the metric, which varies with activity type (e.g., heart_rate, cadence, power, position_lat, position_long).
     , value FLOAT                          -- Numeric value of the metric measurement.
     , units TEXT                           -- Units of measurement for the metric value (e.g., bpm, rpm, watts).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
