@@ -106,6 +106,7 @@ addopts = "-v --cov=garmin_health_data --cov-report=term-missing"
 
 [tool.sqlfluff.core]
 dialect = "sqlite"
+exclude_rules = "RF04"
 large_file_skip_byte_limit = 0
 max_line_length = 88
 runaway_limit = 100
