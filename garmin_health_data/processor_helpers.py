@@ -3,10 +3,10 @@ Helper classes and functions for the Garmin data processor.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -101,7 +101,7 @@ def upsert_model_instances(
         # SQLite's DEFAULT CURRENT_TIMESTAMP only applies on INSERT, not UPDATE.
         # We must explicitly set update_ts to the current timestamp on updates.
         if hasattr(model_class, "update_ts"):
-            update_dict["update_ts"] = datetime.now(tz=timezone.utc)
+            update_dict["update_ts"] = func.current_timestamp()
 
         upsert_stmt = insert_stmt.on_conflict_do_update(
             index_elements=conflict_columns, set_=update_dict
