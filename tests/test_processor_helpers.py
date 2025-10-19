@@ -36,8 +36,18 @@ def temp_db():
 
     yield db_path
 
-    # Cleanup.
-    Path(db_path).unlink(missing_ok=True)
+    # Cleanup - dispose engine first to release file locks on Windows.
+    engine.dispose()
+    try:
+        Path(db_path).unlink(missing_ok=True)
+    except PermissionError:
+        # On Windows, sometimes files are still locked even after dispose
+        import time
+        import gc
+
+        gc.collect()  # Force garbage collection
+        time.sleep(0.1)  # Small delay to let OS release locks
+        Path(db_path).unlink(missing_ok=True)
 
 
 class TestUpsertModelInstances:
