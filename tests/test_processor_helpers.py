@@ -492,8 +492,8 @@ class TestUpsertModelInstances:
             )
             original_update_ts = activity1.update_ts
 
-        # Wait to ensure time difference.
-        time.sleep(0.1)
+        # Wait to ensure time difference (SQLite CURRENT_TIMESTAMP has second precision).
+        time.sleep(1)
 
         # Update the same activity (change a field).
         with Session(engine) as session:
