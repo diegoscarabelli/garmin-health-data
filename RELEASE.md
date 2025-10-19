@@ -4,22 +4,22 @@ This document outlines the steps to release a new version of garmin-health-data 
 
 ## Prerequisites
 
-- [x] PyPI account created at https://pypi.org
-- [x] API token generated for PyPI
-- [x] `PYPI_API_TOKEN` secret configured in GitHub repository settings
-- [x] Build tools installed locally (for manual releases): `pip install --upgrade build twine`
+- [x] PyPI account created at https://pypi.org.
+- [x] API token generated for PyPI.
+- [x] `PYPI_API_TOKEN` secret configured in GitHub repository settings.
+- [x] Build tools installed locally (for manual releases): `pip install --upgrade build twine`.
 
 ## Pre-Release Checklist
 
 Before creating a release, ensure:
 
-- [ ] All tests pass: `make test`
-- [ ] Code is properly formatted: `make check-format`
-- [ ] Version bumped in `pyproject.toml`
-- [ ] README.md is up to date
-- [ ] CHANGELOG updated (if exists)
-- [ ] All changes committed to git
-- [ ] Working on main branch (or release branch)
+- [ ] All tests pass: `make test`.
+- [ ] Code is properly formatted: `make check-format`.
+- [ ] Version bumped in `pyproject.toml`.
+- [ ] README.md is up to date.
+- [ ] CHANGELOG updated (if exists).
+- [ ] All changes committed to git.
+- [ ] Working on main branch (or release branch).
 
 ## Automated Release (Recommended)
 
@@ -50,11 +50,11 @@ git push origin main
 Choose one of the following methods:
 
 **Option A: GitHub Web Interface**
-1. Navigate to https://github.com/diegoscarabelli/garmin-health-data/releases/new
-2. Click "Choose a tag" → Type `v1.2.0` → Select "Create new tag: v1.2.0 on publish"
-3. Set release title: `v1.2.0`
-4. Add release notes describing the changes
-5. Click "Publish release"
+1. Navigate to https://github.com/diegoscarabelli/garmin-health-data/releases/new.
+2. Click "Choose a tag" → Type `v1.2.0` → Select "Create new tag: v1.2.0 on publish".
+3. Set release title: `v1.2.0`.
+4. Add release notes describing the changes.
+5. Click "Publish release".
 
 **Option B: GitHub CLI**
 ```bash
@@ -71,9 +71,9 @@ git push origin v1.2.0
 ### 5. Monitor Automated Publishing
 
 The GitHub Actions workflow will automatically:
-- Build the package
-- Validate with `twine check`
-- Publish to PyPI using the `PYPI_API_TOKEN` secret
+- Build the package.
+- Validate with `twine check`.
+- Publish to PyPI using the `PYPI_API_TOKEN` secret.
 
 **Monitor progress:**
 - Workflow runs: https://github.com/diegoscarabelli/garmin-health-data/actions
@@ -123,8 +123,8 @@ python -m build
 ```
 
 This creates:
-- `dist/garmin_health_data-VERSION.tar.gz` (source distribution)
-- `dist/garmin_health_data-VERSION-py3-none-any.whl` (wheel)
+- `dist/garmin_health_data-VERSION.tar.gz` (source distribution).
+- `dist/garmin_health_data-VERSION-py3-none-any.whl` (wheel).
 
 ### 4. Check Package Quality
 
@@ -162,19 +162,19 @@ git push origin v1.0.0
 ```
 
 Then create a release on GitHub:
-- Go to https://github.com/diegoscarabelli/garmin-health-data/releases/new
-- Select tag: v1.0.0
-- Release title: "v1.0.0"
-- Add release notes
-- Publish release
+- Go to https://github.com/diegoscarabelli/garmin-health-data/releases/new.
+- Select tag: v1.0.0.
+- Release title: "v1.0.0".
+- Add release notes.
+- Publish release.
 
 ## Version Numbering
 
 Follow [Semantic Versioning](https://semver.org/):
-- **MAJOR.MINOR.PATCH** (e.g., 1.0.0)
-- **MAJOR**: Incompatible API changes
-- **MINOR**: New functionality, backwards compatible
-- **PATCH**: Bug fixes, backwards compatible
+- **MAJOR.MINOR.PATCH** (e.g., 1.0.0).
+- **MAJOR**: Incompatible API changes.
+- **MINOR**: New functionality, backwards compatible.
+- **PATCH**: Bug fixes, backwards compatible.
 
 ## CI/CD Pipeline
 
@@ -185,15 +185,15 @@ The repository uses GitHub Actions for continuous integration and delivery:
 Runs on every push to `main`/`develop` and on all PRs to `main`:
 
 - **Linting and Formatting**: Uses `make check-format` to run:
-  - `black` for Python code formatting
-  - `autoflake` for removing unused imports
-  - `docformatter` for docstring formatting
-  - `sqlfluff` for SQL linting
+  - `black` for Python code formatting.
+  - `autoflake` for removing unused imports.
+  - `docformatter` for docstring formatting.
+  - `sqlfluff` for SQL linting.
   
 - **Testing**: Runs test suite across matrix:
-  - Operating Systems: Ubuntu, macOS, Windows
-  - Python Versions: 3.9, 3.10, 3.11, 3.12
-  - Uses `pytest` with coverage reporting
+  - Operating Systems: Ubuntu, macOS, Windows.
+  - Python Versions: 3.9, 3.10, 3.11, 3.12.
+  - Uses `pytest` with coverage reporting.
 
 **All CI checks must pass before creating a release.**
 
@@ -201,44 +201,45 @@ Runs on every push to `main`/`develop` and on all PRs to `main`:
 
 Triggered when you create a GitHub Release:
 
-1. Checks out repository
-2. Sets up Python 3.12
-3. Installs build dependencies
-4. Builds source distribution and wheel
-5. Validates package with `twine check`
-6. Publishes to PyPI using `PYPI_API_TOKEN` secret
+1. Checks out repository.
+2. Sets up Python 3.12.
+3. Installs build dependencies.
+4. Builds source distribution and wheel.
+5. Validates package with `twine check`.
+6. Publishes to PyPI using `PYPI_API_TOKEN` secret.
 
 ## Troubleshooting
 
 ### Automated Workflow
 
 **"publish.yml workflow failed"**
-- Check GitHub Actions logs: https://github.com/diegoscarabelli/garmin-health-data/actions
-- Verify `PYPI_API_TOKEN` secret is correctly configured
-- Ensure version in `pyproject.toml` doesn't already exist on PyPI
+- Check GitHub Actions logs: https://github.com/diegoscarabelli/garmin-health-data/actions.
+- Verify `PYPI_API_TOKEN` secret is correctly configured.
+- Ensure version in `pyproject.toml` doesn't already exist on PyPI.
 
 **"CI checks failed"**
-- Run locally: `make check-format` and `make test`
-- Fix any linting or test failures before creating release
-- Push fixes and wait for CI to pass
+- Run locally: `make check-format` and `make test`.
+- Fix any linting or test failures before creating release.
+- Push fixes and wait for CI to pass.
 
 ### Manual Upload
 
 **"Package already exists"**
-- Increment version in `pyproject.toml` and rebuild
-- PyPI doesn't allow re-uploading same version
+- Increment version in `pyproject.toml` and rebuild.
+- PyPI doesn't allow re-uploading same version.
 
 **"Invalid credentials"**
-- Verify token in `~/.pypirc` starts with `pypi-`
-- Ensure file permissions: `chmod 600 ~/.pypirc`
+- Verify token in `~/.pypirc` starts with `pypi-`.
+- Ensure file permissions: `chmod 600 ~/.pypirc`.
 
 **"File already uploaded"**
-- PyPI doesn't allow overwriting versions
-- Increment version and rebuild
+- PyPI doesn't allow overwriting versions.
+- Increment version and rebuild.
 
 ## Quick Reference
 
 ### Automated Release (Recommended)
+
 ```bash
 # 1. Update version in pyproject.toml
 # 2. Commit and push changes
@@ -253,6 +254,7 @@ gh release create v1.2.0 --title "v1.2.0" --notes "Release notes"
 ```
 
 ### Manual Release (Alternative)
+
 ```bash
 # Run quality checks first
 make test && make check-format
