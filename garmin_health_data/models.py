@@ -29,29 +29,32 @@ Base = declarative_base()
 
 class InsertBase:
     """
-    Base mixin for models that only track insert timestamp.
+    Base mixin for models that only track creation timestamp.
 
-    :param insert_ts: Timestamp when the record was inserted.
+    :param create_ts: Timestamp when the record was created.
     """
 
     # Use CURRENT_TIMESTAMP for SQLite compatibility
-    insert_ts = Column(
+    create_ts = Column(
         DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False
     )
 
 
 class UpsertBase(InsertBase):
     """
-    Base mixin for models that track both insert and update timestamps.
+    Base mixin for models that track both creation and update timestamps.
 
-    :param insert_ts: Timestamp when the record was inserted.
+    :param create_ts: Timestamp when the record was created.
     :param update_ts: Timestamp when the record was last updated.
     """
 
     # SQLite doesn't support onupdate triggers at the column level
     # This will need to be handled in application code for updates
     update_ts = Column(
-        DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now()
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+        onupdate=func.now(),
     )
 
 

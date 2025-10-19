@@ -11,35 +11,29 @@ Note: This file is the single source of truth for the database schema. Inline co
 ========================================================================================
 */
 
-----------------------------------------------------------------------------------------
--- User identity and basic demographic data from Garmin Connect.
--- Contains stable user identification and basic profile information.
+-- User identity and basic demographic data from Garmin Connect. Contains stable user identification and basic profile information.
 CREATE TABLE IF NOT EXISTS user (
     user_id BIGINT PRIMARY KEY           -- Unique identifier for the user in Garmin Connect.
     , full_name TEXT                       -- Full name of the user.
     , birth_date DATE                      -- User birth date.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was inserted.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
 );
 
-----------------------------------------------------------------------------------------
--- User fitness profile data from Garmin Connect.
--- Contains physical characteristics and fitness metrics. The latest column indicates
--- the most recent profile record for each user. Multiple records can exist per user_id,
--- but only one can have latest=True.
+-- User fitness profile data from Garmin Connect including physical characteristics and fitness metrics. The latest column indicates the most recent profile record.
 CREATE TABLE IF NOT EXISTS user_profile (
-    user_profile_id INTEGER PRIMARY KEY  -- Auto-incrementing primary key.
-    , user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , gender TEXT                          -- User gender (e.g., 'MALE', 'FEMALE').
-    , weight FLOAT                         -- User weight in kilograms.
+    user_profile_id INTEGER PRIMARY KEY  -- Auto-incrementing primary key for user profile records.
+    , user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this profile record belongs to.
+    , gender TEXT                          -- User gender (e.g., ''MALE'', ''FEMALE'').
+    , weight FLOAT                         -- User weight in grams.
     , height FLOAT                         -- User height in centimeters.
-    , vo2_max_running FLOAT                -- VO2 max for running activities.
-    , vo2_max_cycling FLOAT                -- VO2 max for cycling activities.
-    , lactate_threshold_speed FLOAT        -- Lactate threshold speed in m/s.
-    , lactate_threshold_heart_rate INTEGER -- Lactate threshold heart rate in bpm.
-    , moderate_intensity_minutes_hr_zone INTEGER -- Moderate intensity minutes heart rate zone.
-    , vigorous_intensity_minutes_hr_zone INTEGER -- Vigorous intensity minutes heart rate zone.
-    , latest BOOLEAN NOT NULL DEFAULT 0    -- Whether this is the most recent profile record.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    , vo2_max_running FLOAT                -- VO2 max value for running activities in ml/kg/min.
+    , vo2_max_cycling FLOAT                -- VO2 max value for cycling activities in ml/kg/min.
+    , lactate_threshold_speed FLOAT        -- Lactate threshold speed in meters per second.
+    , lactate_threshold_heart_rate INTEGER -- Lactate threshold heart rate in beats per minute.
+    , moderate_intensity_minutes_hr_zone INTEGER -- Heart rate zone for moderate intensity exercise minutes.
+    , vigorous_intensity_minutes_hr_zone INTEGER -- Heart rate zone for vigorous intensity exercise minutes.
+    , latest BOOLEAN NOT NULL DEFAULT 0    -- Boolean flag indicating whether this is the latest user profile record.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
 
@@ -47,71 +41,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_profile_user_id_latest_unique_idx
 ON user_profile (user_id)
 WHERE latest = 1;
 
-----------------------------------------------------------------------------------------
--- Main activity table with core aggregate metrics common across activity types.
--- Additional aggregate metrics may be available in separate tables:
--- swimming_agg_metrics, cycling_agg_metrics, running_agg_metrics, supplemental_activity_metric.
+-- Garmin Connect activity records with core metrics common across all activity types.
 CREATE TABLE IF NOT EXISTS activity (
-    activity_id BIGINT PRIMARY KEY       -- Unique identifier for the activity.
-    , user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , activity_name TEXT                   -- Name given to the activity.
-    , activity_type_id INTEGER NOT NULL    -- Activity type identifier.
-    , activity_type_key TEXT NOT NULL      -- Activity type key (e.g., 'running', 'cycling').
-    , event_type_id INTEGER NOT NULL       -- Event type identifier.
-    , event_type_key TEXT NOT NULL         -- Event type key.
-    , start_ts DATETIME NOT NULL           -- Activity start timestamp (timezone-aware).
-    , end_ts DATETIME NOT NULL             -- Activity end timestamp (timezone-aware).
-    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset in hours from UTC.
-    , duration FLOAT                       -- Activity duration in seconds.
-    , elapsed_duration FLOAT               -- Elapsed duration including pauses in seconds.
-    , moving_duration FLOAT                -- Moving duration excluding pauses in seconds.
-    , distance FLOAT                       -- Distance traveled in meters.
-    , lap_count INTEGER                    -- Number of laps recorded.
-    , average_speed FLOAT                  -- Average speed in m/s.
-    , max_speed FLOAT                      -- Maximum speed in m/s.
-    , start_latitude FLOAT                 -- Starting latitude coordinate.
-    , start_longitude FLOAT                -- Starting longitude coordinate.
-    , end_latitude FLOAT                   -- Ending latitude coordinate.
-    , end_longitude FLOAT                  -- Ending longitude coordinate.
-    , location_name TEXT                   -- Location name of the activity.
-    , aerobic_training_effect FLOAT        -- Aerobic training effect score.
-    , aerobic_training_effect_message TEXT -- Aerobic training effect message.
-    , anaerobic_training_effect FLOAT      -- Anaerobic training effect score.
-    , anaerobic_training_effect_message TEXT -- Anaerobic training effect message.
-    , training_effect_label TEXT           -- Training effect label.
-    , activity_training_load FLOAT         -- Activity training load.
-    , difference_body_battery INTEGER      -- Body battery change during activity.
-    , moderate_intensity_minutes INTEGER   -- Moderate intensity minutes.
-    , vigorous_intensity_minutes INTEGER   -- Vigorous intensity minutes.
-    , calories FLOAT                       -- Calories burned.
-    , bmr_calories FLOAT                   -- BMR calories burned.
-    , water_estimated FLOAT                -- Estimated water loss in milliliters.
-    , hr_time_in_zone_1 FLOAT              -- Time in heart rate zone 1 in seconds.
-    , hr_time_in_zone_2 FLOAT              -- Time in heart rate zone 2 in seconds.
-    , hr_time_in_zone_3 FLOAT              -- Time in heart rate zone 3 in seconds.
-    , hr_time_in_zone_4 FLOAT              -- Time in heart rate zone 4 in seconds.
-    , hr_time_in_zone_5 FLOAT              -- Time in heart rate zone 5 in seconds.
-    , average_hr FLOAT                     -- Average heart rate in bpm.
-    , max_hr FLOAT                         -- Maximum heart rate in bpm.
-    , device_id BIGINT                     -- Device identifier.
-    , manufacturer TEXT                    -- Device manufacturer.
-    , time_zone_id INTEGER                 -- Time zone identifier.
-    , has_polyline BOOLEAN NOT NULL DEFAULT 0  -- Whether activity has GPS polyline data.
-    , has_images BOOLEAN NOT NULL DEFAULT 0    -- Whether activity has images.
-    , has_video BOOLEAN NOT NULL DEFAULT 0     -- Whether activity has video.
-    , has_splits BOOLEAN DEFAULT 0             -- Whether activity has split data.
-    , has_heat_map BOOLEAN NOT NULL DEFAULT 0  -- Whether activity has heat map.
-    , parent BOOLEAN NOT NULL DEFAULT 0        -- Whether this is a parent activity.
-    , purposeful BOOLEAN NOT NULL DEFAULT 0    -- Whether activity was purposeful.
-    , favorite BOOLEAN NOT NULL DEFAULT 0      -- Whether activity is marked as favorite.
+    activity_id BIGINT PRIMARY KEY       -- Unique identifier for the activity in Garmin Connect.
+    , user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user performed this activity.
+    , activity_name TEXT                   -- User-defined name for the activity.
+    , activity_type_id INTEGER NOT NULL    -- Unique identifier for the activity type (e.g., ''1'' for running, ''11'' for cardio).
+    , activity_type_key TEXT NOT NULL      -- String key for the activity type (e.g., ''running'', ''lap_swimming'', ''road_biking'', ''indoor_cardio'').
+    , event_type_id INTEGER NOT NULL       -- Unique identifier for the event type.
+    , event_type_key TEXT NOT NULL         -- String key for the event type (e.g., ''other'').
+    , start_ts DATETIME NOT NULL           -- Activity start time.
+    , end_ts DATETIME NOT NULL             -- Activity end time.
+    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset from UTC in hours to infer local time (e.g., -7.0 for UTC-07:00, 5.5 for UTC+05:30).
+    , duration FLOAT                       -- Total duration of the activity in seconds.
+    , elapsed_duration FLOAT               -- Elapsed time including pauses and stops in seconds.
+    , moving_duration FLOAT                -- Time spent in motion during the activity in seconds.
+    , distance FLOAT                       -- Total distance covered during the activity in meters.
+    , lap_count INTEGER                    -- Number of laps/segments in the activity.
+    , average_speed FLOAT                  -- Average speed during the activity in meters per second.
+    , max_speed FLOAT                      -- Maximum speed reached during the activity in meters per second.
+    , start_latitude FLOAT                 -- Starting latitude coordinate in decimal degrees.
+    , start_longitude FLOAT                -- Starting longitude coordinate in decimal degrees.
+    , end_latitude FLOAT                   -- Ending latitude coordinate in decimal degrees.
+    , end_longitude FLOAT                  -- Ending longitude coordinate in decimal degrees.
+    , location_name TEXT                   -- Geographic location name where the activity took place.
+    , aerobic_training_effect FLOAT        -- Aerobic training effect score (0.0-5.0 scale).
+    , aerobic_training_effect_message TEXT -- Detailed message about aerobic training effect.
+    , anaerobic_training_effect FLOAT      -- Anaerobic training effect score (0.0-5.0 scale).
+    , anaerobic_training_effect_message TEXT -- Detailed message about anaerobic training effect.
+    , training_effect_label TEXT           -- Text description of the training effect (e.g., ''AEROBIC_BASE'', ''UNKNOWN'').
+    , activity_training_load FLOAT         -- Training load value representing the physiological impact of the activity.
+    , difference_body_battery INTEGER      -- Change in body battery energy level during the activity.
+    , moderate_intensity_minutes INTEGER   -- Minutes spent in moderate intensity exercise zone.
+    , vigorous_intensity_minutes INTEGER   -- Minutes spent in vigorous intensity exercise zone.
+    , calories FLOAT                       -- Total calories burned during the activity.
+    , bmr_calories FLOAT                   -- Basal metabolic rate calories burned during the activity.
+    , water_estimated FLOAT                -- Estimated water loss during the activity in milliliters.
+    , hr_time_in_zone_1 FLOAT              -- Time spent in heart rate zone 1 (active recovery) in seconds.
+    , hr_time_in_zone_2 FLOAT              -- Time spent in heart rate zone 2 (aerobic base) in seconds.
+    , hr_time_in_zone_3 FLOAT              -- Time spent in heart rate zone 3 (aerobic) in seconds.
+    , hr_time_in_zone_4 FLOAT              -- Time spent in heart rate zone 4 (lactate threshold) in seconds.
+    , hr_time_in_zone_5 FLOAT              -- Time spent in heart rate zone 5 (neuromuscular power) in seconds.
+    , average_hr FLOAT                     -- Average heart rate during the activity in beats per minute.
+    , max_hr FLOAT                         -- Maximum heart rate reached during the activity in beats per minute.
+    , device_id BIGINT                     -- Unique identifier for the Garmin device used to record the activity.
+    , manufacturer TEXT                    -- Manufacturer of the device (typically ''GARMIN'').
+    , time_zone_id INTEGER                 -- Garmin''s internal timezone identifier for the activity location.
+    , has_polyline BOOLEAN NOT NULL DEFAULT 0  -- Whether GPS track data (polyline) is available for this activity.
+    , has_images BOOLEAN NOT NULL DEFAULT 0    -- Whether images are attached to this activity.
+    , has_video BOOLEAN NOT NULL DEFAULT 0     -- Whether video is attached to this activity.
+    , has_splits BOOLEAN DEFAULT 0             -- Whether split/lap data is available for this activity.
+    , has_heat_map BOOLEAN NOT NULL DEFAULT 0  -- Whether heat map data is available for this activity.
+    , parent BOOLEAN NOT NULL DEFAULT 0        -- Whether this activity is a parent activity containing sub-activities.
+    , purposeful BOOLEAN NOT NULL DEFAULT 0    -- Whether this activity was marked as purposeful training.
+    , favorite BOOLEAN NOT NULL DEFAULT 0      -- Whether this activity is marked as a favorite.
     , elevation_corrected BOOLEAN DEFAULT 0    -- Whether elevation data has been corrected.
-    , atp_activity BOOLEAN DEFAULT 0           -- Whether this is an ATP activity.
-    , manual_activity BOOLEAN NOT NULL DEFAULT 0 -- Whether activity was manually entered.
-    , pr BOOLEAN NOT NULL DEFAULT 0            -- Whether activity contains personal records.
-    , auto_calc_calories BOOLEAN NOT NULL DEFAULT 0 -- Whether calories were auto-calculated.
-    , ts_data_available BOOLEAN NOT NULL DEFAULT 0  -- Whether time-series data is available.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    , atp_activity BOOLEAN DEFAULT 0           -- Whether this is an Adaptive Training Plan activity.
+    , manual_activity BOOLEAN NOT NULL DEFAULT 0 -- Whether this activity was manually entered rather than recorded.
+    , pr BOOLEAN NOT NULL DEFAULT 0            -- Whether this activity contains a personal record.
+    , auto_calc_calories BOOLEAN NOT NULL DEFAULT 0 -- Whether calorie calculation was performed automatically.
+    , ts_data_available BOOLEAN NOT NULL DEFAULT 0  -- Whether time-series data from FIT file has been processed for this activity.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
     , UNIQUE (user_id, start_ts)
 );
@@ -119,200 +110,191 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS activity_user_id_start_ts_idx
 ON activity (user_id, start_ts DESC);
 
-----------------------------------------------------------------------------------------
--- Swimming-specific aggregate metrics for pool and open water activities.
+-- Swimming-specific metrics including stroke data, SWOLF, and pool information. Each record corresponds to a specific swimming activity.
 CREATE TABLE IF NOT EXISTS swimming_agg_metrics (
-    activity_id BIGINT PRIMARY KEY       -- Foreign key reference to activity.activity_id.
-    , pool_length FLOAT                    -- Pool length in meters.
-    , active_lengths INTEGER               -- Number of active swimming lengths.
-    , strokes FLOAT                        -- Total number of strokes.
-    , avg_stroke_distance FLOAT            -- Average distance per stroke in meters.
-    , avg_strokes FLOAT                    -- Average strokes per length.
-    , avg_swim_cadence FLOAT               -- Average swim cadence in strokes/min.
-    , avg_swolf FLOAT                      -- Average SWOLF score (strokes + seconds per length).
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    activity_id BIGINT PRIMARY KEY       -- References activity(activity_id).
+    , pool_length FLOAT                    -- Length of the swimming pool in centimeters.
+    , active_lengths INTEGER               -- Number of active pool lengths swum.
+    , strokes FLOAT                        -- Total number of strokes taken during the activity.
+    , avg_stroke_distance FLOAT            -- Average distance covered per stroke in meters.
+    , avg_strokes FLOAT                    -- Average number of strokes per pool length.
+    , avg_swim_cadence FLOAT               -- Average swimming cadence in strokes per minute.
+    , avg_swolf FLOAT                      -- Average SWOLF score (strokes + time in seconds to cover pool length).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Cycling-specific aggregate metrics including power, cadence, and training.
+-- Cycling-specific metrics including power zones, cadence, and performance analysis. Each record corresponds to a specific cycling activity.
 CREATE TABLE IF NOT EXISTS cycling_agg_metrics (
-    activity_id BIGINT PRIMARY KEY       -- Foreign key reference to activity.activity_id.
-    , training_stress_score FLOAT          -- Training stress score.
-    , intensity_factor FLOAT               -- Intensity factor.
-    , vo2_max_value FLOAT                  -- VO2 max value from this activity.
-    , avg_power FLOAT                      -- Average power in watts.
-    , max_power FLOAT                      -- Maximum power in watts.
-    , normalized_power FLOAT               -- Normalized power in watts.
-    , max_20min_power FLOAT                -- Maximum 20-minute average power in watts.
-    , avg_left_balance FLOAT               -- Average left/right balance percentage.
-    , avg_biking_cadence FLOAT             -- Average cycling cadence in rpm.
-    , max_biking_cadence FLOAT             -- Maximum cycling cadence in rpm.
-    , max_avg_power_1 FLOAT                -- Max average power over 1 second.
-    , max_avg_power_2 FLOAT                -- Max average power over 2 seconds.
-    , max_avg_power_5 FLOAT                -- Max average power over 5 seconds.
-    , max_avg_power_10 FLOAT               -- Max average power over 10 seconds.
-    , max_avg_power_20 FLOAT               -- Max average power over 20 seconds.
-    , max_avg_power_30 FLOAT               -- Max average power over 30 seconds.
-    , max_avg_power_60 FLOAT               -- Max average power over 1 minute.
-    , max_avg_power_120 FLOAT              -- Max average power over 2 minutes.
-    , max_avg_power_300 FLOAT              -- Max average power over 5 minutes.
-    , max_avg_power_600 FLOAT              -- Max average power over 10 minutes.
-    , max_avg_power_1200 FLOAT             -- Max average power over 20 minutes.
-    , max_avg_power_1800 FLOAT             -- Max average power over 30 minutes.
-    , max_avg_power_3600 FLOAT             -- Max average power over 1 hour.
-    , max_avg_power_7200 FLOAT             -- Max average power over 2 hours.
-    , max_avg_power_18000 FLOAT            -- Max average power over 5 hours.
-    , power_time_in_zone_1 FLOAT           -- Time in power zone 1 in seconds.
-    , power_time_in_zone_2 FLOAT           -- Time in power zone 2 in seconds.
-    , power_time_in_zone_3 FLOAT           -- Time in power zone 3 in seconds.
-    , power_time_in_zone_4 FLOAT           -- Time in power zone 4 in seconds.
-    , power_time_in_zone_5 FLOAT           -- Time in power zone 5 in seconds.
-    , power_time_in_zone_6 FLOAT           -- Time in power zone 6 in seconds.
-    , power_time_in_zone_7 FLOAT           -- Time in power zone 7 in seconds.
-    , min_temperature FLOAT                -- Minimum temperature in Celsius.
-    , max_temperature FLOAT                -- Maximum temperature in Celsius.
-    , elevation_gain FLOAT                 -- Total elevation gain in meters.
-    , elevation_loss FLOAT                 -- Total elevation loss in meters.
-    , min_elevation FLOAT                  -- Minimum elevation in meters.
-    , max_elevation FLOAT                  -- Maximum elevation in meters.
-    , min_respiration_rate FLOAT           -- Minimum respiration rate in breaths/min.
-    , max_respiration_rate FLOAT           -- Maximum respiration rate in breaths/min.
-    , avg_respiration_rate FLOAT           -- Average respiration rate in breaths/min.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    activity_id BIGINT PRIMARY KEY       -- References activity(activity_id).
+    , training_stress_score FLOAT          -- Training Stress Score quantifying workout intensity and duration.
+    , intensity_factor FLOAT               -- Intensity Factor representing workout intensity relative to threshold.
+    , vo2_max_value FLOAT                  -- VO2 max value measured during the activity in ml/kg/min.
+    , avg_power FLOAT                      -- Average power output during the activity in watts.
+    , max_power FLOAT                      -- Maximum power output reached during the activity in watts.
+    , normalized_power FLOAT               -- Normalized power accounting for variable intensity in watts.
+    , max_20min_power FLOAT                -- Best 20-minute average power output in watts.
+    , avg_left_balance FLOAT               -- Average left/right power balance as percentage of left leg contribution.
+    , avg_biking_cadence FLOAT             -- Average pedaling cadence in revolutions per minute.
+    , max_biking_cadence FLOAT             -- Maximum pedaling cadence reached in revolutions per minute.
+    , max_avg_power_1 FLOAT                -- Best 1-second average power in watts.
+    , max_avg_power_2 FLOAT                -- Best 2-second average power in watts.
+    , max_avg_power_5 FLOAT                -- Best 5-second average power in watts.
+    , max_avg_power_10 FLOAT               -- Best 10-second average power in watts.
+    , max_avg_power_20 FLOAT               -- Best 20-second average power in watts.
+    , max_avg_power_30 FLOAT               -- Best 30-second average power in watts.
+    , max_avg_power_60 FLOAT               -- Best 1-minute average power in watts.
+    , max_avg_power_120 FLOAT              -- Best 2-minute average power in watts.
+    , max_avg_power_300 FLOAT              -- Best 5-minute average power in watts.
+    , max_avg_power_600 FLOAT              -- Best 10-minute average power in watts.
+    , max_avg_power_1200 FLOAT             -- Best 20-minute average power in watts.
+    , max_avg_power_1800 FLOAT             -- Best 30-minute average power in watts.
+    , max_avg_power_3600 FLOAT             -- Best 60-minute average power in watts.
+    , max_avg_power_7200 FLOAT             -- Best 120-minute average power in watts.
+    , max_avg_power_18000 FLOAT            -- Best 300-minute average power in watts.
+    , power_time_in_zone_1 FLOAT           -- Time spent in power zone 1 (active recovery) in seconds.
+    , power_time_in_zone_2 FLOAT           -- Time spent in power zone 2 (endurance) in seconds.
+    , power_time_in_zone_3 FLOAT           -- Time spent in power zone 3 (tempo) in seconds.
+    , power_time_in_zone_4 FLOAT           -- Time spent in power zone 4 (lactate threshold) in seconds.
+    , power_time_in_zone_5 FLOAT           -- Time spent in power zone 5 (VO2 max) in seconds.
+    , power_time_in_zone_6 FLOAT           -- Time spent in power zone 6 (anaerobic capacity) in seconds.
+    , power_time_in_zone_7 FLOAT           -- Time spent in power zone 7 (neuromuscular) in seconds.
+    , min_temperature FLOAT                -- Minimum temperature recorded during the activity in Celsius.
+    , max_temperature FLOAT                -- Maximum temperature recorded during the activity in Celsius.
+    , elevation_gain FLOAT                 -- Total elevation gained during the activity in meters.
+    , elevation_loss FLOAT                 -- Total elevation lost during the activity in meters.
+    , min_elevation FLOAT                  -- Minimum elevation during the activity in meters.
+    , max_elevation FLOAT                  -- Maximum elevation during the activity in meters.
+    , min_respiration_rate FLOAT           -- Minimum respiration rate during the activity in breaths per minute.
+    , max_respiration_rate FLOAT           -- Maximum respiration rate during the activity in breaths per minute.
+    , avg_respiration_rate FLOAT           -- Average respiration rate during the activity in breaths per minute.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Running-specific aggregate metrics including form, cadence, and performance.
+-- Running-specific metrics including running form, cadence, and split times. Each record corresponds to a specific running activity.
 CREATE TABLE IF NOT EXISTS running_agg_metrics (
-    activity_id BIGINT PRIMARY KEY       -- Foreign key reference to activity.activity_id.
-    , steps INTEGER                        -- Total number of steps.
-    , vo2_max_value FLOAT                  -- VO2 max value from this activity.
-    , avg_running_cadence FLOAT            -- Average running cadence in steps/min.
-    , max_running_cadence FLOAT            -- Maximum running cadence in steps/min.
-    , max_double_cadence FLOAT             -- Maximum double cadence in steps/min.
-    , avg_vertical_oscillation FLOAT       -- Average vertical oscillation in cm.
-    , avg_ground_contact_time FLOAT        -- Average ground contact time in milliseconds.
-    , avg_stride_length FLOAT              -- Average stride length in meters.
-    , avg_vertical_ratio FLOAT             -- Average vertical ratio percentage.
-    , avg_ground_contact_balance FLOAT     -- Average ground contact balance percentage.
-    , avg_power FLOAT                      -- Average power in watts.
-    , max_power FLOAT                      -- Maximum power in watts.
-    , normalized_power FLOAT               -- Normalized power in watts.
-    , power_time_in_zone_1 FLOAT           -- Time in power zone 1 in seconds.
-    , power_time_in_zone_2 FLOAT           -- Time in power zone 2 in seconds.
-    , power_time_in_zone_3 FLOAT           -- Time in power zone 3 in seconds.
-    , power_time_in_zone_4 FLOAT           -- Time in power zone 4 in seconds.
-    , power_time_in_zone_5 FLOAT           -- Time in power zone 5 in seconds.
-    , min_temperature FLOAT                -- Minimum temperature in Celsius.
-    , max_temperature FLOAT                -- Maximum temperature in Celsius.
-    , elevation_gain FLOAT                 -- Total elevation gain in meters.
-    , elevation_loss FLOAT                 -- Total elevation loss in meters.
-    , min_elevation FLOAT                  -- Minimum elevation in meters.
-    , max_elevation FLOAT                  -- Maximum elevation in meters.
-    , min_respiration_rate FLOAT           -- Minimum respiration rate in breaths/min.
-    , max_respiration_rate FLOAT           -- Maximum respiration rate in breaths/min.
-    , avg_respiration_rate FLOAT           -- Average respiration rate in breaths/min.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    activity_id BIGINT PRIMARY KEY       -- References activity(activity_id).
+    , steps INTEGER                        -- Total number of steps taken during the running activity.
+    , vo2_max_value FLOAT                  -- VO2 max value measured during the activity in ml/kg/min.
+    , avg_running_cadence FLOAT            -- Average running cadence in steps per minute.
+    , max_running_cadence FLOAT            -- Maximum running cadence reached in steps per minute.
+    , max_double_cadence FLOAT             -- Maximum double cadence (both feet) in steps per minute.
+    , avg_vertical_oscillation FLOAT       -- Average vertical oscillation of running form in centimeters.
+    , avg_ground_contact_time FLOAT        -- Average ground contact time per step in milliseconds.
+    , avg_stride_length FLOAT              -- Average stride length in centimeters.
+    , avg_vertical_ratio FLOAT             -- Average vertical ratio as percentage of stride length.
+    , avg_ground_contact_balance FLOAT     -- Average left/right ground contact time balance as percentage.
+    , avg_power FLOAT                      -- Average power output during the activity in watts.
+    , max_power FLOAT                      -- Maximum power output reached during the activity in watts.
+    , normalized_power FLOAT               -- Normalized power accounting for variable intensity in watts.
+    , power_time_in_zone_1 FLOAT           -- Time spent in power zone 1 (active recovery) in seconds.
+    , power_time_in_zone_2 FLOAT           -- Time spent in power zone 2 (endurance) in seconds.
+    , power_time_in_zone_3 FLOAT           -- Time spent in power zone 3 (tempo) in seconds.
+    , power_time_in_zone_4 FLOAT           -- Time spent in power zone 4 (lactate threshold) in seconds.
+    , power_time_in_zone_5 FLOAT           -- Time spent in power zone 5 (VO2 max) in seconds.
+    , min_temperature FLOAT                -- Minimum temperature recorded during the activity in Celsius.
+    , max_temperature FLOAT                -- Maximum temperature recorded during the activity in Celsius.
+    , elevation_gain FLOAT                 -- Total elevation gained during the activity in meters.
+    , elevation_loss FLOAT                 -- Total elevation lost during the activity in meters.
+    , min_elevation FLOAT                  -- Minimum elevation during the activity in meters.
+    , max_elevation FLOAT                  -- Maximum elevation during the activity in meters.
+    , min_respiration_rate FLOAT           -- Minimum respiration rate during the activity in breaths per minute.
+    , max_respiration_rate FLOAT           -- Maximum respiration rate during the activity in breaths per minute.
+    , avg_respiration_rate FLOAT           -- Average respiration rate during the activity in breaths per minute.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Supplemental activity aggregate metrics.
--- This table captures any remaining metrics not covered by the main Activity table or
--- sport-specific aggregate tables using a flexible key-value structure.
+-- Supplemental activity metrics with flexible key-value storage. Allows for additional metrics not captured in the main tables.
 CREATE TABLE IF NOT EXISTS supplemental_activity_metric (
-    activity_id BIGINT NOT NULL          -- Foreign key reference to activity.activity_id.
-    , metric TEXT NOT NULL                 -- Metric name.
-    , value FLOAT                          -- Metric value.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    activity_id BIGINT NOT NULL          -- References activity(activity_id).
+    , metric TEXT NOT NULL                 -- Name of the metric being stored.
+    , value FLOAT                          -- Numeric value of the metric.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (activity_id, metric)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Sleep session data from Garmin Connect including sleep scores, duration, and quality
--- metrics. Each record represents a single sleep session with comprehensive sleep
--- analysis data.
+-- Sleep session data from Garmin Connect including sleep scores, duration, and quality metrics. Each record represents a single sleep session.
 CREATE TABLE IF NOT EXISTS sleep (
-    sleep_id INTEGER PRIMARY KEY         -- Auto-generated primary key.
-    , user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , start_ts DATETIME NOT NULL           -- Sleep session start timestamp (timezone-aware).
-    , end_ts DATETIME NOT NULL             -- Sleep session end timestamp (timezone-aware).
-    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset in hours from UTC.
+    sleep_id INTEGER PRIMARY KEY         -- Auto-incrementing primary key for sleep session records.
+    , user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user had this sleep session.
+    , start_ts DATETIME NOT NULL           -- Sleep session start time.
+    , end_ts DATETIME NOT NULL             -- Sleep session end time.
+    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset from UTC in hours to infer local time (e.g., -7.0 for UTC-07:00, 5.5 for UTC+05:30).
     , calendar_date TEXT                   -- Calendar date of the sleep session.
-    , sleep_version INTEGER                -- Sleep algorithm version.
-    , age_group TEXT                       -- User age group at time of sleep.
-    , respiration_version INTEGER          -- Respiration algorithm version.
+    , sleep_version INTEGER                -- Version of sleep tracking algorithm used.
+    , age_group TEXT                       -- User age group category.
+    , respiration_version INTEGER          -- Version of respiration tracking algorithm used.
     , sleep_time_seconds INTEGER           -- Total sleep time in seconds.
-    , nap_time_seconds INTEGER             -- Nap time in seconds.
-    , unmeasurable_sleep_seconds INTEGER   -- Unmeasurable sleep time in seconds.
-    , deep_sleep_seconds INTEGER           -- Deep sleep time in seconds.
-    , light_sleep_seconds INTEGER          -- Light sleep time in seconds.
-    , rem_sleep_seconds INTEGER            -- REM sleep time in seconds.
-    , awake_sleep_seconds INTEGER          -- Awake time during sleep in seconds.
-    , awake_count INTEGER                  -- Number of times awake.
-    , restless_moments_count INTEGER       -- Number of restless moments.
-    , rem_sleep_data BOOLEAN               -- Whether REM sleep data is available.
-    , sleep_window_confirmed BOOLEAN       -- Whether sleep window was confirmed.
-    , sleep_window_confirmation_type TEXT  -- Sleep window confirmation type.
-    , sleep_quality_type_pk BIGINT         -- Sleep quality type primary key.
-    , sleep_result_type_pk BIGINT          -- Sleep result type primary key.
-    , retro BOOLEAN                        -- Whether this is retroactively added data.
-    , sleep_from_device BOOLEAN            -- Whether sleep data came from device.
-    , device_rem_capable BOOLEAN           -- Whether device is capable of REM detection.
-    , skin_temp_data_exists BOOLEAN        -- Whether skin temperature data exists.
-    , average_spo2 FLOAT                   -- Average SpO2 percentage.
-    , lowest_spo2 INTEGER                  -- Lowest SpO2 percentage.
-    , highest_spo2 INTEGER                 -- Highest SpO2 percentage.
-    , average_spo2_hr_sleep FLOAT          -- Average SpO2 during high respiration sleep.
-    , number_of_events_below_threshold INTEGER -- Number of SpO2 events below threshold.
-    , duration_of_events_below_threshold INTEGER -- Duration of SpO2 events below threshold in seconds.
-    , average_respiration FLOAT            -- Average respiration rate in breaths/min.
-    , lowest_respiration FLOAT             -- Lowest respiration rate in breaths/min.
-    , highest_respiration FLOAT            -- Highest respiration rate in breaths/min.
-    , avg_sleep_stress FLOAT               -- Average sleep stress level.
-    , breathing_disruption_severity TEXT   -- Breathing disruption severity level.
-    , avg_overnight_hrv FLOAT              -- Average overnight HRV.
-    , hrv_status TEXT                      -- HRV status.
-    , body_battery_change INTEGER          -- Body battery change during sleep.
-    , resting_heart_rate INTEGER           -- Resting heart rate in bpm.
+    , nap_time_seconds INTEGER             -- Total nap time in seconds.
+    , unmeasurable_sleep_seconds INTEGER   -- Time spent in unmeasurable sleep in seconds.
+    , deep_sleep_seconds INTEGER           -- Time spent in deep sleep in seconds.
+    , light_sleep_seconds INTEGER          -- Time spent in light sleep in seconds.
+    , rem_sleep_seconds INTEGER            -- Time spent in REM sleep in seconds.
+    , awake_sleep_seconds INTEGER          -- Time spent awake during sleep session in seconds.
+    , awake_count INTEGER                  -- Number of times user woke up during sleep.
+    , restless_moments_count INTEGER       -- Total count of restless moments during sleep.
+    , rem_sleep_data BOOLEAN               -- Whether REM sleep data is available for this session.
+    , sleep_window_confirmed BOOLEAN       -- Whether the sleep window has been confirmed.
+    , sleep_window_confirmation_type TEXT  -- Type of sleep window confirmation.
+    , sleep_quality_type_pk BIGINT         -- Sleep quality type primary key identifier.
+    , sleep_result_type_pk BIGINT          -- Sleep result type primary key identifier.
+    , retro BOOLEAN                        -- Whether this is a retroactive sleep entry.
+    , sleep_from_device BOOLEAN            -- Whether sleep data came from device or manual entry.
+    , device_rem_capable BOOLEAN           -- Whether the device is capable of REM sleep detection.
+    , skin_temp_data_exists BOOLEAN        -- Whether skin temperature data exists for this session.
+    , average_spo2 FLOAT                   -- Average SpO2 (blood oxygen saturation) during sleep.
+    , lowest_spo2 INTEGER                  -- Lowest SpO2 reading during sleep.
+    , highest_spo2 INTEGER                 -- Highest SpO2 reading during sleep.
+    , average_spo2_hr_sleep FLOAT          -- Average heart rate during SpO2 measurements.
+    , number_of_events_below_threshold INTEGER -- Number of SpO2 events below alert threshold.
+    , duration_of_events_below_threshold INTEGER -- Total duration of SpO2 events below threshold in seconds.
+    , average_respiration FLOAT            -- Average respiration rate during sleep.
+    , lowest_respiration FLOAT             -- Lowest respiration rate during sleep.
+    , highest_respiration FLOAT            -- Highest respiration rate during sleep.
+    , avg_sleep_stress FLOAT               -- Average stress level during sleep.
+    , breathing_disruption_severity TEXT   -- Severity level of breathing disruptions.
+    , avg_overnight_hrv FLOAT              -- Average heart rate variability during sleep.
+    , hrv_status TEXT                      -- HRV status classification.
+    , body_battery_change INTEGER          -- Change in body battery energy level during sleep.
+    , resting_heart_rate INTEGER           -- Resting heart rate measured during sleep.
     , sleep_score_feedback TEXT            -- Sleep score feedback message.
     , sleep_score_insight TEXT             -- Sleep score insight message.
-    , sleep_score_personalized_insight TEXT -- Personalized sleep score insight.
-    , total_duration_key TEXT              -- Total duration score key.
-    , stress_key TEXT                      -- Stress score key.
-    , awake_count_key TEXT                 -- Awake count score key.
-    , restlessness_key TEXT                -- Restlessness score key.
-    , score_overall_key TEXT               -- Overall score key.
-    , score_overall_value INTEGER          -- Overall sleep score value.
-    , light_pct_key TEXT                   -- Light sleep percentage score key.
-    , light_pct_value INTEGER              -- Light sleep percentage value.
-    , deep_pct_key TEXT                    -- Deep sleep percentage score key.
-    , deep_pct_value INTEGER               -- Deep sleep percentage value.
-    , rem_pct_key TEXT                     -- REM sleep percentage score key.
-    , rem_pct_value INTEGER                -- REM sleep percentage value.
-    , sleep_need_baseline INTEGER          -- Baseline sleep need in seconds.
-    , sleep_need_actual INTEGER            -- Actual sleep need in seconds.
-    , sleep_need_feedback TEXT             -- Sleep need feedback message.
-    , sleep_need_training_feedback TEXT    -- Sleep need training feedback.
-    , sleep_need_history_adj TEXT          -- Sleep need history adjustment.
-    , sleep_need_hrv_adj TEXT              -- Sleep need HRV adjustment.
-    , sleep_need_nap_adj TEXT              -- Sleep need nap adjustment.
-    , next_sleep_need_baseline INTEGER     -- Next night baseline sleep need in seconds.
-    , next_sleep_need_actual INTEGER       -- Next night actual sleep need in seconds.
-    , next_sleep_need_feedback TEXT        -- Next night sleep need feedback.
-    , next_sleep_need_training_feedback TEXT -- Next night sleep need training feedback.
-    , next_sleep_need_history_adj TEXT     -- Next night sleep need history adjustment.
-    , next_sleep_need_hrv_adj TEXT         -- Next night sleep need HRV adjustment.
-    , next_sleep_need_nap_adj TEXT         -- Next night sleep need nap adjustment.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    , sleep_score_personalized_insight TEXT -- Personalized sleep score insight message.
+    , total_duration_key TEXT              -- Sleep duration quality qualifier key.
+    , stress_key TEXT                      -- Sleep stress level quality qualifier key.
+    , awake_count_key TEXT                 -- Number of awakenings quality qualifier key.
+    , restlessness_key TEXT                -- Sleep restlessness quality qualifier key.
+    , score_overall_key TEXT               -- Overall sleep score quality qualifier key.
+    , score_overall_value INTEGER          -- Overall sleep score numeric value (0-100 scale).
+    , light_pct_key TEXT                   -- Light sleep percentage quality qualifier key.
+    , light_pct_value INTEGER              -- Light sleep percentage numeric value.
+    , deep_pct_key TEXT                    -- Deep sleep percentage quality qualifier key.
+    , deep_pct_value INTEGER               -- Deep sleep percentage numeric value.
+    , rem_pct_key TEXT                     -- REM sleep percentage quality qualifier key.
+    , rem_pct_value INTEGER                -- REM sleep percentage numeric value.
+    , sleep_need_baseline INTEGER          -- Baseline sleep need in minutes.
+    , sleep_need_actual INTEGER            -- Actual sleep need in minutes.
+    , sleep_need_feedback TEXT             -- Sleep need feedback.
+    , sleep_need_training_feedback TEXT    -- Training-related sleep need feedback.
+    , sleep_need_history_adj TEXT          -- Sleep history adjustment factor.
+    , sleep_need_hrv_adj TEXT              -- HRV-based sleep need adjustment.
+    , sleep_need_nap_adj TEXT              -- Nap-based sleep need adjustment.
+    , next_sleep_need_baseline INTEGER     -- Next day baseline sleep need in minutes.
+    , next_sleep_need_actual INTEGER       -- Next day actual sleep need in minutes.
+    , next_sleep_need_feedback TEXT        -- Next day sleep need feedback.
+    , next_sleep_need_training_feedback TEXT -- Next day training-related sleep need feedback.
+    , next_sleep_need_history_adj TEXT     -- Next day sleep history adjustment factor.
+    , next_sleep_need_hrv_adj TEXT         -- Next day HRV-based sleep need adjustment.
+    , next_sleep_need_nap_adj TEXT         -- Next day nap-based sleep need adjustment.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
     , UNIQUE (user_id, start_ts)
 );
@@ -320,174 +302,153 @@ CREATE TABLE IF NOT EXISTS sleep (
 CREATE INDEX IF NOT EXISTS sleep_user_id_start_ts_idx
 ON sleep (user_id, start_ts DESC);
 
-----------------------------------------------------------------------------------------
--- Timeseries data capturing movement activity levels throughout a sleep session.
--- Time interval: 1 minute.
+-- Sleep movement activity levels at regular 1-minute intervals throughout sleep sessions. Higher values indicate more movement.
 CREATE TABLE IF NOT EXISTS sleep_movement (
-    sleep_id INTEGER NOT NULL            -- Foreign key reference to sleep.sleep_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , activity_level FLOAT                 -- Activity level during this minute.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the movement measurement.
+    , activity_level FLOAT                 -- Movement activity level (higher values indicate more movement).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
     , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
 );
 
-----------------------------------------------------------------------------------------
--- Timeseries data capturing moments of restlessness or movement during sleep.
--- Time interval: Event-based (irregular intervals when restless moments occur).
+-- Sleep restless moments count capturing periods of restlessness or movement during sleep sessions.
 CREATE TABLE IF NOT EXISTS sleep_restless_moment (
-    sleep_id INTEGER NOT NULL            -- Foreign key reference to sleep.sleep_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the restless moment (timezone-aware).
-    , value INTEGER                        -- Restlessness value.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the restless moment.
+    , value INTEGER                        -- Restless moments count.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
     , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
 );
 
-----------------------------------------------------------------------------------------
--- Timeseries data capturing blood oxygen saturation SpO2 measurements during sleep.
--- Time interval: 1 minute.
+-- Blood oxygen saturation (SpO2) measurements at regular 1-minute intervals during sleep sessions.
 CREATE TABLE IF NOT EXISTS spo2 (
-    sleep_id INTEGER NOT NULL            -- Foreign key reference to sleep.sleep_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value INTEGER                        -- SpO2 percentage value.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the SpO2 measurement.
+    , value INTEGER                        -- SpO2 reading as percentage (typically 85-100).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
     , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
 );
 
-----------------------------------------------------------------------------------------
--- Timeseries data capturing heart rate variability (HRV) measurements throughout sleep
--- periods. Time interval: 5 minutes.
+-- Heart rate variability (HRV) measurements at regular 5-minute intervals throughout sleep periods indicating autonomic nervous system recovery.
 CREATE TABLE IF NOT EXISTS hrv (
-    sleep_id INTEGER NOT NULL            -- Foreign key reference to sleep.sleep_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the HRV measurement.
     , value FLOAT                          -- HRV value in milliseconds.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
     , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
 );
 
-----------------------------------------------------------------------------------------
--- Timeseries data capturing breathing disruption events and their severity during
--- sleep periods. Time interval: Event-based (irregular intervals when breathing
--- disruptions occur).
+-- Breathing disruption events and their severity during sleep periods indicating potential sleep apnea or breathing irregularities.
 CREATE TABLE IF NOT EXISTS breathing_disruption (
-    sleep_id INTEGER NOT NULL            -- Foreign key reference to sleep.sleep_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the disruption (timezone-aware).
-    , value INTEGER                        -- Breathing disruption severity value.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the breathing disruption event.
+    , value INTEGER                        -- Breathing disruption severity or type indicator.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
     , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
 );
 
-----------------------------------------------------------------------------------------
--- VO2 max measurements from Garmin training status data.
--- Includes both generic and cycling-specific VO2 max values with different measurement
--- dates.
+-- VO2 max measurements from Garmin training status data including both generic and cycling-specific values.
 CREATE TABLE IF NOT EXISTS vo2_max (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , date DATE NOT NULL                   -- Date of the VO2 max measurement.
-    , vo2_max_generic FLOAT                -- Generic VO2 max value.
-    , vo2_max_cycling FLOAT                -- Cycling-specific VO2 max value.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this VO2 max measurement belongs to.
+    , date DATE NOT NULL                   -- Calendar date of the VO2 max measurement.
+    , vo2_max_generic FLOAT                -- Generic VO2 max value in ml/kg/min.
+    , vo2_max_cycling FLOAT                -- Cycling-specific VO2 max value in ml/kg/min.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (user_id, date)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
 
-----------------------------------------------------------------------------------------
 -- Heat and altitude acclimation metrics from Garmin training status data.
--- Tracks acclimation levels and trends for environmental conditions.
 CREATE TABLE IF NOT EXISTS acclimation (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , date DATE NOT NULL                   -- Date of the acclimation measurement.
-    , altitude_acclimation FLOAT           -- Altitude acclimation percentage.
-    , heat_acclimation_percentage FLOAT    -- Heat acclimation percentage.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this acclimation data belongs to.
+    , date DATE NOT NULL                   -- Calendar date of the acclimation measurement.
+    , altitude_acclimation FLOAT           -- Altitude acclimation level as a numeric value.
+    , heat_acclimation_percentage FLOAT    -- Heat acclimation level as a percentage (0-100).
     , current_altitude FLOAT               -- Current altitude in meters.
     , acclimation_percentage FLOAT         -- Overall acclimation percentage.
-    , altitude_trend TEXT                  -- Altitude acclimation trend.
-    , heat_trend TEXT                      -- Heat acclimation trend.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    , altitude_trend TEXT                  -- Altitude acclimation trend (e.g., ''MAINTAINING'', ''GAINING'').
+    , heat_trend TEXT                      -- Heat acclimation trend (e.g., ''DEACCLIMATIZING'', ''ACCLIMATIZING'').
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (user_id, date)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
 
-----------------------------------------------------------------------------------------
--- Training load balance and status metrics from Garmin Connect.
--- Includes monthly load distribution, ACWR analysis, and training status indicators.
+-- Training load balance and status metrics from Garmin Connect including monthly low/high aerobic/anaerobic load distribution, ACWR Acute:Chronic Workload Ratio (ACWR) analysis, and training status indicators.
 CREATE TABLE IF NOT EXISTS training_load (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , date DATE NOT NULL                   -- Date of the training load measurement.
-    , monthly_load_aerobic_low FLOAT       -- Monthly low aerobic training load.
-    , monthly_load_aerobic_high FLOAT      -- Monthly high aerobic training load.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this training load data belongs to.
+    , date DATE NOT NULL                   -- Calendar date of the training load measurement.
+    , monthly_load_aerobic_low FLOAT       -- Monthly aerobic low intensity training load.
+    , monthly_load_aerobic_high FLOAT      -- Monthly aerobic high intensity training load.
     , monthly_load_anaerobic FLOAT         -- Monthly anaerobic training load.
-    , monthly_load_aerobic_low_target_min FLOAT   -- Min target for low aerobic load.
-    , monthly_load_aerobic_low_target_max FLOAT   -- Max target for low aerobic load.
-    , monthly_load_aerobic_high_target_min FLOAT  -- Min target for high aerobic load.
-    , monthly_load_aerobic_high_target_max FLOAT  -- Max target for high aerobic load.
-    , monthly_load_anaerobic_target_min FLOAT     -- Min target for anaerobic load.
-    , monthly_load_anaerobic_target_max FLOAT     -- Max target for anaerobic load.
-    , training_balance_feedback_phrase TEXT -- Training balance feedback phrase.
-    , acwr_percent FLOAT                   -- Acute chronic workload ratio percentage.
-    , acwr_status TEXT                     -- ACWR status.
+    , monthly_load_aerobic_low_target_min FLOAT   -- Minimum target for monthly aerobic low intensity load.
+    , monthly_load_aerobic_low_target_max FLOAT   -- Maximum target for monthly aerobic low intensity load.
+    , monthly_load_aerobic_high_target_min FLOAT  -- Minimum target for monthly aerobic high intensity load.
+    , monthly_load_aerobic_high_target_max FLOAT  -- Maximum target for monthly aerobic high intensity load.
+    , monthly_load_anaerobic_target_min FLOAT     -- Minimum target for monthly anaerobic load.
+    , monthly_load_anaerobic_target_max FLOAT     -- Maximum target for monthly anaerobic load.
+    , training_balance_feedback_phrase TEXT -- Training balance feedback message (e.g., ''ABOVE_TARGETS'').
+    , acwr_percent FLOAT                   -- Acute chronic workload ratio as a percentage.
+    , acwr_status TEXT                     -- ACWR status classification (e.g., ''OPTIMAL'').
     , acwr_status_feedback TEXT            -- ACWR status feedback message.
-    , daily_training_load_acute FLOAT      -- Daily acute training load.
-    , max_training_load_chronic FLOAT      -- Maximum chronic training load.
-    , min_training_load_chronic FLOAT      -- Minimum chronic training load.
-    , daily_training_load_chronic FLOAT    -- Daily chronic training load.
-    , daily_acute_chronic_workload_ratio FLOAT -- Daily ACWR.
-    , training_status INTEGER              -- Training status code.
-    , training_status_feedback_phrase TEXT -- Training status feedback phrase.
-    , total_intensity_minutes INTEGER      -- Total intensity minutes.
-    , moderate_minutes INTEGER             -- Moderate intensity minutes.
-    , vigorous_minutes INTEGER             -- Vigorous intensity minutes.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
-    , update_ts DATETIME DEFAULT CURRENT_TIMESTAMP           -- Record last update timestamp.
+    , daily_training_load_acute FLOAT      -- Daily acute training load value.
+    , max_training_load_chronic FLOAT      -- Maximum chronic training load threshold.
+    , min_training_load_chronic FLOAT      -- Minimum chronic training load threshold.
+    , daily_training_load_chronic FLOAT    -- Daily chronic training load value.
+    , daily_acute_chronic_workload_ratio FLOAT -- Daily acute to chronic workload ratio.
+    , training_status INTEGER              -- Training status numeric code.
+    , training_status_feedback_phrase TEXT -- Training status feedback message (e.g., ''STRAINED_1'').
+    , total_intensity_minutes INTEGER      -- Total intensity minutes calculated as endDayMinutes - startDayMinutes.
+    , moderate_minutes INTEGER             -- Daily moderate intensity minutes from intensity minutes tracking.
+    , vigorous_minutes INTEGER             -- Daily vigorous intensity minutes from intensity minutes tracking.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (user_id, date)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
 
-----------------------------------------------------------------------------------------
--- Training readiness scores and factors from Garmin Connect.
--- Indicates recovery status and training capacity based on sleep, HRV, stress, and
--- training load metrics.
+-- Training readiness scores and factors from Garmin Connect indicating recovery status and training capacity based on sleep, HRV, stress, and training load metrics.
 CREATE TABLE IF NOT EXISTS training_readiness (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the readiness measurement (timezone-aware).
-    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset in hours from UTC.
-    , level TEXT                           -- Training readiness level (e.g., MODERATE, HIGH, LOW).
-    , feedback_long TEXT                   -- Long-form feedback message.
-    , feedback_short TEXT                  -- Short-form feedback message.
-    , score INTEGER                        -- Overall training readiness score.
-    , sleep_score INTEGER                  -- Sleep component score.
-    , sleep_score_factor_percent INTEGER   -- Sleep factor percentage contribution.
-    , sleep_score_factor_feedback TEXT     -- Sleep factor feedback.
-    , recovery_time INTEGER                -- Recovery time in hours.
-    , recovery_time_factor_percent INTEGER -- Recovery time factor percentage contribution.
-    , recovery_time_factor_feedback TEXT   -- Recovery time factor feedback.
-    , acwr_factor_percent INTEGER          -- ACWR factor percentage contribution.
-    , acwr_factor_feedback TEXT            -- ACWR factor feedback.
-    , acute_load INTEGER                   -- Acute training load.
-    , stress_history_factor_percent INTEGER -- Stress history factor percentage contribution.
-    , stress_history_factor_feedback TEXT  -- Stress history factor feedback.
-    , hrv_factor_percent INTEGER           -- HRV factor percentage contribution.
-    , hrv_factor_feedback TEXT             -- HRV factor feedback.
-    , hrv_weekly_average INTEGER           -- Weekly average HRV.
-    , sleep_history_factor_percent INTEGER -- Sleep history factor percentage contribution.
-    , sleep_history_factor_feedback TEXT   -- Sleep history factor feedback.
-    , valid_sleep BOOLEAN                  -- Whether sleep data is valid.
-    , input_context TEXT                   -- Input context for readiness calculation.
-    , primary_activity_tracker BOOLEAN     -- Whether this is the primary activity tracker.
-    , recovery_time_change_phrase TEXT     -- Recovery time change phrase.
-    , sleep_history_factor_feedback_phrase TEXT -- Sleep history factor feedback phrase.
-    , hrv_factor_feedback_phrase TEXT      -- HRV factor feedback phrase.
-    , stress_history_factor_feedback_phrase TEXT -- Stress history factor feedback phrase.
-    , acwr_factor_feedback_phrase TEXT     -- ACWR factor feedback phrase.
-    , recovery_time_factor_feedback_phrase TEXT -- Recovery time factor feedback phrase.
-    , sleep_score_factor_feedback_phrase TEXT   -- Sleep score factor feedback phrase.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this training readiness data belongs to.
+    , timestamp DATETIME NOT NULL          -- Training readiness measurement timestamp.
+    , timezone_offset_hours FLOAT NOT NULL -- Timezone offset from UTC in hours to infer local time (e.g., -7.0 for UTC-07:00, 5.5 for UTC+05:30).
+    , level TEXT                           -- Training readiness level (e.g., ''HIGH'', ''MODERATE'', ''LOW'').
+    , feedback_long TEXT                   -- Detailed training readiness feedback message.
+    , feedback_short TEXT                  -- Short training readiness feedback message.
+    , score INTEGER                        -- Overall training readiness score (0-100 scale).
+    , sleep_score INTEGER                  -- Sleep quality score contributing to training readiness.
+    , sleep_score_factor_percent INTEGER   -- Sleep score contribution percentage to overall readiness.
+    , sleep_score_factor_feedback TEXT     -- Sleep score factor feedback (e.g., ''MODERATE'', ''GOOD'').
+    , recovery_time INTEGER                -- Estimated recovery time in minutes.
+    , recovery_time_factor_percent INTEGER -- Recovery time contribution percentage to overall readiness.
+    , recovery_time_factor_feedback TEXT   -- Recovery time factor feedback (e.g., ''MODERATE'', ''GOOD'').
+    , acwr_factor_percent INTEGER          -- Acute chronic workload ratio contribution percentage to overall readiness.
+    , acwr_factor_feedback TEXT            -- ACWR factor feedback (e.g., ''GOOD'', ''VERY_GOOD'').
+    , acute_load INTEGER                   -- Acute training load value.
+    , stress_history_factor_percent INTEGER -- Stress history contribution percentage to overall readiness.
+    , stress_history_factor_feedback TEXT  -- Stress history factor feedback (e.g., ''GOOD'').
+    , hrv_factor_percent INTEGER           -- Heart rate variability contribution percentage to overall readiness.
+    , hrv_factor_feedback TEXT             -- HRV factor feedback (e.g., ''GOOD'').
+    , hrv_weekly_average INTEGER           -- Weekly average HRV value in milliseconds.
+    , sleep_history_factor_percent INTEGER -- Sleep history contribution percentage to overall readiness.
+    , sleep_history_factor_feedback TEXT   -- Sleep history factor feedback (e.g., ''MODERATE'').
+    , valid_sleep BOOLEAN                  -- Whether sleep data is valid and available for calculation.
+    , input_context TEXT                   -- Context of the training readiness calculation (e.g., ''UPDATE_REALTIME_VARIABLES'').
+    , primary_activity_tracker BOOLEAN     -- Whether this device is the primary activity tracker.
+    , recovery_time_change_phrase TEXT     -- Recovery time change feedback phrase.
+    , sleep_history_factor_feedback_phrase TEXT -- Sleep history factor detailed feedback phrase.
+    , hrv_factor_feedback_phrase TEXT      -- HRV factor detailed feedback phrase.
+    , stress_history_factor_feedback_phrase TEXT -- Stress history factor detailed feedback phrase.
+    , acwr_factor_feedback_phrase TEXT     -- ACWR factor detailed feedback phrase.
+    , recovery_time_factor_feedback_phrase TEXT -- Recovery time factor detailed feedback phrase.
+    , sleep_score_factor_feedback_phrase TEXT   -- Sleep score factor detailed feedback phrase.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -495,14 +456,12 @@ CREATE TABLE IF NOT EXISTS training_readiness (
 CREATE INDEX IF NOT EXISTS training_readiness_user_id_timestamp_idx
 ON training_readiness (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Stress level timeseries data capturing stress measurements throughout the day.
--- Time interval: 3 minutes.
+-- Stress level measurements at regular 3-minute intervals throughout the day. Stress values typically range from 0-100, with negative values indicating unmeasurable periods.
 CREATE TABLE IF NOT EXISTS stress (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value INTEGER                        -- Stress level value (0-100).
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this stress measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the stress measurement.
+    , value INTEGER                        -- Stress level value (0-100 scale, negative values indicate unmeasurable periods).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -510,14 +469,12 @@ CREATE TABLE IF NOT EXISTS stress (
 CREATE INDEX IF NOT EXISTS stress_user_id_timestamp_idx
 ON stress (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Body battery level timeseries data capturing energy levels throughout the day.
--- Time interval: 3 minutes.
+-- Body battery energy level measurements at regular 3-minute intervals throughout the day. Body battery values typically range from 0-100.
 CREATE TABLE IF NOT EXISTS body_battery (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value INTEGER                        -- Body battery level (0-100).
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this body battery measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the body battery measurement.
+    , value INTEGER                        -- Body battery energy level (0-100 scale).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -525,14 +482,12 @@ CREATE TABLE IF NOT EXISTS body_battery (
 CREATE INDEX IF NOT EXISTS body_battery_user_id_timestamp_idx
 ON body_battery (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Timeseries heart rate data from Garmin devices.
--- Time interval: 2 minutes.
+-- Heart rate measurements from Garmin devices at regular 2-minute intervals during periods when heart rate monitoring is active.
 CREATE TABLE IF NOT EXISTS heart_rate (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value INTEGER                        -- Heart rate in beats per minute.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this heart rate measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the heart rate measurement.
+    , value INTEGER                        -- Heart rate value in beats per minute.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -540,16 +495,14 @@ CREATE TABLE IF NOT EXISTS heart_rate (
 CREATE INDEX IF NOT EXISTS heart_rate_user_id_timestamp_idx
 ON heart_rate (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Step count timeseries data capturing movement activity throughout the day.
--- Time interval: 15 minutes.
+-- Step count measurements from Garmin devices at regular 15-minute intervals throughout the day including activity level and consistency indicators.
 CREATE TABLE IF NOT EXISTS steps (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value INTEGER                        -- Number of steps in this interval.
-    , activity_level TEXT                  -- Activity level classification.
-    , activity_level_constant BOOLEAN      -- Whether activity level was constant.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this step count measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the step count measurement.
+    , value INTEGER                        -- Number of steps taken during the 15-minute interval.
+    , activity_level TEXT                  -- Activity level classification (e.g., sleeping, sedentary, active, highlyActive).
+    , activity_level_constant BOOLEAN      -- Whether the activity level remained constant during the interval.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -557,14 +510,12 @@ CREATE TABLE IF NOT EXISTS steps (
 CREATE INDEX IF NOT EXISTS steps_user_id_timestamp_idx
 ON steps (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Timeseries respiration rate data from Garmin devices.
--- Time interval: 2 minutes.
+-- Respiration rate measurements from Garmin devices at regular 2-minute intervals throughout the day during periods when respiration monitoring is active.
 CREATE TABLE IF NOT EXISTS respiration (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value FLOAT                          -- Respiration rate in breaths per minute.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this respiration measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the respiration rate measurement.
+    , value FLOAT                          -- Respiration rate value in breaths per minute.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -572,14 +523,12 @@ CREATE TABLE IF NOT EXISTS respiration (
 CREATE INDEX IF NOT EXISTS respiration_user_id_timestamp_idx
 ON respiration (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Timeseries intensity minutes data from Garmin devices.
--- Time interval: 15 minutes.
+-- Intensity minutes measurements from Garmin devices tracking periods of moderate to vigorous physical activity throughout the day at 15-minute intervals. Records are available only when activity generating intensity is happening.
 CREATE TABLE IF NOT EXISTS intensity_minutes (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , value FLOAT                          -- Intensity minutes in this interval.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this intensity minutes measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the intensity minutes measurement.
+    , value FLOAT                          -- Intensity minutes value representing accumulated moderate to vigorous activity.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -587,15 +536,13 @@ CREATE TABLE IF NOT EXISTS intensity_minutes (
 CREATE INDEX IF NOT EXISTS intensity_minutes_user_id_timestamp_idx
 ON intensity_minutes (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
--- Timeseries floors data from Garmin devices.
--- Time interval: 15 minutes.
+-- Floors climbed measurements from Garmin devices tracking floors ascended and descended throughout the day at 15-minute intervals. Records are available only when floor climbing activity is detected.
 CREATE TABLE IF NOT EXISTS floors (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , ascended INTEGER                     -- Number of floors ascended.
-    , descended INTEGER                    -- Number of floors descended.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this floors measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp of the floors measurement (endTimeGMT from the data).
+    , ascended INTEGER                     -- Number of floors ascended during this measurement period.
+    , descended INTEGER                    -- Number of floors descended during this measurement period.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -603,21 +550,16 @@ CREATE TABLE IF NOT EXISTS floors (
 CREATE INDEX IF NOT EXISTS floors_user_id_timestamp_idx
 ON floors (user_id, timestamp DESC);
 
-----------------------------------------------------------------------------------------
 -- Personal records achieved by users across various activity types and distances.
--- Each record represents a best performance for a specific type and user.
--- The latest column indicates the most recent personal record for each user and type.
--- Note: activity_id can be NULL for steps-based PRs (typeId 12-15) which are
--- daily/weekly/monthly aggregates not tied to specific activities.
 CREATE TABLE IF NOT EXISTS personal_record (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , activity_id BIGINT                    -- Activity where PR was achieved (NULL for steps-based PRs).
-    , timestamp DATETIME NOT NULL          -- Timestamp when the personal record was achieved.
-    , type_id INTEGER NOT NULL             -- Personal record type identifier (1-20).
-    , label TEXT                           -- Human-readable description of the PR type.
-    , value FLOAT                          -- Value of the PR (time in seconds or distance in meters).
-    , latest BOOLEAN NOT NULL DEFAULT 0    -- Whether this is the latest personal record for this user.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- Foreign key reference to the user profile.
+    , activity_id BIGINT                    -- Garmin activity ID where this personal record was achieved.
+    , timestamp DATETIME NOT NULL          -- Timestamp when the personal record was achieved (prStartTimeGmt).
+    , type_id INTEGER NOT NULL             -- Personal record type identifier (e.g., 1=Run 1km, 3=Run 5km, 7=Run Longest).
+    , label TEXT                           -- Human-readable description of the personal record type.
+    , value FLOAT                          -- Value of the personal record (time in seconds for distances, distance in meters).
+    , latest BOOLEAN NOT NULL DEFAULT 0    -- Boolean flag indicating whether this is the latest personal record for this user.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, type_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
     -- Note: No FK on activity_id to allow processing PRs before activities exist.
@@ -639,18 +581,16 @@ ON personal_record (type_id);
 CREATE INDEX IF NOT EXISTS personal_record_latest_idx
 ON personal_record (latest);
 
-----------------------------------------------------------------------------------------
--- Race predictions table for storing race time predictions from Garmin Connect.
--- Includes predicted times for 5K, 10K, half marathon, and marathon distances.
+-- Race time predictions from Garmin Connect including 5K, 10K, half marathon, and marathon predicted times. The latest column indicates the most recent prediction.
 CREATE TABLE IF NOT EXISTS race_predictions (
-    user_id BIGINT NOT NULL              -- Foreign key reference to user.user_id.
-    , date DATE NOT NULL                   -- Date of the race prediction.
-    , time_5k FLOAT                        -- Predicted 5K time in seconds.
-    , time_10k FLOAT                       -- Predicted 10K time in seconds.
-    , time_half_marathon FLOAT             -- Predicted half marathon time in seconds.
-    , time_marathon FLOAT                  -- Predicted marathon time in seconds.
-    , latest BOOLEAN NOT NULL DEFAULT 0    -- Whether this is the latest prediction set.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this race prediction belongs to.
+    , date DATE NOT NULL                   -- Calendar date of the race prediction.
+    , time_5k FLOAT                        -- Predicted 5K race time in seconds.
+    , time_10k FLOAT                       -- Predicted 10K race time in seconds.
+    , time_half_marathon FLOAT             -- Predicted half marathon race time in seconds.
+    , time_marathon FLOAT                  -- Predicted marathon race time in seconds.
+    , latest BOOLEAN NOT NULL DEFAULT 0    -- Boolean flag indicating whether this is the latest race prediction for this user.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (user_id, date)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );
@@ -659,49 +599,39 @@ CREATE UNIQUE INDEX IF NOT EXISTS race_predictions_user_id_latest_unique_idx
 ON race_predictions (user_id)
 WHERE latest = 1;
 
-----------------------------------------------------------------------------------------
--- Time-series metrics extracted from activity FIT files.
--- Stores granular sensor measurements recorded during activities including heart rate,
--- cadence, power, speed, distance, and other metrics.
+-- Time-series metrics extracted from activity FIT files including heart rate, cadence, power, speed, distance, GPS coordinates, and other sensor measurements recorded during activities. Each record represents a single measurement at a specific point in time.
 CREATE TABLE IF NOT EXISTS activity_ts_metric (
-    activity_id BIGINT NOT NULL          -- Foreign key reference to activity.activity_id.
-    , timestamp DATETIME NOT NULL          -- Timestamp of the measurement (timezone-aware).
-    , name TEXT NOT NULL                   -- Metric name (e.g., heart_rate, power, cadence).
-    , value FLOAT                          -- Metric value.
-    , units TEXT                           -- Measurement units.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this metric measurement belongs to.
+    , timestamp DATETIME NOT NULL          -- Timestamp when the metric measurement was recorded.
+    , name TEXT NOT NULL                   -- Name of the metric, which varies with activity type (e.g., heart_rate, cadence, power, position_lat, position_log).
+    , value FLOAT                          -- Numeric value of the metric measurement.
+    , units TEXT                           -- Units of measurement for the metric value (e.g., bpm, rpm, watts).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, timestamp, name)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Split metrics extracted from activity FIT files.
--- Stores Garmin's algorithmic breakdown of activities into intervals such as run/walk
--- detection and active intervals. Each record represents a single metric for a
--- specific split segment.
+-- Split metrics extracted from activity FIT files representing Garmin''s algorithmic breakdown of activities into intervals (e.g., run/walk detection, active intervals). Each record represents a single metric for a specific split segment.
 CREATE TABLE IF NOT EXISTS activity_split_metric (
-    activity_id BIGINT NOT NULL          -- Foreign key reference to activity.activity_id.
-    , split_idx INTEGER NOT NULL           -- Split segment index (0-based).
-    , name TEXT NOT NULL                   -- Metric name.
-    , split_type TEXT                      -- Split type (e.g., active, rest).
-    , value FLOAT                          -- Metric value.
-    , units TEXT                           -- Measurement units.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this split metric belongs to.
+    , split_idx INTEGER NOT NULL           -- Split index number starting from 1, incrementing for each split frame in the activity.
+    , name TEXT NOT NULL                   -- Name of the metric (e.g., total_elapsed_time, total_distance, avg_speed).
+    , split_type TEXT                      -- Type of split segment (e.g., rwd_run, rwd_walk, rwd_stand, interval_active).
+    , value FLOAT                          -- Numeric value of the split metric measurement.
+    , units TEXT                           -- Units of measurement for the metric value (e.g., s, km, km/h).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, split_idx, name)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
-----------------------------------------------------------------------------------------
--- Lap metrics extracted from activity FIT files.
--- Stores device-triggered lap segments from manual button press or auto distance/time
--- triggers. Each record represents a single metric for a specific lap segment.
+-- Lap metrics extracted from activity FIT files representing device-triggered lap segments (manual button press, auto distance/time triggers). Each record represents a single metric for a specific lap segment.
 CREATE TABLE IF NOT EXISTS activity_lap_metric (
-    activity_id BIGINT NOT NULL          -- Foreign key reference to activity.activity_id.
-    , lap_idx INTEGER NOT NULL             -- Lap index (0-based).
-    , name TEXT NOT NULL                   -- Metric name.
-    , value FLOAT                          -- Metric value.
-    , units TEXT                           -- Measurement units.
-    , insert_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Record creation timestamp.
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this lap metric belongs to.
+    , lap_idx INTEGER NOT NULL             -- Lap index number starting from 1, incrementing for each lap frame in the activity.
+    , name TEXT NOT NULL                   -- Name of the metric (e.g., timestamp, start_time, total_elapsed_time, distance).
+    , value FLOAT                          -- Numeric value of the lap metric measurement.
+    , units TEXT                           -- Units of measurement for the metric value (e.g., s, m, deg).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, lap_idx, name)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
