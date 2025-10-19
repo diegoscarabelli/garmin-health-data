@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -53,9 +54,11 @@ def upsert_model_instances(
     update_columns: Optional[List[str]] = None,
 ) -> List[Any]:
     """
-    SQLite-compatible upsert for model instances.
+    Bulk upsert SQLAlchemy ORM model instances into SQLite database tables.
 
-    Uses SQLite's INSERT ... ON CONFLICT syntax to perform upsert operations.
+    This function uses SQLite's INSERT ... ON CONFLICT syntax to perform
+    efficient bulk upsert operations in a single SQL statement, matching
+    the implementation pattern used in OpenETL for PostgreSQL.
 
     :param session: SQLAlchemy session.
     :param model_instances: List of model instances to upsert.
@@ -68,45 +71,51 @@ def upsert_model_instances(
         return []
 
     model_class = type(model_instances[0])
+    model_columns = model_class.__table__.columns.keys()
 
+    # Convert all instances to dictionaries (bulk preparation).
+    values = []
     for instance in model_instances:
-        # Convert instance to dict, excluding columns with None values
-        # that have server defaults so those defaults can apply.
         instance_dict = {}
-        for c in instance.__table__.columns:
-            value = getattr(instance, c.name, None)
-            # Skip columns with None if they have server defaults
-            # Check both server_default and nullable to determine if we should skip
-            if value is None and (c.server_default is not None or not c.nullable):
-                # For columns with server defaults or NOT NULL, skip None values
-                # so the database can apply the default
-                if c.server_default is not None:
-                    continue
-            instance_dict[c.name] = value
+        for key, value in instance.__dict__.items():
+            if key in model_columns:
+                instance_dict[key] = value
+        values.append(instance_dict)
 
-        # Create insert statement.
-        stmt = sqlite_insert(model_class).values(**instance_dict)
+    # Determine which columns to update on conflict.
+    if update_columns is None:
+        # Update all columns except conflict columns, create_ts, and update_ts.
+        # Exclude create_ts (should never change on update).
+        # Exclude update_ts (will be set explicitly below if it exists).
+        excluded_cols = set(conflict_columns) | {"create_ts", "update_ts"}
+        update_columns = [col for col in model_columns if col not in excluded_cols]
 
-        if on_conflict_update:
-            # Determine which columns to update.
-            if update_columns:
-                update_dict = {col: stmt.excluded[col] for col in update_columns}
-            else:
-                # Update all columns except conflict columns.
-                update_dict = {
-                    c.name: stmt.excluded[c.name]
-                    for c in model_class.__table__.columns
-                    if c.name not in conflict_columns
-                }
+    # Create bulk insert statement with all values.
+    insert_stmt = sqlite_insert(model_class).values(values)
 
-            stmt = stmt.on_conflict_do_update(
-                index_elements=conflict_columns, set_=update_dict
-            )
-        else:
-            # Ignore conflicts (insert-only).
-            stmt = stmt.on_conflict_do_nothing(index_elements=conflict_columns)
+    if on_conflict_update:
+        # Build update dictionary for ON CONFLICT DO UPDATE.
+        update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
 
-        session.execute(stmt)
+        # Automatically update update_ts column if it exists in the model.
+        # SQLite's DEFAULT CURRENT_TIMESTAMP only applies on INSERT, not UPDATE.
+        # We must explicitly set update_ts to the current timestamp on updates.
+        if hasattr(model_class, "update_ts"):
+            update_dict["update_ts"] = func.current_timestamp()
 
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=conflict_columns, set_=update_dict
+        )
+    else:
+        # Ignore conflicts (insert-only).
+        upsert_stmt = insert_stmt.on_conflict_do_nothing(
+            index_elements=conflict_columns
+        )
+
+    # Execute the bulk upsert statement (single SQL statement for all rows).
+    session.execute(upsert_stmt)
+
+    # Flush session to force immediate resolution of foreign key relationships.
     session.flush()
+
     return model_instances

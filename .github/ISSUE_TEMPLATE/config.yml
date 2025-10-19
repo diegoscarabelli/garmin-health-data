@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/diegoscarabelli/garmin-health-data/blob/main/README.md
+    about: Read the comprehensive project documentation
+  - name: Ask a Question
+    url: https://github.com/diegoscarabelli/garmin-health-data/discussions
+    about: Ask questions and discuss ideas with the community

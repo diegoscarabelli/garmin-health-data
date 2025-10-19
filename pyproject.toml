@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garmin-health-data"
-version = "1.0.1"
+version = "2.0.0"
 description = "Extract your Garmin Connect health data to a local SQLite database"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -46,6 +46,7 @@ dev = [
     "black>=23.0",
     "autoflake>=2.0",
     "docformatter>=1.7",
+    "sqlfluff>=2.0",
     "pre-commit>=3.0",
     "flake8>=6.0",
     "mypy>=1.0",
@@ -56,6 +57,7 @@ Homepage = "https://github.com/diegoscarabelli/garmin-health-data"
 Documentation = "https://github.com/diegoscarabelli/garmin-health-data#readme"
 Repository = "https://github.com/diegoscarabelli/garmin-health-data"
 Issues = "https://github.com/diegoscarabelli/garmin-health-data/issues"
+Changelog = "https://github.com/diegoscarabelli/garmin-health-data/blob/main/CHANGELOG.md"
 
 [project.scripts]
 garmin = "garmin_health_data.cli:cli"
@@ -63,6 +65,9 @@ garmin = "garmin_health_data.cli:cli"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["garmin_health_data*"]
+
+[tool.setuptools.package-data]
+garmin_health_data = ["tables.ddl"]
 
 [tool.autoflake]
 expand-star-imports = true
@@ -97,3 +102,25 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --cov=garmin_health_data --cov-report=term-missing"
+
+[tool.sqlfluff.core]
+dialect = "sqlite"
+exclude_rules = "RF04"
+large_file_skip_byte_limit = 0
+max_line_length = 88
+runaway_limit = 100
+
+[tool.sqlfluff.indentation]
+allow_implicit_indents = true
+ignore_comment_lines = true
+indented_ctes = true
+indented_joins = true
+indented_on_contents = true
+indented_using_on = true
+
+[tool.sqlfluff.layout.type.comma]
+line_position = "leading"
+
+[tool.sqlfluff.rules.layout.long_lines]
+ignore_comment_clauses = true
+ignore_comment_lines = true

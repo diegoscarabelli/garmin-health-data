@@ -215,7 +215,10 @@ def extract(
 
             from garmin_health_data.constants import GARMIN_FILE_TYPES
 
-            timestamp_regex = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)?"
+            timestamp_regex = (
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+                r"(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)?"
+            )
             files_by_timestamp = OrderedDict()
 
             for file_path in file_paths:
@@ -238,8 +241,10 @@ def extract(
             # Log how many FileSets will be processed
             num_filesets = len(files_by_timestamp)
             click.echo()
+            plural = "s" if num_filesets != 1 else ""
             click.secho(
-                f"📦 Processing {format_count(num_filesets)} file set{'s' if num_filesets != 1 else ''} (grouped by timestamp)",
+                f"📦 Processing {format_count(num_filesets)} file set{plural} "
+                f"(grouped by timestamp)",
                 fg="cyan",
                 bold=True,
             )
@@ -298,9 +303,8 @@ def extract(
         click.echo(
             f"   • Sleep sessions: {format_count(counts.get('sleep_sessions', 0))}"
         )
-        click.echo(
-            f"   • Heart rate readings: {format_count(counts.get('heart_rate_readings', 0))}"
-        )
+        hr_count = format_count(counts.get("heart_rate_readings", 0))
+        click.echo(f"   • Heart rate readings: {hr_count}")
         click.echo(
             f"   • Stress readings: {format_count(counts.get('stress_readings', 0))}"
         )
