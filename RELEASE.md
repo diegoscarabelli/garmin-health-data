@@ -30,7 +30,7 @@ The repository uses GitHub Actions to automatically publish to PyPI when you cre
 Edit `pyproject.toml` and update the version number:
 
 ```toml
-version = "1.2.0"  # Update this line
+version = "2.0.1"  # Update this line
 ```
 
 ### 2. Update CHANGELOG (if applicable)
@@ -41,7 +41,7 @@ Document the changes included in this release.
 
 ```bash
 git add pyproject.toml CHANGELOG.md
-git commit -m "Bump version to 1.2.0"
+git commit -m "Bump version to 2.0.1"
 git push origin main
 ```
 
@@ -51,20 +51,20 @@ Choose one of the following methods:
 
 **Option A: GitHub Web Interface**
 1. Navigate to https://github.com/diegoscarabelli/garmin-health-data/releases/new.
-2. Click "Select tag" dropdown → Type `v1.2.0` → The UI will offer to create the new tag on publish.
+2. Click "Select tag" dropdown → Type `v2.0.1` → The UI will offer to create the new tag on publish.
 3. Verify "Target" is set to `main`.
-4. Enter release title: `v1.2.0`.
+4. Enter release title: `v2.0.1`.
 5. Add release notes describing the changes (or click "Generate release notes" for auto-generated notes).
 6. Click "Publish release".
 
 **Option B: GitHub CLI**
 ```bash
-gh release create v1.2.0 --title "v1.2.0" --notes "Release notes here"
+gh release create v2.0.1 --title "v2.0.1" --notes "Release notes here"
 ```
 
 **Option C: Git Tag (requires manual release creation)**
 ```bash
-git tag -a v1.2.0 -m "Release version 1.2.0"
+git tag -a v2.0.1 -m "Release version 2.0.1"
 git push origin v1.2.0
 # Then create release on GitHub using this tag
 ```
@@ -156,23 +156,23 @@ If you haven't already triggered the automated workflow:
 
 ```bash
 # Tag the release
-git tag -a v1.0.0 -m "Release version 1.0.0"
+git tag -a v2.0.1 -m "Release version 2.0.1"
 
 # Push the tag
-git push origin v1.0.0
+git push origin v2.0.1
 ```
 
 Then create a release on GitHub:
 - Go to https://github.com/diegoscarabelli/garmin-health-data/releases/new.
-- Select tag: v1.0.0.
-- Release title: "v1.0.0".
+- Select tag: v2.0.1.
+- Release title: "v2.0.1".
 - Add release notes.
 - Publish release.
 
 ## Version Numbering
 
 Follow [Semantic Versioning](https://semver.org/):
-- **MAJOR.MINOR.PATCH** (e.g., 1.0.0).
+- **MAJOR.MINOR.PATCH** (e.g., 2.0.0).
 - **MAJOR**: Incompatible API changes.
 - **MINOR**: New functionality, backwards compatible.
 - **PATCH**: Bug fixes, backwards compatible.
@@ -245,12 +245,11 @@ Triggered when you create a GitHub Release:
 # 1. Update version in pyproject.toml
 # 2. Commit and push changes
 git add pyproject.toml
-git commit -m "Bump version to 1.2.0"
+git commit -m "Bump version to 2.0.1"
 git push origin main
 
 # 3. Create GitHub Release (triggers automated publish)
-gh release create v1.2.0 --title "v1.2.0" --notes "Release notes"
-
+gh release create v2.0.1 --title "v2.0.1" --notes "Release notes"
 # 4. Monitor: https://github.com/diegoscarabelli/garmin-health-data/actions
 ```
 
@@ -267,6 +266,6 @@ python -m twine check dist/*
 python -m twine upload dist/*
 
 # Tag and create release
-git tag -a v1.0.0 -m "Release version 1.0.0"
-git push origin v1.0.0
+git tag -a v2.0.1 -m "Release version 2.0.1"
+git push origin v2.0.1
 ```
