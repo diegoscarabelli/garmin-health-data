@@ -449,6 +449,7 @@ CREATE TABLE IF NOT EXISTS training_readiness (
     , recovery_time_factor_feedback_phrase TEXT -- Recovery time factor detailed feedback phrase.
     , sleep_score_factor_feedback_phrase TEXT   -- Sleep score factor detailed feedback phrase.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (user_id, timestamp)
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
 );

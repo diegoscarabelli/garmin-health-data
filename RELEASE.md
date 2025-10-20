@@ -51,10 +51,11 @@ Choose one of the following methods:
 
 **Option A: GitHub Web Interface**
 1. Navigate to https://github.com/diegoscarabelli/garmin-health-data/releases/new.
-2. Click "Choose a tag" → Type `v1.2.0` → Select "Create new tag: v1.2.0 on publish".
-3. Set release title: `v1.2.0`.
-4. Add release notes describing the changes.
-5. Click "Publish release".
+2. Click "Select tag" dropdown → Type `v1.2.0` → The UI will offer to create the new tag on publish.
+3. Verify "Target" is set to `main`.
+4. Enter release title: `v1.2.0`.
+5. Add release notes describing the changes (or click "Generate release notes" for auto-generated notes).
+6. Click "Publish release".
 
 **Option B: GitHub CLI**
 ```bash
