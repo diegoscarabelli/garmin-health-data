@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2025-10-21
+
+### Fixed
+
+- **Bug**: Fixed extraction of sleep fields from incorrect JSON location causing NULL values in database.
+  - `resting_heart_rate`, `hrv_status`, and `skin_temp_data_exists` were incorrectly being extracted from `dailySleepDTO` instead of the top-level JSON object.
+  - These fields now correctly populate with data from Garmin Connect.
+  - **Impact**: Existing sleep records with NULL values for these fields need to be reprocessed to populate the correct data.
+  - **Migration**: Re-run `garmin-health-data process` for affected date ranges to update historical data.
+
 ## [2.0.1] - 2025-10-20
 
 ### Fixed
