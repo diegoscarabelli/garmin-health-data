@@ -43,10 +43,10 @@ def get_engine(db_path: str = "garmin_data.db"):
     :param db_path: Path to SQLite database file.
     :return: SQLAlchemy engine.
     """
-    db_file = Path(db_path).expanduser()
+    db_file = Path(db_path).expanduser().resolve()
 
-    # Create database URL.
-    db_url = f"sqlite:///{db_file}"
+    # Create database URL (use as_posix() for cross-platform compatibility).
+    db_url = f"sqlite:///{db_file.as_posix()}"
 
     # Create engine with sensible defaults for SQLite.
     engine = create_engine(
