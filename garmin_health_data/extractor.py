@@ -404,7 +404,9 @@ class GarminExtractor:
                 hour=12, minute=0, second=0
             )
             timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
-            filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit".replace(":", "-")
+            filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit".replace(
+                ":", "-"
+            )
             filepath = self.ingest_dir / filename
 
             # Download FIT file.
