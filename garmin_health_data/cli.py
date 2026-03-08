@@ -3,6 +3,7 @@ Command-line interface for garmin-health-data.
 """
 
 import shutil
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -152,7 +153,7 @@ def extract(
     click.echo()
 
     # Create temporary directory for extraction.
-    temp_dir = Path("/tmp/garmin_extraction")
+    temp_dir = Path(tempfile.gettempdir()) / "garmin_extraction"
     temp_dir.mkdir(exist_ok=True, parents=True)
 
     try:
@@ -216,8 +217,8 @@ def extract(
             from garmin_health_data.constants import GARMIN_FILE_TYPES
 
             timestamp_regex = (
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
-                r"(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)?"
+                r"\d{4}-\d{2}-\d{2}T\d{2}[:\-]\d{2}[:\-]\d{2}"
+                r"(?:\.\d{1,6})?(?:[+-]\d{2}[:\-]\d{2}|Z)?"
             )
             files_by_timestamp = OrderedDict()
 

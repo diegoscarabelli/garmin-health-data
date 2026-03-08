@@ -6,6 +6,7 @@ Authentication (MFA) support.
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -163,7 +164,8 @@ def refresh_tokens(
 
         # Ensure token directory exists with proper permissions.
         token_path.mkdir(parents=True, exist_ok=True)
-        token_path.chmod(0o755)
+        if sys.platform != "win32":
+            token_path.chmod(0o755)
 
         garmin.garth.dump(str(token_path))
 
