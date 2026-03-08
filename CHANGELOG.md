@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-02-24
+
+### Fixed
+
+- **Bug**: Extractor did not function on windows
+  - Remove incompatible char ':' from timestamp
+  - Use gettempdir() to get temp directory instead of hardcoding to /tmp
+  - use posix compatible DB URL
+  - skip potentially problematic chmod on windows
+  - **Impact**: Extractor now runs where it did not before.
+  - **Migration**: Re-run 'garmin-health-data extract', which should now function.
+
 ## [2.0.2] - 2025-10-21
 
 ### Fixed

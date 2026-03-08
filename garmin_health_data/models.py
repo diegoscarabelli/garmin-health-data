@@ -22,7 +22,6 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.sql.expression import text
 
-
 # Base class for all models.
 Base = declarative_base()
 

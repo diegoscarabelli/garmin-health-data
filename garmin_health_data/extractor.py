@@ -345,7 +345,7 @@ class GarminExtractor:
         timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
 
         # Generate filename: {user_id}_{DATA_TYPE}_{timestamp}.json.
-        filename = f"{self.user_id}_{data_type.name}_{timestamp}.json"
+        filename = f"{self.user_id}_{data_type.name}_{timestamp}.json".replace(":", "-")
         filepath = self.ingest_dir / filename
 
         # Save data.
@@ -404,7 +404,9 @@ class GarminExtractor:
                 hour=12, minute=0, second=0
             )
             timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
-            filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit"
+            filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit".replace(
+                ":", "-"
+            )
             filepath = self.ingest_dir / filename
 
             # Download FIT file.
