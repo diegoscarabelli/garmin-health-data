@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
+from sqlalchemy import text
 
 from garmin_health_data.__version__ import __version__
 from garmin_health_data.auth import (
@@ -410,7 +411,7 @@ def verify(db_path: str):
         click.echo(f"✅ Found {len(tables)} tables")
 
         # Run SQLite integrity check.
-        result = session.execute("PRAGMA integrity_check").fetchone()
+        result = session.execute(text("PRAGMA integrity_check")).fetchone()
         if result[0] == "ok":
             click.secho("✅ Database integrity check passed", fg="green")
         else:
