@@ -43,7 +43,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-env>=1.0",
     "python-dotenv>=1.0",
-    "black>=23.0",
+    "black==25.9.0",
     "autoflake>=2.0",
     "docformatter>=1.7",
     "sqlfluff>=2.0",
