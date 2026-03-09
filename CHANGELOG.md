@@ -11,11 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Bug**: Extractor did not function on windows.
+- **Bug**: Extractor did not function on Windows.
   - Remove incompatible char ':' from timestamp.
   - Use gettempdir() to get temp directory instead of hardcoding to /tmp.
-  - Use posix compatible DB URL.
-  - Skip potentially problematic chmod on windows.
+  - Use POSIX-compatible DB URL.
+  - Skip potentially problematic chmod on Windows.
   - **Impact**: Extractor now runs where it did not before.
   - **Migration**: Re-run `garmin-health-data extract`, which should now function.
 - **Bug**: `garmin verify` command failed under SQLAlchemy 2.x with `sqlalchemy.exc.ArgumentError` ("Textual SQL expression ... should be explicitly declared as text(...)") due to a raw SQL string passed to `session.execute()` without a `text()` wrapper.
