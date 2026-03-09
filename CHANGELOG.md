@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bug**: `garmin verify` command failed under SQLAlchemy 2.x with `sqlalchemy.exc.ArgumentError` ("Textual SQL expression ... should be explicitly declared as text(...)") due to a raw SQL string passed to `session.execute()` without a `text()` wrapper.
 
+### Changed
+
+- Pinned `black` to `==25.9.0` in dev dependencies to prevent formatting inconsistencies between local and CI environments.
+
+### Added
+
+- CLI test suite (`tests/test_cli.py`) with regression test for the SQLAlchemy `text()` compatibility issue.
+
 ## [2.0.3] - 2026-02-24
 
 ### Fixed
