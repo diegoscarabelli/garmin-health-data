@@ -2,6 +2,7 @@
 Tests for CLI commands.
 """
 
+import sqlalchemy
 import pytest
 from click.testing import CliRunner
 from sqlalchemy.exc import ArgumentError
@@ -9,7 +10,10 @@ from sqlalchemy.exc import ArgumentError
 from garmin_health_data.cli import verify
 from garmin_health_data.db import create_tables, get_session
 
+SQLALCHEMY_2 = sqlalchemy.__version__.startswith("2.")
 
+
+@pytest.mark.skipif(not SQLALCHEMY_2, reason="SQLAlchemy 2.x required.")
 def test_raw_sql_string_raises_error(tmp_path):
     """
     Test that passing a raw SQL string to session.execute() raises an error.
