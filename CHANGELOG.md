@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Use posix compatible DB URL.
   - Skip potentially problematic chmod on windows.
   - **Impact**: Extractor now runs where it did not before.
-  - **Migration**: Re-run 'garmin-health-data extract', which should now function.
+  - **Migration**: Re-run `garmin-health-data extract`, which should now function.
 - **Bug**: `garmin verify` command failed under SQLAlchemy 2.x with `sqlalchemy.exc.ArgumentError` ("Textual SQL expression ... should be explicitly declared as text(...)") due to a raw SQL string passed to `session.execute()` without a `text()` wrapper.
 
 ### Changed
