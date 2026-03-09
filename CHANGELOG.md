@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Bug**: `garmin verify` command failed with `sqlalchemy.exc.ObjectNotExecutableError` due to raw SQL string passed to `session.execute()` without `text()` wrapper.
+- **Bug**: `garmin verify` command failed under SQLAlchemy 2.x with `sqlalchemy.exc.ArgumentError` ("Textual SQL expression ... should be explicitly declared as text(...)") due to a raw SQL string passed to `session.execute()` without a `text()` wrapper.
 
 ## [2.0.3] - 2026-02-24
 
