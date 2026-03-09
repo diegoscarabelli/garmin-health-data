@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.4] - 2026-03-08
+## [2.0.3] - 2026-03-08
 
 ### Fixed
 
+- **Bug**: Extractor did not function on Windows.
+  - Remove incompatible char ':' from timestamp.
+  - Use gettempdir() to get temp directory instead of hardcoding to /tmp.
+  - Use POSIX-compatible DB URL.
+  - Skip potentially problematic chmod on Windows.
+  - **Impact**: Extractor now runs where it did not before.
+  - **Migration**: Re-run `garmin-health-data extract`, which should now function.
 - **Bug**: `garmin verify` command failed under SQLAlchemy 2.x with `sqlalchemy.exc.ArgumentError` ("Textual SQL expression ... should be explicitly declared as text(...)") due to a raw SQL string passed to `session.execute()` without a `text()` wrapper.
 
 ### Changed
@@ -21,18 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - CLI test suite (`tests/test_cli.py`) with regression test for the SQLAlchemy `text()` compatibility issue.
-
-## [2.0.3] - 2026-02-24
-
-### Fixed
-
-- **Bug**: Extractor did not function on windows
-  - Remove incompatible char ':' from timestamp
-  - Use gettempdir() to get temp directory instead of hardcoding to /tmp
-  - use posix compatible DB URL
-  - skip potentially problematic chmod on windows
-  - **Impact**: Extractor now runs where it did not before.
-  - **Migration**: Re-run 'garmin-health-data extract', which should now function.
 
 ## [2.0.2] - 2025-10-21
 
@@ -145,8 +140,7 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.4...HEAD
-[2.0.4]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...v2.0.4
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...HEAD
 [2.0.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.0...v2.0.1
