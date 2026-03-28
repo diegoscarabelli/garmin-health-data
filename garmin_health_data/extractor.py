@@ -285,10 +285,10 @@ class GarminExtractor:
         :return: List of saved file paths.
         """
 
-        # Special case: ACTIVITY files use different extraction logic.
-        if data_type.name == "ACTIVITY":
+        # Special case: ACTIVITY and EXERCISE_SETS use different extraction logic.
+        if data_type.name in ("ACTIVITY", "EXERCISE_SETS"):
             click.echo(
-                f"{data_type.emoji} ACTIVITY files will be handled "
+                f"{data_type.emoji} {data_type.name} files will be handled "
                 f"separately by extract_fit_activities()."
             )
             return []  # Return empty list.
@@ -441,14 +441,67 @@ class GarminExtractor:
             click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
             downloaded_files.append(filepath)
 
-            # Rate limiting - be respectful to Garmin's servers.
-            time.sleep(0.1)  # 100ms delay between downloads.
+            # Fetch exercise sets for strength training activities.
+            activity_type_key = (
+                activity.get("activityType", {}).get("typeKey", "").lower()
+            )
+            if activity_type_key in (
+                "strength_training",
+                "fitness_equipment",
+            ):
+                time.sleep(0.1)  # Rate limiting between API calls.
+                exercise_sets_file = self._extract_exercise_sets(activity_id, timestamp)
+                if exercise_sets_file:
+                    downloaded_files.append(exercise_sets_file)
+
+            # Rate limiting between activities.
+            time.sleep(0.1)
 
         click.echo(
             f"FIT activity extraction complete: {len(downloaded_files)} "
             f"files saved to {self.ingest_dir}."
         )
         return downloaded_files
+
+    def _extract_exercise_sets(
+        self, activity_id: int, timestamp: str
+    ) -> Optional[Path]:
+        """
+        Fetch exercise sets data for a strength training activity.
+
+        Calls the exercise sets API endpoint and saves the response as a JSON file.
+        Returns None if the API returns no exercise sets data.
+
+        :param activity_id: Garmin activity ID.
+        :param timestamp: ISO 8601 timestamp for consistent filename batching.
+        :return: Path to saved JSON file, or None if no data.
+        """
+        try:
+            data = self.garmin_client.get_activity_exercise_sets(activity_id)
+        except Exception as e:
+            click.secho(
+                f"Warning: Failed to fetch exercise sets for "
+                f"activity {activity_id}: {e}.",
+                fg="yellow",
+            )
+            return None
+
+        # Skip if no exercise sets data.
+        if not data or not data.get("exerciseSets"):
+            click.echo(f"No exercise sets data for activity " f"{activity_id}.")
+            return None
+
+        filename = (
+            f"{self.user_id}_EXERCISE_SETS_{activity_id}" f"_{timestamp}.json"
+        ).replace(":", "-")
+        filepath = self.ingest_dir / filename
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+        file_size = filepath.stat().st_size / 1024  # KB.
+        click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
+        return filepath
 
 
 def extract(
@@ -537,7 +590,9 @@ def extract(
     # Extract FIT activity files (if requested in data_types or data_types
     # is None).
     activity_files = []
-    if data_types is None or (data_types and "ACTIVITY" in data_types):
+    if data_types is None or (
+        data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
+    ):
         if progress_callback:
             progress_callback("Extracting FIT activity files...")
         activity_files = extractor.extract_fit_activities()

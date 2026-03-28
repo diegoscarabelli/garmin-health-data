@@ -636,3 +636,50 @@ CREATE TABLE IF NOT EXISTS activity_lap_metric (
     , PRIMARY KEY (activity_id, lap_idx, name)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
+
+-- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
+CREATE TABLE IF NOT EXISTS strength_exercise (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this exercise belongs to.
+    , exercise_category TEXT NOT NULL      -- Exercise category (e.g., BENCH_PRESS, CURL).
+    , exercise_name TEXT NOT NULL          -- Exercise sub-category or name (e.g., BARBELL_BENCH_PRESS, DUMBBELL_CURL).
+    , sets INTEGER                         -- Number of sets performed for this exercise.
+    , reps INTEGER                         -- Total number of repetitions across all sets.
+    , volume FLOAT                         -- Total volume (weight x reps) in grams.
+    , duration_ms FLOAT                    -- Total duration of all sets in milliseconds.
+    , max_weight FLOAT                     -- Maximum weight used across all sets in grams.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (activity_id, exercise_category, exercise_name)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+);
+
+CREATE INDEX IF NOT EXISTS strength_exercise_exercise_category_idx
+ON strength_exercise (exercise_category);
+CREATE INDEX IF NOT EXISTS strength_exercise_exercise_name_idx
+ON strength_exercise (exercise_name);
+
+-- Strength training per-set granular data from Garmin Connect exercise sets API. Stores all set types (ACTIVE, REST, WARMUP, DROP_SET, FAILURE) for rest-to-work ratio analysis.
+CREATE TABLE IF NOT EXISTS strength_set (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this set belongs to.
+    , set_idx INTEGER NOT NULL             -- Set index from API messageIndex (may have gaps).
+    , set_type TEXT NOT NULL               -- Type of set (ACTIVE, REST, WARMUP, DROP_SET, FAILURE).
+    , start_time DATETIME                  -- Timestamp when the set started.
+    , duration FLOAT                       -- Duration of the set in seconds.
+    , wkt_step_index INTEGER               -- Workout step index if from a structured workout.
+    , repetition_count INTEGER             -- Number of repetitions in this set.
+    , weight FLOAT                         -- Weight used in grams.
+    , exercise_category TEXT               -- ML-classified exercise category (e.g., BENCH_PRESS). NULL for REST sets.
+    , exercise_name TEXT                    -- ML-classified exercise name (e.g., BARBELL_BENCH_PRESS). NULL for REST sets.
+    , exercise_probability FLOAT           -- ML classification probability (0.0-1.0). NULL for REST sets.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (activity_id, set_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+);
+
+CREATE INDEX IF NOT EXISTS strength_set_set_type_idx
+ON strength_set (set_type);
+CREATE INDEX IF NOT EXISTS strength_set_exercise_category_idx
+ON strength_set (exercise_category);
+CREATE INDEX IF NOT EXISTS strength_set_exercise_name_idx
+ON strength_set (exercise_name);

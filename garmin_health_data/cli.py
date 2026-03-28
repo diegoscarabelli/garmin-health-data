@@ -102,11 +102,14 @@ def extract(
     # Ensure authenticated.
     ensure_authenticated()
 
-    # Initialize database if it doesn't exist.
-    if not database_exists(db_path):
+    # Initialize database (idempotent: creates new tables if schema was
+    # updated, existing tables are untouched).
+    is_new_db = not database_exists(db_path)
+    if is_new_db:
         click.echo()
         click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
-        initialize_database(db_path)
+    initialize_database(db_path)
+    if is_new_db:
         click.echo()
 
     # Auto-detect start date if not provided.
