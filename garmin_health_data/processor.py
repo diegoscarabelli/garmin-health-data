@@ -905,9 +905,13 @@ class GarminProcessor(Processor):
                 continue
 
             # Parse start time to timezone-aware datetime.
+            # Normalize trailing 'Z' (UTC) for Python 3.9
+            # datetime.fromisoformat compatibility.
             start_time_str = exercise_set.get("startTime")
             start_time = None
             if start_time_str:
+                if start_time_str.endswith("Z"):
+                    start_time_str = start_time_str[:-1] + "+00:00"
                 start_time = datetime.fromisoformat(start_time_str).replace(
                     tzinfo=timezone.utc
                 )

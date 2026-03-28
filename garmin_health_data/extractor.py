@@ -530,7 +530,7 @@ def extract(
     - Garmin data (JSON format) for specified data types or all available
       types from the GarminDataRegistry when `data_types` is None.
     - FIT activity files (binary format) when `data_types` is None or
-      contains "ACTIVITY".
+      contains "ACTIVITY" or "EXERCISE_SETS".
 
     :param ingest_dir: Directory path where extracted files will be saved.
     :param data_interval_start: Start date for data extraction (ISO string
