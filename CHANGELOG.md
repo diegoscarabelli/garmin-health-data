@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-03-27
+
+### Added
+
+- **Strength training exercise data** ([#11](https://github.com/diegoscarabelli/garmin-health-data/issues/11)): Per-exercise and per-set granular strength training data with two new tables and a new API data source.
+  - `strength_exercise`: Per-exercise aggregates (sets, reps, volume, duration, max weight) derived from `summarizedExerciseSets` in the activities list.
+  - `strength_set`: Per-set granular data (set type, duration, reps, weight, ML-classified exercise name/category) from the `/activity-service/activity/{id}/exerciseSets` API endpoint.
+  - Extraction automatically fetches exercise sets for `strength_training` and `fitness_equipment` activity types alongside FIT file downloads.
+  - Both tables use delete+insert for reprocessing since composite PK components can change.
+  - `EXERCISE_SETS` registered as a new data type in `GarminDataRegistry`.
+  - **Migration**: Seamless. New tables are created automatically on next `garmin extract` (existing data is untouched). To populate historical strength data, re-run extraction for past date ranges containing strength training activities.
+
 ## [2.0.3] - 2026-03-08
 
 ### Fixed
@@ -140,7 +152,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...v2.1.0
 [2.0.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.0...v2.0.1

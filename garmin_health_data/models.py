@@ -810,6 +810,65 @@ class RacePredictions(Base, InsertBase):
     latest = Column(Boolean, nullable=False, default=False)
 
 
+class StrengthExercise(Base, UpsertBase):
+    """
+    Strength training per-exercise aggregates from summarizedExerciseSets.
+
+    Each row represents one exercise type within a strength training activity. Uses
+    delete+insert for reprocessing since exercise names can change.
+    """
+
+    __tablename__ = "strength_exercise"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id"),
+        primary_key=True,
+    )
+    exercise_category = Column(Text, primary_key=True)
+    exercise_name = Column(Text, primary_key=True)
+
+    # Aggregate metrics.
+    sets = Column(Integer)
+    reps = Column(Integer)
+    volume = Column(Float)
+    duration_ms = Column(Float)
+    max_weight = Column(Float)
+
+
+class StrengthSet(Base, UpsertBase):
+    """
+    Per-set granular strength training data from exercise sets API.
+
+    Stores all set types (ACTIVE, REST, WARMUP, DROP_SET, FAILURE). Uses delete+insert
+    for reprocessing since sets can be added or removed.
+    """
+
+    __tablename__ = "strength_set"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id"),
+        primary_key=True,
+    )
+    set_idx = Column(Integer, primary_key=True)
+
+    # Set metadata.
+    set_type = Column(Text, nullable=False)
+    start_time = Column(DateTime(timezone=True))
+    duration = Column(Float)
+    wkt_step_index = Column(Integer)
+
+    # Exercise metrics.
+    repetition_count = Column(Integer)
+    weight = Column(Float)
+
+    # ML exercise classification (from highest-probability entry).
+    exercise_category = Column(Text)
+    exercise_name = Column(Text)
+    exercise_probability = Column(Float)
+
+
 class ActivityTsMetric(Base, InsertBase):
     """
     Time-series metrics extracted from activity FIT files.
