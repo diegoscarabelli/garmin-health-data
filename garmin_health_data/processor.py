@@ -553,13 +553,13 @@ class GarminProcessor(Processor):
         if activity_record:
             activity = Activity(**activity_record)
 
-            # Exclude `ts_data_available` from updates to preserve FIT file processing
-            # flag. This prevents activities list reprocessing from overwriting the
-            # flag set during FIT file processing.
+            # Exclude columns that should not be overwritten on re-runs:
+            # - ts_data_available: set by FIT file processing, not activity list upserts.
+            # - create_ts: audit column, should only reflect initial insert time.
             update_columns = [
                 col.name
                 for col in Activity.__table__.columns
-                if col.name not in ["activity_id", "ts_data_available"]
+                if col.name not in ["activity_id", "ts_data_available", "create_ts"]
             ]
 
             persisted_activity = upsert_model_instances(
@@ -1078,12 +1078,13 @@ class GarminProcessor(Processor):
         # Process to database.
         if sleep_record:
             sleep = Sleep(**sleep_record)
-            # Exclude `sleep_id` (serial primary key) from updates to avoid FK
-            # constraint issues.
+            # Exclude columns that should not be overwritten on re-runs:
+            # - sleep_id: serial primary key, must not change for FK integrity.
+            # - create_ts: audit column, should only reflect initial insert time.
             update_columns = [
                 col.name
                 for col in Sleep.__table__.columns
-                if col.name not in ["user_id", "start_ts", "sleep_id"]
+                if col.name not in ["user_id", "start_ts", "sleep_id", "create_ts"]
             ]
             persisted_sleep = upsert_model_instances(
                 session=session,
@@ -2191,11 +2192,12 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series metrics.
+        Process a FIT file and extract time-series, split, and lap metrics.
 
-        Processes FIT file using fitdecode library, extracts record frames with
-        timestamp and sensor data, and stores metrics in `activity_ts_metric` table.
-        Sets `ts_data_available` flag to True for the corresponding activity.
+        Processes FIT file using fitdecode library, extracts record, split, and lap
+        frames, and stores metrics via delete+insert for idempotent reprocessing.
+        Updates `ts_data_available` flag based on whether time-series records were
+        found.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -2214,7 +2216,7 @@ class GarminProcessor(Processor):
 
         activity_id = int(match.groups()[1])
 
-        # Check if `ts_data_available` is already True for this activity.
+        # Verify activity exists (FIT file requires a parent activity record).
         existing_activity = (
             session.query(Activity).filter(Activity.activity_id == activity_id).first()
         )
@@ -2224,14 +2226,6 @@ class GarminProcessor(Processor):
                 f"Activity {activity_id} not found in database. "
                 f"FIT file processing requires existing activity record."
             )
-
-        # Check if time-series data has already been processed for this activity.
-        if existing_activity.ts_data_available:
-            click.secho(
-                f"⚠️ Time-series data already processed for "
-                f"activity {activity_id}. Skipping: {file_path.name}"
-            )
-            return
 
         # Initialize metric lists and counters.
         ts_metrics = []
@@ -2381,13 +2375,26 @@ class GarminProcessor(Processor):
         # Flush session to ensure foreign key relationships are resolved.
         session.flush()
 
-        # Bulk insert all metrics if any were found.
+        # Delete existing FIT metric rows for this activity before re-inserting.
+        # This handles added/removed laps, splits, or records between reprocesses.
+        session.query(ActivityTsMetric).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
+        session.query(ActivitySplitMetric).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
+        session.query(ActivityLapMetric).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
+
+        # Bulk insert all metrics.
         if ts_metrics:
             session.bulk_save_objects(ts_metrics)
             click.echo(f"Processed {len(ts_metrics)} time-series records.")
-            existing_activity.ts_data_available = True
         else:
             click.secho("⚠️ No time-series data found.", fg="yellow")
+
+        existing_activity.ts_data_available = bool(ts_metrics)
 
         if split_metrics:
             session.bulk_save_objects(split_metrics)

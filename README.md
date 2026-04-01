@@ -118,7 +118,7 @@ If your database has sleep data through Dec 20th but activities only through Dec
 
 This package prevents duplicates through a three-tier approach:
 
-1. **FIT Activity Time-Series**: Tracks processed files with `ts_data_available` flag. Skips already-processed files automatically on re-run.
+1. **FIT Activity Metrics**: Uses delete+insert pattern for time-series, lap, and split metrics. Existing rows are deleted and fresh data re-inserted in the same transaction, handling added/removed laps or records between reprocesses. The `ts_data_available` flag tracks whether time-series data exists.
 2. **JSON Wellness Time-Series**: Uses `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts. Reprocessing the same date won't create duplicates.
 3. **Main Records (activities, sleep)**: Uses `INSERT...ON CONFLICT DO UPDATE` to update existing records with new data.
 
@@ -391,7 +391,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 **garmin-health-data** uses explicit conflict resolution for idempotent reprocessing:
 - **Updatable data** (activities, user profile, training status): Uses `ON CONFLICT UPDATE` to refresh data when reprocessing.
 - **Immutable time-series** (heart rate, sleep movement, stress): Uses `ON CONFLICT DO NOTHING` to prevent duplicates.
-- **FIT activity time-series**: Uses `ts_data_available` flag check to skip reprocessing, preventing duplicate records entirely.
+- **FIT activity metrics** (time-series, laps, splits): Uses delete+insert for idempotent reprocessing. The `ts_data_available` flag tracks time-series data availability.
 - **Latest flags**: Manages `latest=True` flags for `user_profile`, `personal_record`, `race_predictions` to track most recent values.
 - **Referential integrity**: Explicit foreign key relationships with cascade deletes.
 - **Fully idempotent**: Safe to reprocess the same date range multiple times without creating duplicate data.
