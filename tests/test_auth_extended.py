@@ -253,3 +253,28 @@ class TestRefreshTokens:
 
         assert mock_client.resume_login.call_count == 2
         mock_client.garth.dump.assert_called_once()
+
+    @patch("garmin_health_data.auth.Garmin")
+    @patch("click.echo")
+    @patch("click.secho")
+    def test_refresh_tokens_missing_garth_attribute(
+        self,
+        mock_secho: MagicMock,
+        mock_echo: MagicMock,
+        mock_garmin_class: MagicMock,
+    ) -> None:
+        """
+        Test that a clear error is raised when garminconnect lacks garth support.
+
+        :param mock_secho: Mock click.secho function.
+        :param mock_echo: Mock click.echo function.
+        :param mock_garmin_class: Mock Garmin class.
+        """
+        import click
+
+        mock_client = MagicMock(spec=[])  # Empty spec: no attributes at all.
+        mock_client.login = MagicMock(return_value=None)
+        mock_garmin_class.return_value = mock_client
+
+        with pytest.raises(click.ClickException, match="Authentication failed"):
+            refresh_tokens("test@example.com", "password123")
