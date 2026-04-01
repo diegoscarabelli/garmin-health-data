@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Tuple
 
 import click
+import garminconnect as _gc
 from garminconnect import Garmin
 
 
@@ -159,13 +160,20 @@ def refresh_tokens(
                     bold=True,
                 )
 
+        if not hasattr(garmin, "garth"):
+            gc_ver = getattr(_gc, "__version__", "unknown")
+            raise RuntimeError(
+                f"garminconnect {gc_ver} is missing garth support. "
+                "Please upgrade: pip install --upgrade garminconnect"
+            )
+
         if not silent:
             click.echo("💾 Saving authentication tokens...")
 
         # Ensure token directory exists with proper permissions.
         token_path.mkdir(parents=True, exist_ok=True)
         if sys.platform != "win32":
-            token_path.chmod(0o755)
+            token_path.chmod(0o700)
 
         garmin.garth.dump(str(token_path))
 
@@ -183,7 +191,9 @@ def refresh_tokens(
 
     except Exception as e:
         click.echo()
+        gc_ver = getattr(_gc, "__version__", "unknown")
         click.secho(f"❌ Authentication failed: {str(e)}", fg="red", bold=True)
+        click.echo(f"   garminconnect version: {gc_ver}")
         _print_troubleshooting()
         raise click.ClickException("Authentication failed")
 
