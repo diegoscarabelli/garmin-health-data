@@ -282,3 +282,10 @@ class TestRefreshTokens:
             refresh_tokens(
                 "test@example.com", "password123", token_dir=str(tmp_path / "tokens")
             )
+
+        # Verify the garth-specific diagnostic was emitted.
+        secho_messages = " ".join(
+            str(call.args[0]) for call in mock_secho.call_args_list if call.args
+        )
+        assert "missing garth support" in secho_messages
+        assert "upgrade" in secho_messages.lower()
