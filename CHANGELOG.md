@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-04-01
+
+### Fixed
+
+- **Bug**: Authentication fails with `'Garmin' object has no attribute 'garth'` when using older or improperly installed `garminconnect` versions ([#13](https://github.com/diegoscarabelli/garmin-health-data/issues/13)).
+  - Added a `hasattr` guard that checks for the `garth` attribute before accessing it, with a clear error message and upgrade instructions.
+  - Token directory permissions tightened from `0o755` to `0o700`.
+  - Auth failure messages now include the installed `garminconnect` version for easier debugging.
+
+### Added
+
+- Test coverage for the missing `garth` attribute scenario (`test_auth_extended.py`).
+
 ## [2.1.0] - 2026-03-27
 
 ### Added
@@ -152,7 +165,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...v2.1.0
 [2.0.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.1...v2.0.2
