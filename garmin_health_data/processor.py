@@ -48,6 +48,8 @@ from garmin_health_data.models import (
     SleepRestlessMoment,
     SpO2,
     Steps,
+    StrengthExercise,
+    StrengthSet,
     Stress,
     SupplementalActivityMetric,
     SwimmingAggMetrics,
@@ -112,6 +114,7 @@ class GarminProcessor(Processor):
             [
                 ("USER_PROFILE", self._process_user_profile),
                 ("ACTIVITIES_LIST", self._process_activities),
+                ("EXERCISE_SETS", self._process_exercise_sets),
                 ("FLOORS", self._process_floors),
                 ("HEART_RATE", self._process_heart_rate),
                 ("INTENSITY_MINUTES", self._process_intensity_minutes),
@@ -398,6 +401,11 @@ class GarminProcessor(Processor):
             self._process_cycling_metrics(activity_data, activity_id, session)
         elif "swimming" in activity_type_key:
             self._process_swimming_metrics(activity_data, activity_id, session)
+        elif activity_type_key in (
+            "strength_training",
+            "fitness_equipment",
+        ):
+            self._process_strength_metrics(activity_data, activity_id, session)
 
         # Process supplemental metrics from remaining fields.
         self._process_supplemental_metrics(activity_data, activity_id, session)
@@ -779,6 +787,171 @@ class GarminProcessor(Processor):
             click.echo("Processed running metrics.")
         else:
             click.secho("⚠️ No running metrics found.", fg="yellow")
+
+    def _process_strength_metrics(
+        self,
+        activity_data: Dict[str, Any],
+        activity_id: int,
+        session: Session,
+    ):
+        """
+        Process strength training per-exercise aggregates.
+
+        Pops summarizedExerciseSets and related scalars from activity_data to prevent
+        supplemental leakage. Uses delete+insert for reprocessing since exercise names
+        can change.
+
+        :param activity_data: Activity data from JSON (modified by pop()).
+        :param activity_id: Activity ID for foreign key reference.
+        :param session: SQLAlchemy Session object.
+        """
+
+        # Pop strength-specific fields to prevent supplemental
+        # leakage.
+        summarized_sets = activity_data.pop("summarizedExerciseSets", None)
+        activity_data.pop("totalSets", None)
+        activity_data.pop("activeSets", None)
+        activity_data.pop("totalReps", None)
+
+        # Always delete existing rows for reprocessing (cleans
+        # stale data even when the activity no longer has exercise
+        # sets).
+        session.query(StrengthExercise).filter_by(activity_id=activity_id).delete()
+
+        if not summarized_sets:
+            click.echo("No summarized exercise sets found for strength " "activity.")
+            return
+
+        # Map each exercise entry to a StrengthExercise record.
+        exercise_records = []
+        for exercise in summarized_sets:
+            category = exercise.get("category")
+            name = exercise.get("subCategory")
+
+            # Skip entries missing PK fields (avoids NOT NULL
+            # violation and PK collision from multiple unknowns).
+            if not category or not name:
+                click.secho(
+                    f"⚠️ Skipping exercise with missing "
+                    f"category/name for activity "
+                    f"{activity_id}.",
+                    fg="yellow",
+                )
+                continue
+
+            record = StrengthExercise(
+                activity_id=activity_id,
+                exercise_category=category,
+                exercise_name=name,
+                sets=exercise.get("sets"),
+                reps=exercise.get("reps"),
+                volume=exercise.get("volume"),
+                duration_ms=exercise.get("duration"),
+                max_weight=exercise.get("maxWeight"),
+            )
+            exercise_records.append(record)
+
+        if exercise_records:
+            session.add_all(exercise_records)
+            click.echo(
+                f"Processed {len(exercise_records)} strength " f"exercise aggregates."
+            )
+
+    def _process_exercise_sets(self, file_path: Path, session: Session):
+        """
+        Process per-set granular exercise data from exercise sets API.
+
+        Uses delete+insert for reprocessing since sets can be added or removed.
+
+        :param file_path: Path to the EXERCISE_SETS JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        activity_id = data.get("activityId")
+        exercise_sets = data.get("exerciseSets")
+
+        if not activity_id:
+            click.secho(
+                f"⚠️ No activityId in {file_path.name}.",
+                fg="yellow",
+            )
+            return
+
+        # Always delete existing rows for reprocessing (cleans
+        # stale data even when the activity no longer has exercise
+        # sets).
+        session.query(StrengthSet).filter_by(activity_id=activity_id).delete()
+
+        if not exercise_sets:
+            click.echo(
+                f"No exercise sets for activity {activity_id} " f"in {file_path.name}."
+            )
+            return
+
+        # Map each set to a StrengthSet record.
+        set_records = []
+        for exercise_set in exercise_sets:
+            # Skip sets with no messageIndex (required for PK).
+            if exercise_set.get("messageIndex") is None:
+                click.secho(
+                    f"⚠️ Skipping exercise set with no "
+                    f"messageIndex for activity "
+                    f"{activity_id}.",
+                    fg="yellow",
+                )
+                continue
+
+            # Parse start time to timezone-aware datetime.
+            # Normalize trailing 'Z' (UTC) for Python 3.9
+            # datetime.fromisoformat compatibility.
+            start_time_str = exercise_set.get("startTime")
+            start_time = None
+            if start_time_str:
+                if start_time_str.endswith("Z"):
+                    start_time_str = start_time_str[:-1] + "+00:00"
+                start_time = datetime.fromisoformat(start_time_str).replace(
+                    tzinfo=timezone.utc
+                )
+
+            # Pick highest-probability exercise from exercises
+            # array.
+            exercises = exercise_set.get("exercises", [])
+            exercise_category = None
+            exercise_name = None
+            exercise_probability = None
+            if exercises:
+                best = max(
+                    exercises,
+                    key=lambda e: e.get("probability", 0),
+                )
+                exercise_category = best.get("category")
+                exercise_name = best.get("name")
+                exercise_probability = best.get("probability")
+
+            record = StrengthSet(
+                activity_id=activity_id,
+                set_idx=exercise_set.get("messageIndex"),
+                set_type=(exercise_set.get("setType") or "UNKNOWN"),
+                start_time=start_time,
+                duration=exercise_set.get("duration"),
+                wkt_step_index=exercise_set.get("wktStepIndex"),
+                repetition_count=exercise_set.get("repetitionCount"),
+                weight=exercise_set.get("weight"),
+                exercise_category=exercise_category,
+                exercise_name=exercise_name,
+                exercise_probability=exercise_probability,
+            )
+            set_records.append(record)
+
+        if set_records:
+            session.add_all(set_records)
+            click.echo(
+                f"Processed {len(set_records)} exercise sets "
+                f"for activity {activity_id}."
+            )
 
     def _process_supplemental_metrics(
         self, activity_data: Dict[str, Any], activity_id: int, session: Session

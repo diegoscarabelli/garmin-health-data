@@ -18,6 +18,7 @@ from garmin_health_data.auth import (
     refresh_tokens,
 )
 from garmin_health_data.db import (
+    create_tables,
     database_exists,
     get_database_size,
     get_last_update_dates,
@@ -102,12 +103,16 @@ def extract(
     # Ensure authenticated.
     ensure_authenticated()
 
-    # Initialize database if it doesn't exist.
+    # Initialize or migrate database schema.
     if not database_exists(db_path):
         click.echo()
         click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
         initialize_database(db_path)
         click.echo()
+    else:
+        # Idempotent migration: creates new tables if schema was
+        # updated, existing tables are untouched.
+        create_tables(db_path)
 
     # Auto-detect start date if not provided.
     if start_date is None:

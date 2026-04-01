@@ -159,8 +159,18 @@ class GarminDataRegistry:
                 "get_activities_by_date",
                 APIMethodTimeParam.RANGE,
                 "/activitylist-service/activities/search/activities",
-                "Numerous aggregated metrics for user-recorded activities.",
+                "Numerous aggregated metrics for user-recorded " "activities.",
                 "📋",
+            ),
+            GarminDataType(
+                "EXERCISE_SETS",
+                "get_activity_exercise_sets",
+                APIMethodTimeParam.RANGE,
+                "/activity-service/activity/" "{activity_id}/exerciseSets",
+                "Per-set granular strength training data with "
+                "ML-classified exercises, reps, weight, duration, "
+                "and set type.",
+                "💪",
             ),
             # No Date Data - No date parameters: get_method()
             # In case of backfilling, comment out PERSONAL_RECORD data type, since PRs
