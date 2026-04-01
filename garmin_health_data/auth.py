@@ -160,20 +160,20 @@ def refresh_tokens(
                     bold=True,
                 )
 
-        if not silent:
-            click.echo("💾 Saving authentication tokens...")
-
-        # Ensure token directory exists with proper permissions.
-        token_path.mkdir(parents=True, exist_ok=True)
-        if sys.platform != "win32":
-            token_path.chmod(0o755)
-
         if not hasattr(garmin, "garth"):
             gc_ver = getattr(_gc, "__version__", "unknown")
             raise RuntimeError(
                 f"garminconnect {gc_ver} is missing garth support. "
                 "Please upgrade: pip install --upgrade garminconnect"
             )
+
+        if not silent:
+            click.echo("💾 Saving authentication tokens...")
+
+        # Ensure token directory exists with proper permissions.
+        token_path.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            token_path.chmod(0o700)
 
         garmin.garth.dump(str(token_path))
 

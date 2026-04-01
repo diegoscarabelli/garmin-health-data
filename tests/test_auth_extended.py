@@ -262,6 +262,7 @@ class TestRefreshTokens:
         mock_secho: MagicMock,
         mock_echo: MagicMock,
         mock_garmin_class: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """
         Test that a clear error is raised when garminconnect lacks garth support.
@@ -269,6 +270,7 @@ class TestRefreshTokens:
         :param mock_secho: Mock click.secho function.
         :param mock_echo: Mock click.echo function.
         :param mock_garmin_class: Mock Garmin class.
+        :param tmp_path: Pytest temporary directory fixture.
         """
         import click
 
@@ -277,4 +279,6 @@ class TestRefreshTokens:
         mock_garmin_class.return_value = mock_client
 
         with pytest.raises(click.ClickException, match="Authentication failed"):
-            refresh_tokens("test@example.com", "password123")
+            refresh_tokens(
+                "test@example.com", "password123", token_dir=str(tmp_path / "tokens")
+            )
