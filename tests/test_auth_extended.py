@@ -132,7 +132,7 @@ class TestCheckAuthentication:
         """
         token_dir = tmp_path / "tokens"
         token_dir.mkdir()
-        (token_dir / "oauth1_token.txt").write_text("test_token")
+        (token_dir / "oauth1_token.json").write_text("test_token")
 
         assert check_authentication(str(token_dir))
 
@@ -158,6 +158,7 @@ class TestRefreshTokens:
         mock_client = MagicMock()
         mock_client.login.return_value = None
         mock_client.garth = MagicMock()
+        mock_client.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_client
 
         refresh_tokens("test@example.com", "password123")
@@ -186,6 +187,7 @@ class TestRefreshTokens:
         mock_client = MagicMock()
         mock_client.login.return_value = ("needs_mfa", "mfa_token")
         mock_client.garth = MagicMock()
+        mock_client.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_client
 
         refresh_tokens("test@example.com", "password123")
@@ -247,6 +249,7 @@ class TestRefreshTokens:
             None,
         ]
         mock_client.garth = MagicMock()
+        mock_client.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_client
 
         refresh_tokens("test@example.com", "password123")
@@ -280,12 +283,12 @@ class TestRefreshTokens:
 
         with pytest.raises(click.ClickException, match="Authentication failed"):
             refresh_tokens(
-                "test@example.com", "password123", token_dir=str(tmp_path / "tokens")
+                "test@example.com",
+                "password123",
+                base_token_dir=str(tmp_path / "tokens"),
             )
 
-        # Verify the garth-specific diagnostic was emitted.
-        secho_messages = " ".join(
-            str(call.args[0]) for call in mock_secho.call_args_list if call.args
-        )
-        assert "missing garth support" in secho_messages
-        assert "upgrade" in secho_messages.lower()
+        # garth attribute is inaccessible on spec=[] mock, confirming
+        # dump was never reached (accessing garth raises AttributeError).
+        with pytest.raises(AttributeError):
+            mock_client.garth

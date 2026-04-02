@@ -8,7 +8,7 @@ Authentication (MFA) support.
 import os
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 import click
 import garminconnect as _gc
@@ -108,31 +108,93 @@ def _print_troubleshooting() -> None:
     click.echo()
 
 
+def discover_accounts(
+    base_token_dir: str = "~/.garminconnect",
+) -> List[Tuple[str, Path]]:
+    """
+    Discover Garmin Connect accounts by scanning token subdirectories.
+
+    Each numeric subdirectory in the base token directory represents a user_id with
+    saved OAuth tokens.
+
+    :param base_token_dir: Base directory containing per-account token subdirectories.
+    :return: Sorted list of (user_id, token_dir_path) tuples.
+    :raises FileNotFoundError: If base directory does not exist.
+    :raises NotADirectoryError: If base path is not a directory.
+    :raises RuntimeError: If no accounts are found.
+    """
+    base_path = Path(base_token_dir).expanduser()
+
+    if not base_path.exists():
+        raise FileNotFoundError(f"Token directory does not exist: {base_path}")
+
+    if not base_path.is_dir():
+        raise NotADirectoryError(f"Token path is not a directory: {base_path}")
+
+    # Scan for numeric subdirectories that contain token files.
+    accounts = [
+        (entry.name, entry)
+        for entry in sorted(base_path.iterdir())
+        if entry.is_dir() and entry.name.isdigit() and any(entry.iterdir())
+    ]
+
+    if accounts:
+        return accounts
+
+    # Legacy fallback: check for token files at root level.
+    token_files = list(base_path.glob("*token*.json"))
+    if token_files:
+        click.secho(
+            "Warning: Found legacy token layout (tokens at root level). "
+            "Run 'garmin auth' to migrate to per-account subdirectories.",
+            fg="yellow",
+        )
+        return [("legacy", base_path)]
+
+    raise RuntimeError(
+        f"No accounts found in {base_path}. " "Run 'garmin auth' to authenticate."
+    )
+
+
 def refresh_tokens(
     email: str,
     password: str,
-    token_dir: str = "~/.garminconnect",
+    base_token_dir: str = "~/.garminconnect",
     silent: bool = False,
 ) -> None:
     """
     Refresh Garmin Connect tokens with MFA support.
 
+    Authenticates the user, auto-detects their Garmin user ID, and stores tokens in a
+    per-account subdirectory under base_token_dir.
+
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
-    :param token_dir: Directory to store tokens.
+    :param base_token_dir: Base directory for per-account token storage.
     :param silent: If True, suppress non-essential output.
     """
-    token_path = Path(token_dir).expanduser()
+    base_path = Path(base_token_dir).expanduser()
 
     if not silent:
         click.echo()
         click.echo(click.style("🔄 Authenticating with Garmin Connect...", fg="cyan"))
-        click.echo(f"   Token storage: {token_path}")
+        click.echo(f"   Token storage: {base_path}")
         click.echo()
 
     try:
         # Initialize Garmin client with MFA support.
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
+
+        # Override User-Agent to avoid SSO blocks.
+        garmin.garth.sess.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                )
+            }
+        )
 
         # Attempt login.
         login_result = garmin.login()
@@ -167,19 +229,39 @@ def refresh_tokens(
                 "Please upgrade: pip install --upgrade garminconnect"
             )
 
+        # Auto-detect user ID from profile.
+        user_id = garmin.get_user_profile().get("id")
+        if not user_id:
+            raise RuntimeError(
+                "Could not determine user ID from Garmin profile. "
+                "The 'id' field was missing from get_user_profile() response."
+            )
+
         if not silent:
+            click.echo(f"👤 Detected user ID: {user_id}")
             click.echo("💾 Saving authentication tokens...")
 
-        # Ensure token directory exists with proper permissions.
-        token_path.mkdir(parents=True, exist_ok=True)
+        # Ensure base and per-account token directories exist with proper permissions.
+        base_path.mkdir(parents=True, exist_ok=True)
+        if sys.platform != "win32":
+            base_path.chmod(0o700)
+
+        token_path = base_path / str(user_id)
+        token_path.mkdir(exist_ok=True)
         if sys.platform != "win32":
             token_path.chmod(0o700)
 
         garmin.garth.dump(str(token_path))
 
+        # Lock down token files to owner-only (garth.dump uses default umask).
+        if sys.platform != "win32":
+            for token_file in token_path.iterdir():
+                token_file.chmod(0o600)
+
         if not silent:
             click.echo()
             click.secho("✅ Tokens successfully saved!", fg="green", bold=True)
+            click.echo(f"   User ID:  {user_id}")
             click.echo(f"   Location: {token_path}")
             click.echo()
             click.secho(
@@ -198,35 +280,38 @@ def refresh_tokens(
         raise click.ClickException("Authentication failed")
 
 
-def check_authentication(token_dir: str = "~/.garminconnect") -> bool:
+def check_authentication(base_token_dir: str = "~/.garminconnect") -> bool:
     """
-    Check if valid authentication tokens exist.
+    Check if valid authentication tokens exist for at least one account.
 
-    :param token_dir: Directory where tokens are stored.
-    :return: True if tokens exist, False otherwise.
+    :param base_token_dir: Base directory where per-account tokens are stored.
+    :return: True if at least one account has tokens, False otherwise.
     """
-    token_path = Path(token_dir).expanduser()
+    base_path = Path(base_token_dir).expanduser()
 
-    # Check if token directory exists and has files.
-    if not token_path.exists():
+    if not base_path.exists():
         return False
 
-    # The Garth library stores tokens in this directory.
-    # If the directory exists and is not empty, assume we have tokens.
-    return any(token_path.iterdir())
+    # Check for per-account subdirectories with tokens.
+    for entry in base_path.iterdir():
+        if entry.is_dir() and entry.name.isdigit() and any(entry.iterdir()):
+            return True
+
+    # Legacy fallback: check for token files at root level.
+    return any(base_path.glob("*token*.json"))
 
 
-def ensure_authenticated(token_dir: str = "~/.garminconnect") -> None:
+def ensure_authenticated(base_token_dir: str = "~/.garminconnect") -> None:
     """
     Ensure user is authenticated, prompt for credentials if not.
 
-    :param token_dir: Directory where tokens are stored.
+    :param base_token_dir: Base directory where per-account tokens are stored.
     :raises click.ClickException: If authentication fails.
     """
-    if not check_authentication(token_dir):
+    if not check_authentication(base_token_dir):
         click.echo()
         click.secho(
-            "⚠️  No authentication tokens found. Please authenticate first.",
+            "No authentication tokens found. Please authenticate first.",
             fg="yellow",
             bold=True,
         )
@@ -234,7 +319,7 @@ def ensure_authenticated(token_dir: str = "~/.garminconnect") -> None:
 
         if click.confirm("Would you like to authenticate now?", default=True):
             email, password = get_credentials()
-            refresh_tokens(email, password, token_dir)
+            refresh_tokens(email, password, base_token_dir)
         else:
             raise click.ClickException(
                 "Authentication required. Run 'garmin auth' to authenticate."
