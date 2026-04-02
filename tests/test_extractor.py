@@ -310,7 +310,7 @@ class TestExtractFunctionExerciseSets:
 
         # Verify authenticate is called with the discovered token dir.
         mock_extractor.authenticate.assert_called_once_with(
-            token_store_dir="/fake/token/dir"
+            token_store_dir=str(Path("/fake/token/dir"))
         )
 
 
@@ -342,8 +342,8 @@ class TestExtractMultiAccount:
 
         # Verify each account gets its own token_store_dir.
         calls = mock_extractor.authenticate.call_args_list
-        assert calls[0].kwargs["token_store_dir"] == "/tokens/11111111"
-        assert calls[1].kwargs["token_store_dir"] == "/tokens/22222222"
+        assert calls[0].kwargs["token_store_dir"] == str(Path("/tokens/11111111"))
+        assert calls[1].kwargs["token_store_dir"] == str(Path("/tokens/22222222"))
 
         assert result["garmin_files"] == 2
         assert result["activity_files"] == 2
