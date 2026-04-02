@@ -81,10 +81,10 @@ Tokens are stored in per-account subdirectories:
 
 ```text
 ~/.garminconnect/
-├── 15007510/    # Account 1 tokens
+├── 12345678/    # Account 1 tokens
 │   ├── oauth1_token.json
 │   └── oauth2_token.json
-└── 63923507/    # Account 2 tokens
+└── 87654321/    # Account 2 tokens
     ├── oauth1_token.json
     └── oauth2_token.json
 ```
@@ -107,8 +107,8 @@ garmin extract --data-types SLEEP --data-types HEART_RATE --data-types ACTIVITY
 garmin extract --db-path ~/my-garmin-data.db
 
 # Extract only specific accounts (multi-account setup)
-garmin extract --accounts 15007510
-garmin extract --accounts 15007510,63923507
+garmin extract --accounts 12345678
+garmin extract --accounts 12345678,87654321
 ```
 
 #### Date Range Behavior
