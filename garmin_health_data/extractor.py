@@ -114,12 +114,12 @@ class GarminExtractor:
         except Exception as e:
             error_msg = (
                 f"Garmin authentication failed: {str(e)}\n\n"
-                "To resolve this issue, run the token refresh script:\n"
-                "   python refresh_garmin_tokens.py\n\n"
-                "This script will:\n"
+                "To resolve this issue, run:\n"
+                "   garmin auth\n\n"
+                "This will:\n"
                 "   - Guide you through Garmin Connect login.\n"
                 "   - Handle MFA if enabled on your account.\n"
-                "   - Save fresh tokens for pipeline use.\n\n"
+                "   - Save fresh tokens for future use.\n\n"
                 f"Expected token location: {token_store_path}."
             )
             click.secho(error_msg, fg="red")
@@ -509,46 +509,32 @@ def extract(
     data_interval_start: Union[str, pendulum.DateTime],
     data_interval_end: Union[str, pendulum.DateTime],
     data_types: Optional[List[str]] = None,
+    accounts: Optional[List[str]] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, int]:
     """
     Download data from Garmin Connect for the specified date range.
 
-    Files are saved with standardized naming conventions to the specified
-    directory for downstream processing.
-
-    Authentication uses pre-existing tokens. If authentication fails, run
-    refresh_garmin_tokens.py to obtain fresh tokens.
-
-    Date ranges:
-    Extract data with end date exclusion only if the start date is different
-    from the end date. This ensures that when dates differ, we use exclusive
-    end date logic, but when they are the same, we process the most recent
-    data inclusively.
-
-    The extraction includes:
-    - Garmin data (JSON format) for specified data types or all available
-      types from the GarminDataRegistry when `data_types` is None.
-    - FIT activity files (binary format) when `data_types` is None or
-      contains "ACTIVITY" or "EXERCISE_SETS".
+    Supports multiple Garmin Connect accounts. Accounts are discovered automatically by
+    scanning subdirectories in ~/.garminconnect/, where each subdirectory is named by
+    the Garmin user ID and contains authentication tokens.
 
     :param ingest_dir: Directory path where extracted files will be saved.
-    :param data_interval_start: Start date for data extraction (ISO string
-        or datetime).
-    :param data_interval_end: End date for data extraction (ISO string or
-        datetime).
-    :param data_types: Optional list of data type names to extract (e.g.,
-        ['SLEEP', 'HRV', 'USER_PROFILE', 'ACTIVITY'], provided in
-        constants.GarminDataRegistry). If None, extracts all available data
-        types including FIT activity files. If empty list [], skip
-        extraction.
-    :param progress_callback: Optional callback function for progress
-        updates.
+    :param data_interval_start: Start date for data extraction (ISO string or datetime).
+    :param data_interval_end: End date for data extraction (ISO string or datetime).
+    :param data_types: Optional list of data type names to extract. If None, extracts
+        all available data types including FIT activity files.
+    :param accounts: Optional list of user_id strings to filter which accounts to
+        extract. If None, extracts all discovered accounts.
+    :param progress_callback: Optional callback function for progress updates.
     :return: Dictionary with counts of extracted files {'garmin_files': int,
         'activity_files': int}.
-    :raises ValueError: If any requested data type names are not found in
-        registry.
+    :raises ValueError: If any requested data type names are not found in registry, or
+        if accounts filter is not a list.
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
 
     # Validate input parameters.
     if data_types is not None and len(data_types) == 0:
@@ -559,8 +545,14 @@ def extract(
         click.echo(error_msg)
         return {"garmin_files": 0, "activity_files": 0}
 
+    # Validate accounts filter.
+    if accounts is not None and not isinstance(accounts, (list, tuple)):
+        raise ValueError(
+            f"accounts must be a list or tuple, got {type(accounts).__name__}. "
+            "Example: ['12345678', '87654321']"
+        )
+
     # Convert datetime objects or strings to date-only for Garmin API calls.
-    # This ensures the API receives dates in YYYY-MM-DD format.
     if isinstance(data_interval_start, str):
         start_date = pendulum.parse(data_interval_start).date()
     else:
@@ -578,54 +570,110 @@ def extract(
     else:
         end_date = original_end_date  # Inclusive logic for same-day.
 
-    # Initialize extractor and authenticate.
-    extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
-    extractor.authenticate()
+    # Discover accounts.
+    from garmin_health_data.auth import discover_accounts
 
-    # Extract Garmin data.
-    if progress_callback:
-        progress_callback("Extracting Garmin data...")
-    garmin_files = extractor.extract_garmin_data()
-
-    # Extract FIT activity files (if requested in data_types or data_types
-    # is None).
-    activity_files = []
-    if data_types is None or (
-        data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
-    ):
-        if progress_callback:
-            progress_callback("Extracting FIT activity files...")
-        activity_files = extractor.extract_fit_activities()
-
-    # Check if any data was extracted.
-    if not garmin_files and not activity_files:
-        click.echo(
-            "No Garmin Connect data found for extraction. " "Skipping downstream tasks."
+    try:
+        discovered = discover_accounts()
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as e:
+        click.secho(
+            f"Account discovery failed: {e}\n"
+            "Run 'garmin auth' to set up your Garmin account(s).",
+            fg="red",
         )
         return {"garmin_files": 0, "activity_files": 0}
 
+    # Apply account filter if provided.
+    if accounts is not None:
+        filter_set = set(accounts)
+        discovered = [(uid, path) for uid, path in discovered if uid in filter_set]
+        if not discovered:
+            click.secho(
+                f"No matching accounts found for filter: {accounts}",
+                fg="yellow",
+            )
+            return {"garmin_files": 0, "activity_files": 0}
+
+    click.echo(f"Found {len(discovered)} account(s) to extract.")
+
+    # Extract from each account with error isolation.
+    all_garmin_files = []
+    all_activity_files = []
+    failed_accounts = []
+
+    for user_id, token_dir in discovered:
+        try:
+            click.echo()
+            click.echo(
+                click.style(f"Extracting data for account {user_id}...", fg="cyan")
+            )
+
+            extractor = GarminExtractor(start_date, end_date, ingest_dir, data_types)
+            extractor.authenticate(token_store_dir=str(token_dir))
+
+            # Extract Garmin data.
+            if progress_callback:
+                progress_callback(f"Extracting Garmin data for account {user_id}...")
+            garmin_files = extractor.extract_garmin_data()
+
+            # Extract FIT activity files (if requested).
+            activity_files = []
+            if data_types is None or (
+                data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
+            ):
+                if progress_callback:
+                    progress_callback(
+                        f"Extracting FIT activity files for account {user_id}..."
+                    )
+                activity_files = extractor.extract_fit_activities()
+
+            all_garmin_files.extend(garmin_files)
+            all_activity_files.extend(activity_files)
+
+        except Exception:
+            logger.exception(
+                f"Account {user_id} failed. Continuing with remaining accounts."
+            )
+            click.secho(
+                f"Account {user_id} failed. Continuing with remaining accounts.",
+                fg="red",
+            )
+            failed_accounts.append(user_id)
+
+    # Check if any data was extracted.
+    if not all_garmin_files and not all_activity_files:
+        click.echo(
+            "No Garmin Connect data found for extraction. Skipping downstream tasks."
+        )
+        return {"garmin_files": 0, "activity_files": 0}
+
+    # Summary.
     activity_summary = (
-        "\n".join([f"      • {file.name}" for file in activity_files])
-        if activity_files
+        "\n".join([f"      - {file.name}" for file in all_activity_files])
+        if all_activity_files
         else "      (none)"
     )
     garmin_summary = (
-        "\n".join([f"      • {file.name}" for file in garmin_files])
-        if garmin_files
+        "\n".join([f"      - {file.name}" for file in all_garmin_files])
+        if all_garmin_files
         else "      (none)"
     )
     click.echo(
-        f"Extraction Summary:\n"
+        f"\nExtraction Summary:\n"
+        f"   Accounts processed: {len(discovered) - len(failed_accounts)}/{len(discovered)}\n"
         f"   Saved to: {ingest_dir}\n"
-        f"   FIT activity files (total: {len(activity_files)}):\n"
+        f"   FIT activity files (total: {len(all_activity_files)}):\n"
         f"{activity_summary}\n"
-        f"   Garmin data files (total: {len(garmin_files)}):\n"
+        f"   Garmin data files (total: {len(all_garmin_files)}):\n"
         f"{garmin_summary}"
     )
 
+    if failed_accounts:
+        click.secho(f"   Failed accounts: {failed_accounts}", fg="red")
+
     return {
-        "garmin_files": len(garmin_files),
-        "activity_files": len(activity_files),
+        "garmin_files": len(all_garmin_files),
+        "activity_files": len(all_activity_files),
     }
 
 
@@ -634,29 +682,25 @@ def cli_extract(
     start_date: str,
     end_date: str,
     data_types: List[str] = None,
+    accounts: Optional[List[str]] = None,
 ) -> None:
     """
     CLI wrapper for extract function.
 
     :param ingest_dir: Directory path where extracted files will be saved.
-    :param start_date: Start date for data extraction in YYYY-MM-DD format.
-    :param end_date: End date for data extraction in YYYY-MM-DD format (exclusive).
-    :param data_types: Optional list of data type names to extract (e.g., ['SLEEP',
-        'HRV', 'USER_PROFILE', 'ACTIVITY'], provided in constants.GarminDataRegistry).
-        If None, extracts all available data types including FIT activity files.
+    :param start_date: Start date in YYYY-MM-DD format.
+    :param end_date: End date in YYYY-MM-DD format (exclusive).
+    :param data_types: Optional list of data type names to extract.
+    :param accounts: Optional list of user_id strings to filter accounts.
     """
-
-    # Convert string dates to pendulum datetime objects.
     start_pendulum = pendulum.parse(start_date, tz="UTC")
     end_pendulum = pendulum.parse(end_date, tz="UTC")
-
-    # Convert string path to Path object.
     ingest_path = Path(ingest_dir)
 
-    # Direct call to extract function.
     extract(
         ingest_dir=ingest_path,
         data_interval_start=start_pendulum,
         data_interval_end=end_pendulum,
         data_types=data_types,
+        accounts=accounts,
     )

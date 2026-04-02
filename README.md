@@ -9,6 +9,7 @@ Extract your complete Garmin Connect health and activity data to a local SQLite 
 - 💾 **Local Storage**: SQLite database - your data stays on your machine.
 - 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics.
 - 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data.
+- 👥 **Multi-Account**: Extract data from multiple Garmin Connect accounts into a single database.
 - 🔄 **Auto-Resume**: Automatically detects last update and syncs new data.
 
 ## Requirements
@@ -32,7 +33,7 @@ pip install garmin-health-data
 garmin auth
 ```
 
-You'll be prompted for your Garmin Connect email and password. Your credentials are used only to obtain OAuth tokens, which are stored locally in `~/.garminconnect/`.
+You'll be prompted for your Garmin Connect email and password. Your credentials are used only to obtain OAuth tokens. After login, your Garmin user ID is auto-detected and tokens are stored in `~/.garminconnect/<user_id>/`.
 
 ### Extract Your Data
 
@@ -51,17 +52,44 @@ That's it! Your data is now in a local SQLite database (`garmin_data.db`).
 ### Authentication
 
 ```bash
-# Interactive authentication (one-time setup)
+# Interactive authentication (one-time setup, run once per account)
 garmin auth
 
 # If you have MFA enabled, you'll be prompted for your code
 ```
 
 - `garmin auth` always performs a fresh login and refreshes your OAuth tokens, even if valid tokens already exist.
-- Tokens are stored locally in `~/.garminconnect/` and are valid for approximately 1 year.
-- You typically only need to run `garmin auth` once initially or when tokens expire.
+- After login, your Garmin user ID is auto-detected and tokens are stored in `~/.garminconnect/<user_id>/`.
+- Tokens are valid for approximately 1 year.
+- You typically only need to run `garmin auth` once per account initially or when tokens expire.
 - `garmin extract` automatically checks for existing tokens and only prompts for authentication if they're missing.
-- **Recommendation:** Run `garmin auth` once for initial setup, then just use `garmin extract` for regular data extraction.
+- **Recommendation:** Run `garmin auth` once per account for initial setup, then just use `garmin extract` for regular data extraction.
+
+#### Multi-Account Support
+
+You can extract data from multiple Garmin Connect accounts (e.g., family members) into the same database. Run `garmin auth` once for each account:
+
+```bash
+# Authenticate first account
+garmin auth --email user1@example.com --password pass1
+
+# Authenticate second account
+garmin auth --email user2@example.com --password pass2
+```
+
+Tokens are stored in per-account subdirectories:
+
+```text
+~/.garminconnect/
+├── 15007510/    # Account 1 tokens
+│   ├── oauth1_token.json
+│   └── oauth2_token.json
+└── 63923507/    # Account 2 tokens
+    ├── oauth1_token.json
+    └── oauth2_token.json
+```
+
+Accounts are discovered automatically by scanning for numeric subdirectories. All discovered accounts are extracted sequentially when running `garmin extract`, with per-account error isolation (one failing account doesn't block others).
 
 ### Data Extraction
 
@@ -77,6 +105,10 @@ garmin extract --data-types SLEEP --data-types HEART_RATE --data-types ACTIVITY
 
 # Use custom database location
 garmin extract --db-path ~/my-garmin-data.db
+
+# Extract only specific accounts (multi-account setup)
+garmin extract --accounts 15007510
+garmin extract --accounts 15007510,63923507
 ```
 
 #### Date Range Behavior
@@ -287,7 +319,7 @@ race_predictions (predicted race times)
 
 ## Privacy & Security
 
-- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens via [garth](https://github.com/matin/garth), stored locally in `~/.garminconnect/`.
+- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens via [garth](https://github.com/matin/garth), stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
 - **All data stays on your machine**: no cloud services involved.
 - **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API using the wrapper [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
 

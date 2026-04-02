@@ -91,11 +91,19 @@ def auth(email: Optional[str], password: Optional[str]):
     default="garmin_data.db",
     help="Path to SQLite database file.",
 )
+@click.option(
+    "--accounts",
+    multiple=True,
+    help="Garmin user IDs to extract (comma-separated or repeated). "
+    "Examples: --accounts 123,456 or --accounts 123 --accounts 456. "
+    "Extracts all discovered accounts if not specified.",
+)
 def extract(
     start_date: Optional[datetime],
     end_date: Optional[datetime],
     data_types: tuple,
     db_path: str,
+    accounts: tuple,
 ):
     """
     Extract Garmin Connect data and save to SQLite database.
@@ -146,11 +154,22 @@ def extract(
 
     # Convert data_types tuple to list (or None for all).
     data_types_list = list(data_types) if data_types else None
+    # Flatten comma-separated account IDs (e.g. --accounts 123,456).
+    accounts_list = (
+        [a.strip() for raw in accounts for a in raw.split(",") if a.strip()]
+        if accounts
+        else None
+    )
 
     if data_types_list:
         click.echo(f"📊 Extracting data types: {', '.join(data_types_list)}")
     else:
         click.echo("📊 Extracting all available data types")
+
+    if accounts_list:
+        click.echo(f"👤 Filtering accounts: {', '.join(accounts_list)}")
+    else:
+        click.echo("👤 Extracting all discovered accounts")
 
     click.echo(
         f"📆 Date range: {format_date(start_date.date())} to "
@@ -178,6 +197,7 @@ def extract(
             data_interval_start=format_date(start_date.date()),
             data_interval_end=format_date(end_date.date()),
             data_types=data_types_list,
+            accounts=accounts_list,
         )
 
         garmin_files = result.get("garmin_files", 0)
@@ -226,32 +246,37 @@ def extract(
                 r"\d{4}-\d{2}-\d{2}T\d{2}[:\-]\d{2}[:\-]\d{2}"
                 r"(?:\.\d{1,6})?(?:[+-]\d{2}[:\-]\d{2}|Z)?"
             )
-            files_by_timestamp = OrderedDict()
+            files_by_key = OrderedDict()
 
             for file_path in file_paths:
-                # Extract timestamp from filename
+                # Extract user_id from filename prefix (before first underscore).
+                parts = file_path.name.split("_", maxsplit=1)
+                user_id_prefix = parts[0] if len(parts) > 1 else "unknown"
+
+                # Extract timestamp from filename.
                 match = re.search(timestamp_regex, file_path.name)
                 if match:
                     timestamp_str = match.group(0)
-                    if timestamp_str not in files_by_timestamp:
-                        files_by_timestamp[timestamp_str] = []
-                    files_by_timestamp[timestamp_str].append(file_path)
+                    key = (user_id_prefix, timestamp_str)
+                    if key not in files_by_key:
+                        files_by_key[key] = []
+                    files_by_key[key].append(file_path)
                 else:
                     click.secho(
-                        f"⚠️  No timestamp found in filename: {file_path.name}",
+                        f"No timestamp found in filename: {file_path.name}",
                         fg="yellow",
                     )
 
-            # Sort by timestamp to process chronologically
-            files_by_timestamp = OrderedDict(sorted(files_by_timestamp.items()))
+            # Sort by key (user_id, timestamp) to process in order.
+            files_by_key = OrderedDict(sorted(files_by_key.items()))
 
             # Log how many FileSets will be processed
-            num_filesets = len(files_by_timestamp)
+            num_filesets = len(files_by_key)
             click.echo()
             plural = "s" if num_filesets != 1 else ""
             click.secho(
                 f"📦 Processing {format_count(num_filesets)} file set{plural} "
-                f"(grouped by timestamp)",
+                f"(grouped by account and timestamp)",
                 fg="cyan",
                 bold=True,
             )
@@ -260,7 +285,7 @@ def extract(
             # Create one FileSet per timestamp and process sequentially
             total_processed = 0
             with get_session(db_path) as session:
-                for timestamp_str, timestamp_files in files_by_timestamp.items():
+                for (uid, timestamp_str), timestamp_files in files_by_key.items():
                     # Organize files by data type for this timestamp
                     files_by_type = {}
                     for file_path in timestamp_files:

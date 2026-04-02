@@ -271,15 +271,23 @@ class TestExtractFunctionExerciseSets:
     Tests for extract() function with EXERCISE_SETS data type.
     """
 
+    @patch("garmin_health_data.auth.discover_accounts")
     @patch("garmin_health_data.extractor.GarminExtractor")
-    def test_exercise_sets_triggers_fit_extraction(self, mock_extractor_class) -> None:
+    def test_exercise_sets_triggers_fit_extraction(
+        self, mock_extractor_class, mock_discover
+    ) -> None:
         """
         Test that data_types=["EXERCISE_SETS"] triggers extract_fit_activities.
 
         :param mock_extractor_class: Mock GarminExtractor class.
+        :param mock_discover: Mock discover_accounts function.
         """
 
         # Arrange.
+        mock_discover.return_value = [
+            ("123456789", Path("/fake/token/dir")),
+        ]
+
         mock_extractor = MagicMock()
         mock_extractor.extract_fit_activities.return_value = [
             Path("activity.fit"),
@@ -299,3 +307,147 @@ class TestExtractFunctionExerciseSets:
         # Assert - extract_fit_activities should be called.
         mock_extractor.extract_fit_activities.assert_called_once()
         mock_extractor.extract_garmin_data.assert_called_once()
+
+        # Verify authenticate is called with the discovered token dir.
+        mock_extractor.authenticate.assert_called_once_with(
+            token_store_dir=str(Path("/fake/token/dir"))
+        )
+
+
+class TestExtractMultiAccount:
+    """
+    Tests for multi-account extraction in extract() function.
+    """
+
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_multi_account_success(self, mock_extractor_class, mock_discover):
+        """
+        Two accounts are extracted sequentially, each with own token dir.
+        """
+        mock_discover.return_value = [
+            ("11111111", Path("/tokens/11111111")),
+            ("22222222", Path("/tokens/22222222")),
+        ]
+
+        mock_extractor = MagicMock()
+        mock_extractor.extract_garmin_data.return_value = [Path("file1.json")]
+        mock_extractor.extract_fit_activities.return_value = [Path("fit1.fit")]
+        mock_extractor_class.return_value = mock_extractor
+
+        result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
+
+        assert mock_extractor_class.call_count == 2
+        assert mock_extractor.authenticate.call_count == 2
+
+        # Verify each account gets its own token_store_dir.
+        calls = mock_extractor.authenticate.call_args_list
+        assert calls[0].kwargs["token_store_dir"] == str(Path("/tokens/11111111"))
+        assert calls[1].kwargs["token_store_dir"] == str(Path("/tokens/22222222"))
+
+        assert result["garmin_files"] == 2
+        assert result["activity_files"] == 2
+
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_account_filter(self, mock_extractor_class, mock_discover):
+        """
+        Only matching accounts are extracted when filter is provided.
+        """
+        mock_discover.return_value = [
+            ("11111111", Path("/tokens/11111111")),
+            ("22222222", Path("/tokens/22222222")),
+        ]
+
+        mock_extractor = MagicMock()
+        mock_extractor.extract_garmin_data.return_value = [Path("file1.json")]
+        mock_extractor.extract_fit_activities.return_value = []
+        mock_extractor_class.return_value = mock_extractor
+
+        result = extract(
+            Path("/tmp/test"),
+            "2025-01-01",
+            "2025-01-03",
+            accounts=["11111111"],
+        )
+
+        # Only one extractor created for matching account.
+        assert mock_extractor_class.call_count == 1
+        assert result["garmin_files"] == 1
+
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_account_filter_no_match(self, mock_extractor_class, mock_discover):
+        """
+        Returns zero counts when account filter matches no discovered accounts.
+        """
+        mock_discover.return_value = [
+            ("11111111", Path("/tokens/11111111")),
+        ]
+
+        result = extract(
+            Path("/tmp/test"),
+            "2025-01-01",
+            "2025-01-03",
+            accounts=["99999999"],
+        )
+
+        mock_extractor_class.assert_not_called()
+        assert result == {"garmin_files": 0, "activity_files": 0}
+
+    def test_accounts_string_raises(self):
+        """
+        Raises ValueError when accounts is a bare string instead of a list.
+        """
+        with pytest.raises(ValueError, match="must be a list or tuple"):
+            extract(
+                Path("/tmp/test"),
+                "2025-01-01",
+                "2025-01-03",
+                accounts="12345678",
+            )
+
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_error_isolation(self, mock_extractor_class, mock_discover):
+        """
+        One failing account does not block others.
+        """
+        mock_discover.return_value = [
+            ("11111111", Path("/tokens/11111111")),
+            ("22222222", Path("/tokens/22222222")),
+        ]
+
+        # First extractor fails on authenticate, second succeeds.
+        failing_extractor = MagicMock()
+        failing_extractor.authenticate.side_effect = RuntimeError("Auth failed")
+
+        succeeding_extractor = MagicMock()
+        succeeding_extractor.extract_garmin_data.return_value = [Path("file1.json")]
+        succeeding_extractor.extract_fit_activities.return_value = []
+
+        mock_extractor_class.side_effect = [failing_extractor, succeeding_extractor]
+
+        result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
+
+        # Second account still processed.
+        assert result["garmin_files"] == 1
+        succeeding_extractor.extract_garmin_data.assert_called_once()
+
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_all_accounts_fail(self, mock_extractor_class, mock_discover):
+        """
+        Returns zero counts when all accounts fail.
+        """
+        mock_discover.return_value = [
+            ("11111111", Path("/tokens/11111111")),
+        ]
+
+        mock_extractor = MagicMock()
+        mock_extractor.authenticate.side_effect = RuntimeError("Auth failed")
+        mock_extractor_class.return_value = mock_extractor
+
+        result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
+
+        assert result == {"garmin_files": 0, "activity_files": 0}

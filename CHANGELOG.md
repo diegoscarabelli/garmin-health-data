@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-04-01
+
+### Added
+
+- **Multi-account support**: Extract data from multiple Garmin Connect accounts into a single database.
+  - Convention-based account discovery: scans `~/.garminconnect/` for numeric subdirectories (each is a user_id).
+  - `garmin auth` auto-detects user ID and stores tokens in `~/.garminconnect/<user_id>/`.
+  - `garmin extract` discovers and extracts all accounts sequentially with per-account error isolation.
+  - New `--accounts` CLI option to filter which accounts to extract (comma-separated or repeated).
+  - Legacy token layout (flat files at root) detected with migration warning.
+
+### Fixed
+
+- **SSO authentication**: Override garth's default User-Agent to avoid Cloudflare blocks during programmatic login.
+- **Token file permissions**: `chmod 0o600` on token files after `garth.dump()` (garth uses default umask, leaving tokens world-readable).
+
 ## [2.1.1] - 2026-04-01
 
 ### Fixed
@@ -165,7 +181,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...v2.1.0
 [2.0.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.2...v2.0.3
