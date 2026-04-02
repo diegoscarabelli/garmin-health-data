@@ -573,7 +573,15 @@ def extract(
     # Discover accounts.
     from garmin_health_data.auth import discover_accounts
 
-    discovered = discover_accounts()
+    try:
+        discovered = discover_accounts()
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as e:
+        click.secho(
+            f"Account discovery failed: {e}\n"
+            "Run 'garmin auth' to set up your Garmin account(s).",
+            fg="red",
+        )
+        return {"garmin_files": 0, "activity_files": 0}
 
     # Apply account filter if provided.
     if accounts is not None:

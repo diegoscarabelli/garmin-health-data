@@ -185,6 +185,13 @@ def refresh_tokens(
         # Initialize Garmin client with MFA support.
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
 
+        if not hasattr(garmin, "garth"):
+            gc_ver = getattr(_gc, "__version__", "unknown")
+            raise RuntimeError(
+                f"garminconnect {gc_ver} is missing garth support. "
+                "Please upgrade: pip install --upgrade garminconnect"
+            )
+
         # Override User-Agent to avoid SSO blocks.
         garmin.garth.sess.headers.update(
             {
@@ -222,13 +229,6 @@ def refresh_tokens(
                     bold=True,
                 )
 
-        if not hasattr(garmin, "garth"):
-            gc_ver = getattr(_gc, "__version__", "unknown")
-            raise RuntimeError(
-                f"garminconnect {gc_ver} is missing garth support. "
-                "Please upgrade: pip install --upgrade garminconnect"
-            )
-
         # Auto-detect user ID from profile.
         user_id = garmin.get_user_profile().get("id")
         if not user_id:
@@ -256,7 +256,8 @@ def refresh_tokens(
         # Lock down token files to owner-only (garth.dump uses default umask).
         if sys.platform != "win32":
             for token_file in token_path.iterdir():
-                token_file.chmod(0o600)
+                if token_file.is_file():
+                    token_file.chmod(0o600)
 
         if not silent:
             click.echo()

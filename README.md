@@ -319,7 +319,7 @@ race_predictions (predicted race times)
 
 ## Privacy & Security
 
-- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens via [garth](https://github.com/matin/garth), stored locally in `~/.garminconnect/<user_id>/` with owner-only permissions (0o700 directories, 0o600 token files).
+- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens via [garth](https://github.com/matin/garth), stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
 - **All data stays on your machine**: no cloud services involved.
 - **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API using the wrapper [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
 
