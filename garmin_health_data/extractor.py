@@ -94,7 +94,7 @@ class GarminExtractor:
 
         :param token_store_dir: Directory containing authentication tokens.
         :raises RuntimeError: If tokens are missing, expired, or invalid. Run
-            refresh_garmin_tokens.py to resolve authentication issues.
+            ``garmin auth`` to resolve authentication issues.
         """
 
         token_store_path = Path(token_store_dir).expanduser()
