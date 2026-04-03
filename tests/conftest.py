@@ -65,10 +65,10 @@ def mock_garmin_client() -> MagicMock:
 
     :return: Mock Garmin client instance.
     """
-    mock_client = MagicMock()
-    mock_client.login.return_value = None
-    mock_client.garth = MagicMock()
-    return mock_client
+    mock = MagicMock()
+    mock.login.return_value = None
+    mock.client = MagicMock()
+    return mock
 
 
 @pytest.fixture

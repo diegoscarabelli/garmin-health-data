@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-04-03
+
+### Changed
+
+- **Upgrade to garminconnect >= 0.3.0** ([#19](https://github.com/diegoscarabelli/garmin-health-data/issues/19)): The upstream library replaced the `garth` authentication library with a native OAuth2 engine.
+  - Removed `hasattr(garmin, "garth")` version guard and User-Agent override (both unnecessary with native OAuth2 and `curl_cffi` TLS fingerprint impersonation).
+  - Token persistence: `garmin.garth.dump()` replaced with `garmin.client.dump()`.
+  - Token file format changed from `oauth1_token.json` + `oauth2_token.json` to a single `garmin_tokens.json`. Existing tokens from garminconnect < 0.3.0 are not read by the new version; re-run `garmin auth` to bootstrap fresh tokens.
+  - Token lifecycle: access tokens (~18h) are now auto-refreshed transparently using the refresh token (30 days, rotates on each use). As long as extraction runs at least once within 30 days, the token chain stays alive indefinitely.
+  - `garmin auth` is now only needed for initial setup or recovery after 30+ days of inactivity (previously described as "approximately 1 year").
+
+### Removed
+
+- `test_refresh_tokens_missing_garth_attribute` test (garminconnect 0.3.0 no longer has a `garth` attribute).
+
+### Notes
+
+- **Re-authentication required**: After upgrading, run `garmin auth` once per account to bootstrap tokens in the new format.
+
 ## [2.2.0] - 2026-04-01
 
 ### Added
@@ -181,7 +200,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.0.3...v2.1.0

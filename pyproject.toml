@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garmin-health-data"
-version = "2.2.0"
+version = "2.3.0"
 description = "Extract your Garmin Connect health data to a local SQLite database"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,7 +31,7 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "sqlalchemy>=2.0",
-    "garminconnect>=0.2.0",
+    "garminconnect>=0.3.0",
     "fitdecode>=0.10.0",
     "pendulum>=2.1.0",
     "colorama>=0.4.6",

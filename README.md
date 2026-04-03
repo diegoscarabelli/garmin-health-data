@@ -1,6 +1,6 @@
 Extract your complete Garmin Connect health and activity data to a local SQLite database.
 
-**Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure. Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) for Garmin Connect API usage and [Garth](https://github.com/matin/garth) for OAuth authentication.
+**Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure. Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) for Garmin Connect API usage with native OAuth2 authentication.
 
 ## Features
 
@@ -60,8 +60,8 @@ garmin auth
 
 - `garmin auth` always performs a fresh login and refreshes your OAuth tokens, even if valid tokens already exist.
 - After login, your Garmin user ID is auto-detected and tokens are stored in `~/.garminconnect/<user_id>/`.
-- Tokens are valid for approximately 1 year.
-- You typically only need to run `garmin auth` once per account initially or when tokens expire.
+- Access tokens (~18h) are auto-refreshed transparently using the refresh token (30 days, rotates on each use). As long as you extract at least once within 30 days, tokens stay valid indefinitely.
+- You typically only need to run `garmin auth` once per account initially, or after 30+ days of inactivity.
 - `garmin extract` automatically checks for existing tokens and only prompts for authentication if they're missing.
 - **Recommendation:** Run `garmin auth` once per account for initial setup, then just use `garmin extract` for regular data extraction.
 
@@ -81,12 +81,10 @@ Tokens are stored in per-account subdirectories:
 
 ```text
 ~/.garminconnect/
-├── 12345678/    # Account 1 tokens
-│   ├── oauth1_token.json
-│   └── oauth2_token.json
-└── 87654321/    # Account 2 tokens
-    ├── oauth1_token.json
-    └── oauth2_token.json
+├── 12345678/              # Account 1 tokens
+│   └── garmin_tokens.json
+└── 87654321/              # Account 2 tokens
+    └── garmin_tokens.json
 ```
 
 Accounts are discovered automatically by scanning for numeric subdirectories. All discovered accounts are extracted sequentially when running `garmin extract`, with per-account error isolation (one failing account doesn't block others).
@@ -319,7 +317,7 @@ race_predictions (predicted race times)
 
 ## Privacy & Security
 
-- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens via [garth](https://github.com/matin/garth), stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
+- **Your credentials never leave your machine**: they're only used to obtain OAuth tokens, stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
 - **All data stays on your machine**: no cloud services involved.
 - **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API using the wrapper [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
 
