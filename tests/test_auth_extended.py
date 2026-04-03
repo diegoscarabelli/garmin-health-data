@@ -219,6 +219,7 @@ class TestRefreshTokens:
 
         mock_garmin = MagicMock()
         mock_garmin.login.side_effect = Exception("401 Unauthorized")
+        mock_garmin.client = MagicMock()
         mock_garmin_class.return_value = mock_garmin
 
         with pytest.raises(click.ClickException, match="Authentication failed"):

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Python 3.9 support**: garminconnect >= 0.3.0 requires Python >= 3.10. Minimum version bumped accordingly.
 - `test_refresh_tokens_missing_garth_attribute` test (garminconnect 0.3.0 no longer has a `garth` attribute).
 
 ### Notes
