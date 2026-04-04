@@ -185,24 +185,6 @@ def refresh_tokens(
         # Initialize Garmin client with MFA support.
         garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
 
-        if not hasattr(garmin, "garth"):
-            gc_ver = getattr(_gc, "__version__", "unknown")
-            raise RuntimeError(
-                f"garminconnect {gc_ver} is missing garth support. "
-                "Please upgrade: pip install --upgrade garminconnect"
-            )
-
-        # Override User-Agent to avoid SSO blocks.
-        garmin.garth.sess.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                )
-            }
-        )
-
         # Attempt login.
         login_result = garmin.login()
 
@@ -251,9 +233,9 @@ def refresh_tokens(
         if sys.platform != "win32":
             token_path.chmod(0o700)
 
-        garmin.garth.dump(str(token_path))
+        garmin.client.dump(str(token_path))
 
-        # Lock down token files to owner-only (garth.dump uses default umask).
+        # Lock down token files to owner-only (client.dump uses default umask).
         if sys.platform != "win32":
             for token_file in token_path.iterdir():
                 if token_file.is_file():
@@ -270,7 +252,7 @@ def refresh_tokens(
             )
             click.echo("   You can now run: garmin extract")
             click.echo()
-            click.echo("ℹ️  Tokens are valid for approximately 1 year")
+            click.echo("ℹ️  Tokens auto-refresh transparently during extraction.")
 
     except Exception as e:
         click.echo()

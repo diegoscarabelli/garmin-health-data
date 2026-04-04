@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garmin-health-data"
-version = "2.2.0"
+version = "2.3.0"
 description = "Extract your Garmin Connect health data to a local SQLite database"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{name = "Diego Scarabelli"}]
 keywords = ["garmin", "health", "data", "wellness", "fitness", "sqlite", "garmin-connect"]
@@ -20,7 +20,6 @@ classifiers = [
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -31,7 +30,7 @@ classifiers = [
 dependencies = [
     "click>=8.0",
     "sqlalchemy>=2.0",
-    "garminconnect>=0.2.0",
+    "garminconnect>=0.3.0",
     "fitdecode>=0.10.0",
     "pendulum>=2.1.0",
     "colorama>=0.4.6",
@@ -79,7 +78,7 @@ remove-duplicate-keys = true
 
 [tool.black]
 line-length = 88
-target-version = ['py39', 'py310', 'py311', 'py312']
+target-version = ['py310', 'py311', 'py312']
 
 [tool.coverage.report]
 exclude_also = [

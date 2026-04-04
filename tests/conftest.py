@@ -67,7 +67,7 @@ def mock_garmin_client() -> MagicMock:
     """
     mock_client = MagicMock()
     mock_client.login.return_value = None
-    mock_client.garth = MagicMock()
+    mock_client.client = MagicMock()
     return mock_client
 
 
