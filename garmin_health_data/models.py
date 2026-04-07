@@ -6,13 +6,16 @@ data. Adapted from openetl for standalone SQLite usage without schema support.
 """
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -926,3 +929,43 @@ class ActivityLapMetric(Base, InsertBase):
     name = Column(Text, primary_key=True)
     value = Column(Float)
     units = Column(Text)
+
+
+class ActivityPath(Base, InsertBase):
+    """
+    Eagerly materialized GPS path for activities.
+
+    Stores a coordinate array built from per-frame GPS samples during FIT file
+    processing. Duplicates the raw `position_lat`/`position_long` samples that
+    also land in ActivityTsMetric, but in a deck.gl-friendly shape (nested
+    [lon, lat] arrays) so path-layer visualizations can read a single row
+    instead of reshaping thousands of EAV rows. One row per activity that has
+    GPS data; activities without GPS samples (indoor workouts, etc.) have no
+    row. Uses delete+insert in _process_fit_file for reprocessing idempotency.
+    Format: ordered array of [longitude, latitude] pairs in decimal degrees,
+    sorted ascending by timestamp.
+    """
+
+    __tablename__ = "activity_path"
+
+    activity_id = Column(
+        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+    )
+    path_json = Column(JSON, nullable=False)
+    point_count = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "json_valid(path_json)",
+            name="activity_path_path_json_valid",
+        ),
+        CheckConstraint(
+            "json_type(path_json) = 'array'",
+            name="activity_path_path_json_is_array",
+        ),
+        CheckConstraint(
+            "json_array_length(path_json) = point_count",
+            name="activity_path_point_count_matches",
+        ),
+        Index("activity_path_point_count_idx", "point_count"),
+    )

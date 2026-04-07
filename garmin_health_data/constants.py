@@ -358,3 +358,13 @@ PR_TYPE_LABELS = {
     25: "Swim: 1500 m",
     26: "Swim: 1650 yd",
 }
+
+
+# ----------------------------------------------------------------------------------------
+# FIT FILE FIELD CONVERSIONS
+# ----------------------------------------------------------------------------------------
+
+# Garmin stores GPS coordinates as raw semicircle integers in FIT files.
+# To convert to decimal degrees, multiply by (180 / 2^31).
+# Reference: https://developer.garmin.com/fit/cookbook/decoding-activity-files
+SEMICIRCLES_TO_DEGREES = 180.0 / 2**31
