@@ -250,7 +250,17 @@ The database schema has been adapted from the original PostgreSQL/TimescaleDB [s
 - **Converted SERIAL to AUTOINCREMENT** - PostgreSQL `SERIAL` types converted to SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`.
 - **Replaced TimescaleDB hypertables** - Time-series tables use regular SQLite tables with indexes on timestamp columns for efficient queries.
 - **SQLite-compatible upsert syntax** - Uses SQLite's `INSERT ... ON CONFLICT` for handling duplicate records.
-- **JSON over JSONB** - PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) converted to SQLite `JSON` (stored as TEXT). CHECK constraints use the SQLite JSON1 extension (`json_valid`, `json_type`, `json_array_length`), bundled with SQLite since 3.9 (2015) and enabled by default in Python's built-in `sqlite3` module.
+- **JSON over JSONB** - PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`), which are commonly available in SQLite 3.9+ but depend on the SQLite library bundled with your Python/runtime environment. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support first:
+
+  ```bash
+  python - <<'PY'
+  import sqlite3
+  print("SQLite version:", sqlite3.sqlite_version)
+  with sqlite3.connect(":memory:") as conn:
+      print("json_valid available:", conn.execute("SELECT json_valid('[]')").fetchone()[0] == 1)
+  PY
+  ```
+
 - **Preserved all relationships** - All foreign key relationships and table structures maintained.
 
 These adaptations ensure the standalone application maintains complete feature parity with the OpenETL Garmin pipeline while using a zero-configuration SQLite database.

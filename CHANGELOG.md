@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`activity_path` table**: New table eagerly materializing GPS coordinate sequences from FIT files during processing. Each row stores an ordered `[longitude, latitude]` JSON array sorted ascending by timestamp, ready for deck.gl or any path-layer visualization. Populated automatically during FIT file processing via delete+insert for reprocessing idempotency. Activities without GPS samples (indoor workouts) have no row. Mirrors the `garmin.activity_path` table added to the openetl Garmin pipeline.
-  - Three CHECK constraints enforce `path_json` integrity: valid JSON, array type, and `point_count` matching `json_array_length(path_json)`. Requires the SQLite JSON1 extension (bundled with SQLite since 3.9, enabled by default in Python's built-in `sqlite3` module).
+  - Three CHECK constraints enforce `path_json` integrity: valid JSON, array type, and `point_count` matching `json_array_length(path_json)`. Requires SQLite JSON1 support; JSON1 has been bundled with SQLite since 3.9, but availability in Python's built-in `sqlite3` module depends on the underlying SQLite build and may vary by environment.
   - Index on `point_count` for cheap filtering/sorting by track length.
 - New constant `SEMICIRCLES_TO_DEGREES` in `constants.py` for Garmin FIT semicircle-to-decimal-degree conversion.
 
