@@ -25,11 +25,13 @@ from garmin_health_data.processor_helpers import upsert_model_instances
 from garmin_health_data.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
+    SEMICIRCLES_TO_DEGREES,
 )
 from garmin_health_data.models import (
     Acclimation,
     Activity,
     ActivityLapMetric,
+    ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
     BodyBattery,
@@ -2365,12 +2367,14 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series, split, and lap metrics.
+        Process a FIT file and extract time-series, split, lap, and GPS path data.
 
         Processes FIT file using fitdecode library, extracts record, split, and lap
         frames, and stores metrics via delete+insert for idempotent reprocessing.
-        Updates `ts_data_available` flag based on whether time-series records were
-        found.
+        Activities with GPS samples also get an eagerly materialized `ActivityPath`
+        row holding an ordered [lon, lat] array sorted by timestamp, ready for
+        downstream path-layer visualization. Updates `ts_data_available` flag based
+        on whether time-series records were found.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -2407,6 +2411,10 @@ class GarminProcessor(Processor):
         split_idx = 0
         lap_idx = 0
 
+        # Collect per-frame GPS samples for activity_path materialization.
+        # Each element is (timestamp, lon_semicircles, lat_semicircles).
+        gps_records = []
+
         with fitdecode.FitReader(file_path) as fit:
             for frame in fit:
                 if frame.frame_type == fitdecode.FIT_FRAME_DATA:
@@ -2424,6 +2432,8 @@ class GarminProcessor(Processor):
 
                         # Second pass: process all fields if timestamp was found.
                         if timestamp is not None:
+                            frame_lat = None
+                            frame_lon = None
                             for field in frame.fields:
                                 if (
                                     field.name is not None
@@ -2441,6 +2451,14 @@ class GarminProcessor(Processor):
                                             units=field.units if field.units else None,
                                         )
                                     )
+                                # Capture raw semicircle coordinates for the
+                                # activity_path materialization below.
+                                if field.name == "position_lat":
+                                    frame_lat = field.value
+                                elif field.name == "position_long":
+                                    frame_lon = field.value
+                            if frame_lat is not None and frame_lon is not None:
+                                gps_records.append((timestamp, frame_lon, frame_lat))
 
                     # Process split frames.
                     elif frame.name == "split":
@@ -2559,6 +2577,9 @@ class GarminProcessor(Processor):
         session.query(ActivityLapMetric).filter_by(activity_id=activity_id).delete(
             synchronize_session=False
         )
+        session.query(ActivityPath).filter_by(activity_id=activity_id).delete(
+            synchronize_session=False
+        )
 
         # Bulk insert all metrics.
         if ts_metrics:
@@ -2580,3 +2601,41 @@ class GarminProcessor(Processor):
             click.echo(f"Processed {len(lap_metrics)} lap records.")
         else:
             click.secho("⚠️ No lap data found.", fg="yellow")
+
+        # Build and insert activity GPS path for downstream visualization.
+        if gps_records:
+            # Sort ascending by timestamp so path order matches activity
+            # progress (FIT iteration is not guaranteed monotonic).
+            gps_records.sort(key=lambda r: r[0])
+
+            # Format: [[lon, lat], [lon, lat], ...] in decimal degrees.
+            path_coords = [
+                [
+                    lon_semi * SEMICIRCLES_TO_DEGREES,
+                    lat_semi * SEMICIRCLES_TO_DEGREES,
+                ]
+                for _, lon_semi, lat_semi in gps_records
+            ]
+
+            # Use bulk_save_objects to bypass the ORM identity map, matching
+            # the sibling FIT-table insert pattern above. session.add() would
+            # collide with the stale identity-mapped instance left over from
+            # the delete+reinsert above (the sibling deletes use
+            # synchronize_session=False).
+            session.bulk_save_objects(
+                [
+                    ActivityPath(
+                        activity_id=activity_id,
+                        path_json=path_coords,
+                        point_count=len(path_coords),
+                    )
+                ]
+            )
+            click.echo(f"Processed {len(path_coords)} GPS path points.")
+        else:
+            # Indoor activities legitimately have no GPS data, so this is info
+            # rather than a warning.
+            click.secho(
+                "ℹ️ No GPS data found, skipping activity_path materialization.",
+                fg="blue",
+            )
