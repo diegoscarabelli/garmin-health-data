@@ -637,6 +637,24 @@ CREATE TABLE IF NOT EXISTS activity_lap_metric (
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
 );
 
+-- Eagerly materialized GPS path for activities, populated during FIT file processing. Stores per-activity ordered coordinate sequences as a JSON array of [longitude, latitude] pairs in decimal degrees, sorted ascending by timestamp. One row per activity with GPS data; activities without GPS samples (e.g., indoor workouts) have no row.
+CREATE TABLE IF NOT EXISTS activity_path (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this GPS path belongs to. One row per activity.
+    , path_json JSON NOT NULL              -- Ordered array of [longitude, latitude] coordinate pairs in decimal degrees, sorted ascending by timestamp. Format: [[lon, lat], [lon, lat], ...]. Stored as JSON (TEXT in SQLite) and validated via CHECK constraints.
+    , point_count INTEGER NOT NULL         -- Number of GPS coordinate pairs in path_json. Denormalized for cheap filtering without parsing JSON.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , CONSTRAINT activity_path_path_json_valid CHECK (JSON_VALID(path_json))
+    , CONSTRAINT activity_path_path_json_is_array CHECK (JSON_TYPE(path_json) = 'array')
+    , CONSTRAINT activity_path_point_count_matches CHECK (
+        JSON_ARRAY_LENGTH(path_json) = point_count
+    )
+);
+
+CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
+ON activity_path (point_count);
+
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
 CREATE TABLE IF NOT EXISTS strength_exercise (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this exercise belongs to.
