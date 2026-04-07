@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from garmin_health_data.models import (
     Activity,
     ActivityLapMetric,
+    ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
     StrengthExercise,
@@ -78,6 +79,17 @@ def _make_frame(name: str, fields: list) -> MagicMock:
     frame.name = name
     frame.fields = fields
     return frame
+
+
+def _mock_fit_reader(frames: list) -> MagicMock:
+    """
+    Create a mock fitdecode.FitReader context manager that iterates the given frames.
+    """
+    reader = MagicMock()
+    reader.__enter__ = MagicMock(return_value=reader)
+    reader.__exit__ = MagicMock(return_value=False)
+    reader.__iter__ = MagicMock(return_value=iter(frames))
+    return reader
 
 
 def _seed_activity(
@@ -175,15 +187,12 @@ class TestProcessFitFile:
             ],
         )
 
-        mock_reader = MagicMock()
-        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
-        mock_reader.__exit__ = MagicMock(return_value=False)
-        mock_reader.__iter__ = MagicMock(return_value=iter([record_frame, lap_frame]))
-
         processor = self._make_processor()
         with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
             mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
-            mock_fitdecode.FitReader.return_value = mock_reader
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [record_frame, lap_frame]
+            )
             processor._process_fit_file(Path(FIT_FILENAME), db_session)
 
         db_session.commit()
@@ -243,15 +252,12 @@ class TestProcessFitFile:
             [_make_field("total_elapsed_time", 600.0, "s")],
         )
 
-        mock_reader = MagicMock()
-        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
-        mock_reader.__exit__ = MagicMock(return_value=False)
-        mock_reader.__iter__ = MagicMock(return_value=iter([record_frame, lap_frame]))
-
         processor = self._make_processor()
         with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
             mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
-            mock_fitdecode.FitReader.return_value = mock_reader
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [record_frame, lap_frame]
+            )
             processor._process_fit_file(Path(FIT_FILENAME), db_session)
 
         db_session.commit()
@@ -283,15 +289,10 @@ class TestProcessFitFile:
             ],
         )
 
-        mock_reader = MagicMock()
-        mock_reader.__enter__ = MagicMock(return_value=mock_reader)
-        mock_reader.__exit__ = MagicMock(return_value=False)
-        mock_reader.__iter__ = MagicMock(return_value=iter([lap_frame]))
-
         processor = self._make_processor()
         with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
             mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
-            mock_fitdecode.FitReader.return_value = mock_reader
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([lap_frame])
             processor._process_fit_file(Path(FIT_FILENAME), db_session)
 
         db_session.commit()
@@ -327,6 +328,239 @@ class TestProcessFitFile:
         processor = self._make_processor()
         with pytest.raises(ValueError, match="Cannot extract activity_id"):
             processor._process_fit_file(Path("bad_name.fit"), db_session)
+
+    def test_process_fit_file_creates_activity_path(self, db_session: Session):
+        """
+        Record frames with GPS coordinates produce an ActivityPath row with semicircles
+        converted to decimal degrees and points sorted by timestamp.
+        """
+        _seed_activity(db_session)
+
+        # Semicircle values chosen for exact float conversions:
+        # 2**29 * (180 / 2**31) = 45.0; -(2**28) * (180 / 2**31) = -22.5
+        # 2**28 * (180 / 2**31) = 22.5; -(2**27) * (180 / 2**31) = -11.25
+        # 2**27 * (180 / 2**31) = 11.25; -(2**26) * (180 / 2**31) = -5.625
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+        ts3 = datetime(2024, 1, 1, 8, 0, 3, tzinfo=timezone.utc)
+
+        # Insert out of order to verify timestamp sorting.
+        frame_b = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts2),
+                _make_field("position_lat", 2**28, "semicircles"),
+                _make_field("position_long", -(2**27), "semicircles"),
+            ],
+        )
+        frame_a = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts1),
+                _make_field("position_lat", 2**29, "semicircles"),
+                _make_field("position_long", -(2**28), "semicircles"),
+            ],
+        )
+        frame_c = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts3),
+                _make_field("position_lat", 2**27, "semicircles"),
+                _make_field("position_long", -(2**26), "semicircles"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [frame_b, frame_a, frame_c]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        paths = db_session.query(ActivityPath).all()
+        assert len(paths) == 1
+        path = paths[0]
+        assert path.activity_id == 12345
+        assert path.point_count == 3
+        # SQLAlchemy JSON auto-deserializes to a Python list on read.
+        assert isinstance(path.path_json, list)
+        # Sorted ascending by timestamp: ts1, ts2, ts3.
+        assert path.path_json[0][0] == pytest.approx(-22.5)
+        assert path.path_json[0][1] == pytest.approx(45.0)
+        assert path.path_json[1][0] == pytest.approx(-11.25)
+        assert path.path_json[1][1] == pytest.approx(22.5)
+        assert path.path_json[2][0] == pytest.approx(-5.625)
+        assert path.path_json[2][1] == pytest.approx(11.25)
+
+    def test_process_fit_file_no_gps_skips_activity_path(self, db_session: Session):
+        """
+        Records without position_lat/position_long produce zero ActivityPath rows.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        record_frame = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("heart_rate", 150, "bpm"),
+                _make_field("cadence", 90, "rpm"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([record_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        # Non-GPS ts metrics still inserted.
+        assert db_session.query(ActivityTsMetric).count() == 2
+        # No activity_path row.
+        assert db_session.query(ActivityPath).count() == 0
+
+    def test_process_fit_file_partial_gps_filtered(self, db_session: Session):
+        """
+        Frames with only position_lat (no position_long) are excluded; only frames with
+        both coordinates produce path points.
+        """
+        _seed_activity(db_session)
+
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+
+        # Frame 1: only lat, no lon -> dropped.
+        frame_partial = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts1),
+                _make_field("position_lat", 2**29, "semicircles"),
+            ],
+        )
+        # Frame 2: both lat and lon -> kept.
+        frame_complete = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts2),
+                _make_field("position_lat", 2**28, "semicircles"),
+                _make_field("position_long", -(2**27), "semicircles"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [frame_partial, frame_complete]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        paths = db_session.query(ActivityPath).all()
+        assert len(paths) == 1
+        path = paths[0]
+        assert path.point_count == 1
+        assert path.path_json[0][0] == pytest.approx(-11.25)
+        assert path.path_json[0][1] == pytest.approx(22.5)
+
+    def test_process_fit_file_reprocessing_updates_path(self, db_session: Session):
+        """
+        Re-running replaces the existing ActivityPath row.
+
+        A subsequent run without GPS data deletes the row entirely.
+        """
+        _seed_activity(db_session)
+
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+        ts3 = datetime(2024, 1, 1, 8, 0, 3, tzinfo=timezone.utc)
+
+        # First run: 2 points.
+        run1_frames = [
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts1),
+                    _make_field("position_lat", 2**29, "semicircles"),
+                    _make_field("position_long", -(2**28), "semicircles"),
+                ],
+            ),
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts2),
+                    _make_field("position_lat", 2**28, "semicircles"),
+                    _make_field("position_long", -(2**27), "semicircles"),
+                ],
+            ),
+        ]
+
+        def run_with_frames(frames: list) -> None:
+            processor = self._make_processor()
+            with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+                mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+                mock_fitdecode.FitReader.return_value = _mock_fit_reader(frames)
+                processor._process_fit_file(Path(FIT_FILENAME), db_session)
+            db_session.commit()
+
+        run_with_frames(run1_frames)
+
+        paths = db_session.query(ActivityPath).all()
+        assert len(paths) == 1
+        assert paths[0].point_count == 2
+
+        # Second run: 3 different points (delete-before-insert).
+        run2_frames = [
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts1),
+                    _make_field("position_lat", 2**27, "semicircles"),
+                    _make_field("position_long", -(2**26), "semicircles"),
+                ],
+            ),
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts2),
+                    _make_field("position_lat", 2**26, "semicircles"),
+                    _make_field("position_long", -(2**25), "semicircles"),
+                ],
+            ),
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts3),
+                    _make_field("position_lat", 2**25, "semicircles"),
+                    _make_field("position_long", -(2**24), "semicircles"),
+                ],
+            ),
+        ]
+        run_with_frames(run2_frames)
+
+        paths = db_session.query(ActivityPath).all()
+        assert len(paths) == 1
+        assert paths[0].point_count == 3
+
+        # Third run: no GPS -> existing row deleted, no new row.
+        run3_frames = [
+            _make_frame(
+                "record",
+                [
+                    _make_field("timestamp", ts1),
+                    _make_field("heart_rate", 160, "bpm"),
+                ],
+            ),
+        ]
+        run_with_frames(run3_frames)
+
+        assert db_session.query(ActivityPath).count() == 0
 
 
 # --- Activity base upsert tests --------------------------------------------
