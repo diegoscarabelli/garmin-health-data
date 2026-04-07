@@ -228,7 +228,7 @@ $ garmin extract
 
 ## Database Schema
 
-The SQLite database contains 29 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database.
+The SQLite database contains 32 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database.
 
 **Viewing inline documentation:**
 
@@ -250,6 +250,7 @@ The database schema has been adapted from the original PostgreSQL/TimescaleDB [s
 - **Converted SERIAL to AUTOINCREMENT** - PostgreSQL `SERIAL` types converted to SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`.
 - **Replaced TimescaleDB hypertables** - Time-series tables use regular SQLite tables with indexes on timestamp columns for efficient queries.
 - **SQLite-compatible upsert syntax** - Uses SQLite's `INSERT ... ON CONFLICT` for handling duplicate records.
+- **JSON over JSONB** - PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) converted to SQLite `JSON` (stored as TEXT). CHECK constraints use the SQLite JSON1 extension (`json_valid`, `json_type`, `json_array_length`), bundled with SQLite since 3.9 (2015) and enabled by default in Python's built-in `sqlite3` module.
 - **Preserved all relationships** - All foreign key relationships and table structures maintained.
 
 These adaptations ensure the standalone application maintains complete feature parity with the OpenETL Garmin pipeline while using a zero-configuration SQLite database.
@@ -263,10 +264,11 @@ user (root table)
 ```
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (8 tables)**
+**Activities (9 tables)**
 ```
 activity (main activity records)
 ├── activity_lap_metric (lap-by-lap metrics)
+├── activity_path (eagerly materialized GPS path as JSON array)
 ├── activity_split_metric (split data)
 ├── activity_ts_metric (time-series sensor data)
 ├── cycling_agg_metrics (cycling-specific aggregates)
@@ -275,6 +277,13 @@ activity (main activity records)
 └── supplemental_activity_metric (additional activity metrics)
 ```
 *Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
+
+**Strength Training (2 tables)**
+```
+strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
+strength_set (per-set data: reps, weight, ML-classified exercise name)
+```
+*Foreign keys: both tables → `activity.activity_id`*
 
 **Sleep Metrics (6 tables)**
 ```
@@ -323,7 +332,7 @@ race_predictions (predicted race times)
 
 ## Comparison With Other Tools
 
-**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 29-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
+**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 32-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
 
 **[garmy](https://github.com/bes-dev/garmy)** is optimized for programmatic access to the Garmin Connect API, particularly useful for AI assistant integration via its built-in MCP (Model Context Protocol) server. It enables real-time interaction with Claude Desktop or custom chatbots for quick daily insights and summaries. However, it's limited to API-provided metrics (daily aggregates only, no FIT file access), making deep analytics or granular time-series analysis impossible. Best suited for lightweight health monitoring apps that prioritize AI integration over comprehensive data collection.
 
@@ -342,7 +351,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 6 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 29 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 32 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |
