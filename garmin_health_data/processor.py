@@ -492,19 +492,17 @@ class GarminProcessor(Processor):
         if end_time_gmt_str is None:
             duration_seconds = activity_data.get("duration")
             if duration_seconds is not None:
-                start_dt = datetime.fromisoformat(start_time_gmt_str)
+                start_dt = self._parse_garmin_iso(start_time_gmt_str)
                 end_dt = start_dt + timedelta(seconds=duration_seconds)
                 end_time_gmt_str = end_dt.isoformat()
 
         # Create timezone-aware datetimes and calculate offset.
-        start_ts = datetime.fromisoformat(start_time_gmt_str).replace(
-            tzinfo=timezone.utc
-        )
-        end_ts = datetime.fromisoformat(end_time_gmt_str).replace(tzinfo=timezone.utc)
+        start_ts = self._parse_garmin_gmt(start_time_gmt_str)
+        end_ts = self._parse_garmin_gmt(end_time_gmt_str)
 
         # Calculate timezone offset in hours (decimal precision for half-hour zones).
-        utc_naive = datetime.fromisoformat(start_time_gmt_str)
-        local_naive = datetime.fromisoformat(start_time_local_str)
+        utc_naive = self._parse_garmin_iso(start_time_gmt_str)
+        local_naive = self._parse_garmin_iso(start_time_local_str)
         offset_seconds = (local_naive - utc_naive).total_seconds()
         timezone_offset_hours = offset_seconds / 3600
 
@@ -954,16 +952,10 @@ class GarminProcessor(Processor):
                 continue
 
             # Parse start time to timezone-aware datetime.
-            # Normalize trailing 'Z' (UTC) for Python 3.9
-            # datetime.fromisoformat compatibility.
             start_time_str = exercise_set.get("startTime")
             start_time = None
             if start_time_str:
-                if start_time_str.endswith("Z"):
-                    start_time_str = start_time_str[:-1] + "+00:00"
-                start_time = datetime.fromisoformat(start_time_str).replace(
-                    tzinfo=timezone.utc
-                )
+                start_time = self._parse_garmin_gmt(start_time_str)
 
             # Pick highest-probability exercise from exercises
             # array.
