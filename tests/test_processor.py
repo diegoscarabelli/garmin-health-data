@@ -922,6 +922,12 @@ class TestParseGarminIso:
             ("2026-04-06T05:47:59.0Z", datetime(2026, 4, 6, 5, 47, 59)),
             # Z with no fractional.
             ("2026-04-06T05:47:59Z", datetime(2026, 4, 6, 5, 47, 59)),
+            # Explicit +00:00 offset behaves like Z (same wall clock).
+            ("2026-04-06T05:47:59.0+00:00", datetime(2026, 4, 6, 5, 47, 59)),
+            # Non-zero offset gets converted to UTC before tzinfo is dropped.
+            ("2026-04-06T05:47:59.0+05:30", datetime(2026, 4, 6, 0, 17, 59)),
+            # Negative offset converts the other way.
+            ("2026-04-06T05:47:59-08:00", datetime(2026, 4, 6, 13, 47, 59)),
         ],
     )
     def test_parse_garmin_iso(self, ts_str, expected):
@@ -932,7 +938,9 @@ class TestParseGarminIso:
         :param expected: Expected naive datetime.
         """
 
-        assert GarminProcessor._parse_garmin_iso(ts_str) == expected
+        result = GarminProcessor._parse_garmin_iso(ts_str)
+        assert result == expected
+        assert result.tzinfo is None
 
     def test_parse_garmin_gmt_tags_utc(self):
         """

@@ -192,22 +192,40 @@ class GarminProcessor(Processor):
         digits, raising ``ValueError`` on the Garmin format. Python 3.11+ relaxed
         the parser, but garmin-health-data still supports Python 3.10. This helper
         normalizes any fractional component to 6 digits and tolerates an optional
-        trailing ``Z`` (UTC) suffix, returning a naive datetime so callers can
-        either tag it as UTC or use it for naive arithmetic (e.g. local-vs-UTC
-        offset calculations).
+        trailing timezone designator (``Z`` or ``±HH:MM``), always returning a
+        naive datetime so callers can either tag it as UTC or use it for naive
+        arithmetic (e.g. local-vs-UTC offset calculations). ``Z`` and ``+00:00``
+        are stripped in place; other offsets are converted to UTC before the
+        tzinfo is dropped so the wall clock reflects UTC.
 
         :param ts_str: ISO 8601-like timestamp string from Garmin Connect.
         :return: Naive datetime parsed from the input string.
         """
 
-        if ts_str.endswith("Z"):
-            ts_str = ts_str[:-1]
+        # Separate any trailing timezone designator from the wall-clock portion
+        # before touching fractional seconds, so the rsplit below cannot swallow
+        # an offset into the fractional component.
+        offset = ""
+        offset_match = re.search(r"(Z|[+-]\d{2}:\d{2})$", ts_str)
+        if offset_match:
+            offset = offset_match.group(1)
+            ts_str = ts_str[: -len(offset)]
         if "." in ts_str:
             date_part, frac = ts_str.rsplit(".", 1)
             # Pad/truncate fractional seconds to 6 digits so Python 3.10's strict
             # fromisoformat parser can handle Garmin's single-digit format.
             ts_str = f"{date_part}.{frac.ljust(6, '0')[:6]}"
-        return datetime.fromisoformat(ts_str)
+        # ``Z`` is equivalent to ``+00:00`` but isn't recognized by
+        # ``fromisoformat`` until Python 3.11, so parse as naive and treat the
+        # wall clock as UTC. Other offsets get re-attached so the parser can
+        # produce an aware datetime we can convert to UTC below.
+        if offset and offset != "Z":
+            parsed = datetime.fromisoformat(f"{ts_str}{offset}")
+        else:
+            parsed = datetime.fromisoformat(ts_str)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
 
     @classmethod
     def _parse_garmin_gmt(cls, ts_str: str) -> datetime:
