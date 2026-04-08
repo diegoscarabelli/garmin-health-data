@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`sleep_level` table**: New table populated from the `sleepLevels` array in the SLEEP JSON response. Each row is a contiguous interval during which a single discrete sleep stage (Deep, Light, REM, Awake) was detected, allowing reconstruction of the per-night sleep stages timeline shown in the Garmin Connect sleep view. Mirrors the `garmin.sleep_level` table added to the openetl Garmin pipeline.
+  - Stage codes (`stage`) and human-readable labels (`stage_label`) are sourced from the new `SleepStage` IntEnum in `constants.py`. Unknown stage codes are logged and skipped instead of failing the file.
+  - Idempotent on `(sleep_id, start_ts)` via `INSERT ... ON CONFLICT DO NOTHING`, matching the runtime pattern of the sibling sleep time-series tables.
+  - Index on `stage` for cheap stage-distribution queries.
+- New `SleepStage` IntEnum in `constants.py` mapping the integer codes in `sleepLevels[*].activityLevel` to their human-readable names (`DEEP`, `LIGHT`, `REM`, `AWAKE`).
+
 ## [2.4.0] - 2026-04-06
 
 ### Added

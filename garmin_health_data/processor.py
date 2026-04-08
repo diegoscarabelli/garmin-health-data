@@ -26,6 +26,7 @@ from garmin_health_data.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
     SEMICIRCLES_TO_DEGREES,
+    SleepStage,
 )
 from garmin_health_data.models import (
     Acclimation,
@@ -46,6 +47,7 @@ from garmin_health_data.models import (
     Respiration,
     RunningAggMetrics,
     Sleep,
+    SleepLevel,
     SleepMovement,
     SleepRestlessMoment,
     SpO2,
@@ -1034,6 +1036,7 @@ class GarminProcessor(Processor):
             return
 
         # Extract and upsert timeseries data.
+        self._process_sleep_level(sleep_data, sleep_id, session)
         self._process_sleep_movement(sleep_data, sleep_id, session)
         self._process_sleep_restless_moments(sleep_data, sleep_id, session)
         self._process_sleep_spo2_data(sleep_data, sleep_id, session)
@@ -1273,6 +1276,66 @@ class GarminProcessor(Processor):
         else:
             click.secho("⚠️ No main sleep data found.", fg="yellow")
             return None
+
+    def _process_sleep_level(self, sleep_data: dict, sleep_id: int, session: Session):
+        """
+        Process sleep stage classification intervals from sleepLevels array.
+
+        Each interval is a contiguous segment with a single discrete sleep stage (Deep,
+        Light, REM, Awake). Uses INSERT ... ON CONFLICT DO NOTHING on
+        (sleep_id, start_ts), matching the idempotency pattern of the sibling sleep
+        time-series tables.
+
+        :param sleep_data: Complete JSON sleep data (modified by pop()).
+        :param sleep_id: Sleep session ID.
+        :param session: SQLAlchemy Session object.
+        """
+
+        sleep_levels = sleep_data.pop("sleepLevels", [])
+        if not sleep_levels:
+            click.secho("⚠️ No sleep level data found.", fg="yellow")
+            return
+
+        level_records = []
+        for level in sleep_levels:
+            start_gmt_str = level.pop("startGMT", None)
+            end_gmt_str = level.pop("endGMT", None)
+            activity_level = level.pop("activityLevel", None)
+            if start_gmt_str is None or end_gmt_str is None or activity_level is None:
+                continue
+            try:
+                stage = SleepStage(int(activity_level))
+            except ValueError:
+                click.secho(
+                    f"⚠️ Unknown sleep stage code {activity_level} for sleep_id="
+                    f"{sleep_id}; skipping interval.",
+                    fg="yellow",
+                )
+                continue
+            level_records.append(
+                SleepLevel(
+                    sleep_id=sleep_id,
+                    start_ts=datetime.fromisoformat(start_gmt_str).replace(
+                        tzinfo=timezone.utc
+                    ),
+                    end_ts=datetime.fromisoformat(end_gmt_str).replace(
+                        tzinfo=timezone.utc
+                    ),
+                    stage=stage.value,
+                    stage_label=stage.name,
+                )
+            )
+
+        if level_records:
+            upsert_model_instances(
+                session=session,
+                model_instances=level_records,
+                conflict_columns=["sleep_id", "start_ts"],
+                on_conflict_update=False,
+            )
+            click.echo(f"Processed {len(level_records)} sleep level records.")
+        else:
+            click.secho("⚠️ No valid sleep level records to insert.", fg="yellow")
 
     def _process_sleep_movement(
         self, sleep_data: dict, sleep_id: int, session: Session

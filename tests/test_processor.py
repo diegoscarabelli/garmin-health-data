@@ -21,6 +21,7 @@ from garmin_health_data.models import (
     ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
+    SleepLevel,
     StrengthExercise,
     StrengthSet,
     User,
@@ -711,6 +712,150 @@ class TestSleepUpsert:
         assert "start_ts" not in update_columns
         assert "end_ts" in update_columns
         assert "update_ts" in update_columns
+
+
+# --- Sleep level tests ------------------------------------------------------
+
+
+class TestProcessSleepLevel:
+    """
+    Tests for _process_sleep_level method.
+    """
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level method.
+
+        Verifies that sleepLevels intervals are converted to SleepLevel ORM instances
+        with the correct UTC timestamps and stage labels, that the upsert is called with
+        insert-or-ignore semantics on (sleep_id, start_ts), and that intervals with
+        unknown stage codes are skipped.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 1,  # LIGHT.
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T01:30:00.0",
+                    "activityLevel": 0,  # DEEP.
+                },
+                {
+                    "startGMT": "2022-01-01T01:30:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 2,  # REM.
+                },
+                {
+                    "startGMT": "2022-01-01T02:00:00.0",
+                    "endGMT": "2022-01-01T02:15:00.0",
+                    "activityLevel": 3,  # AWAKE.
+                },
+                {
+                    # Unknown code: should be skipped without raising.
+                    "startGMT": "2022-01-01T02:15:00.0",
+                    "endGMT": "2022-01-01T02:30:00.0",
+                    "activityLevel": 99,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert: upsert called once with insert-or-ignore semantics.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["sleep_id", "start_ts"]
+        assert kwargs["on_conflict_update"] is False
+
+        # Four valid intervals (the unknown code was dropped).
+        records = kwargs["model_instances"]
+        assert len(records) == 4
+        assert all(isinstance(rec, SleepLevel) for rec in records)
+
+        # Verify field mapping for the first record (LIGHT).
+        first = records[0]
+        assert first.sleep_id == 123456
+        assert first.start_ts == datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert first.end_ts == datetime(2022, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        assert first.stage == 1
+        assert first.stage_label == "LIGHT"
+
+        # Verify all stage labels in order.
+        assert [rec.stage_label for rec in records] == [
+            "LIGHT",
+            "DEEP",
+            "REM",
+            "AWAKE",
+        ]
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_empty(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level with no sleepLevels in payload.
+
+        Should return early without calling upsert.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with no sleepLevels key.
+        data = {}
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_all_invalid(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Test _process_sleep_level when every interval has an unknown stage code.
+
+        Should log and return without calling upsert (no spurious empty insert).
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with only unknown stage codes.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 99,
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 100,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
 
 
 # --- Strength training tests ------------------------------------------------

@@ -302,6 +302,21 @@ CREATE TABLE IF NOT EXISTS sleep (
 CREATE INDEX IF NOT EXISTS sleep_user_id_start_ts_idx
 ON sleep (user_id, start_ts DESC);
 
+-- Sleep stage classification intervals from Garmin Connect sleepLevels array. Each row is a contiguous interval during which a single discrete sleep stage (Deep, Light, REM, Awake) was detected. Used to reconstruct the per-night sleep stages timeline shown in the Garmin Connect sleep view.
+CREATE TABLE IF NOT EXISTS sleep_level (
+    sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
+    , start_ts DATETIME NOT NULL           -- Start timestamp of the sleep stage interval.
+    , end_ts DATETIME NOT NULL             -- End timestamp of the sleep stage interval.
+    , stage INTEGER NOT NULL               -- Sleep stage code: 0=Deep, 1=Light, 2=REM, 3=Awake. Sourced from sleepLevels[*].activityLevel in the Garmin SLEEP JSON response.
+    , stage_label TEXT NOT NULL            -- Human-readable sleep stage label (DEEP, LIGHT, REM, AWAKE) denormalized for query convenience.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (sleep_id, start_ts)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+);
+
+CREATE INDEX IF NOT EXISTS sleep_level_stage_idx
+ON sleep_level (stage);
+
 -- Sleep movement activity levels at regular 1-minute intervals throughout sleep sessions. Higher values indicate more movement.
 CREATE TABLE IF NOT EXISTS sleep_movement (
     sleep_id INTEGER NOT NULL            -- References the sleep session identifier.
