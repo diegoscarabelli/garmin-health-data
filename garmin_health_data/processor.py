@@ -194,9 +194,11 @@ class GarminProcessor(Processor):
         normalizes any fractional component to 6 digits and tolerates an optional
         trailing timezone designator (``Z`` or ``±HH:MM``), always returning a
         naive datetime so callers can either tag it as UTC or use it for naive
-        arithmetic (e.g. local-vs-UTC offset calculations). ``Z`` and ``+00:00``
-        are stripped in place; other offsets are converted to UTC before the
-        tzinfo is dropped so the wall clock reflects UTC.
+        arithmetic (e.g. local-vs-UTC offset calculations). ``Z`` is treated as
+        UTC and dropped for Python 3.10 compatibility (``fromisoformat`` did
+        not accept ``Z`` until 3.11); numeric offsets, including ``+00:00``,
+        are parsed as offsets and converted to UTC before the tzinfo is
+        dropped, so the returned wall clock always reflects UTC.
 
         :param ts_str: ISO 8601-like timestamp string from Garmin Connect.
         :return: Naive datetime parsed from the input string.
