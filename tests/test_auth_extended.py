@@ -142,7 +142,7 @@ class TestRefreshTokens:
     Test class for Garmin Connect token refresh flow.
     """
 
-    @patch("garmin_health_data.auth.Garmin")
+    @patch("garmin_health_data.auth.GarminClient")
     @patch("click.echo")
     def test_refresh_tokens_success_no_mfa(
         self,
@@ -157,7 +157,6 @@ class TestRefreshTokens:
         """
         mock_garmin = MagicMock()
         mock_garmin.login.return_value = None
-        mock_garmin.client = MagicMock()
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
@@ -166,9 +165,9 @@ class TestRefreshTokens:
         mock_garmin_class.assert_called_once()
         mock_garmin.login.assert_called_once()
         mock_garmin.get_user_profile.assert_called_once()
-        mock_garmin.client.dump.assert_called_once()
+        mock_garmin.dump.assert_called_once()
 
-    @patch("garmin_health_data.auth.Garmin")
+    @patch("garmin_health_data.auth.GarminClient")
     @patch("garmin_health_data.auth.get_mfa_code")
     @patch("click.echo")
     def test_refresh_tokens_success_with_mfa(
@@ -187,7 +186,6 @@ class TestRefreshTokens:
         mock_get_mfa.return_value = "123456"
         mock_garmin = MagicMock()
         mock_garmin.login.return_value = ("needs_mfa", "mfa_token")
-        mock_garmin.client = MagicMock()
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
@@ -197,9 +195,9 @@ class TestRefreshTokens:
         mock_garmin.login.assert_called_once()
         mock_garmin.get_user_profile.assert_called_once()
         mock_garmin.resume_login.assert_called_once_with("mfa_token", "123456")
-        mock_garmin.client.dump.assert_called_once()
+        mock_garmin.dump.assert_called_once()
 
-    @patch("garmin_health_data.auth.Garmin")
+    @patch("garmin_health_data.auth.GarminClient")
     @patch("click.echo")
     @patch("click.secho")
     def test_refresh_tokens_failure_invalid_credentials(
@@ -219,16 +217,15 @@ class TestRefreshTokens:
 
         mock_garmin = MagicMock()
         mock_garmin.login.side_effect = Exception("401 Unauthorized")
-        mock_garmin.client = MagicMock()
         mock_garmin_class.return_value = mock_garmin
 
         with pytest.raises(click.ClickException, match="Authentication failed"):
             refresh_tokens("invalid@example.com", "wrong_password")
 
-        # Should not call client.dump if login fails.
-        mock_garmin.client.dump.assert_not_called()
+        # Should not call dump if login fails.
+        mock_garmin.dump.assert_not_called()
 
-    @patch("garmin_health_data.auth.Garmin")
+    @patch("garmin_health_data.auth.GarminClient")
     @patch("garmin_health_data.auth.get_mfa_code")
     @patch("click.echo")
     def test_refresh_tokens_mfa_retry_on_failure(
@@ -251,11 +248,10 @@ class TestRefreshTokens:
             Exception("Invalid MFA"),
             None,
         ]
-        mock_garmin.client = MagicMock()
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
         refresh_tokens("test@example.com", "password123")
 
         assert mock_garmin.resume_login.call_count == 2
-        mock_garmin.client.dump.assert_called_once()
+        mock_garmin.dump.assert_called_once()

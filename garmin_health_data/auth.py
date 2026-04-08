@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import click
-import garminconnect as _gc
-from garminconnect import Garmin
+from garmin_health_data.garmin_client import GarminClient
 
 
 def get_credentials() -> Tuple[str, str]:
@@ -64,7 +63,7 @@ def get_mfa_code() -> str:
     return mfa_code
 
 
-def _handle_mfa_authentication(garmin: Garmin, result2) -> None:
+def _handle_mfa_authentication(garmin: GarminClient, result2) -> None:
     """
     Handle MFA authentication with one retry attempt.
 
@@ -182,11 +181,9 @@ def refresh_tokens(
         click.echo()
 
     try:
-        # Initialize Garmin client with MFA support.
-        garmin = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
-
-        # Attempt login.
-        login_result = garmin.login()
+        # Initialize vendored client and attempt login with MFA support.
+        garmin = GarminClient()
+        login_result = garmin.login(email, password, return_on_mfa=True)
 
         # Handle different return value formats.
         if isinstance(login_result, tuple) and len(login_result) == 2:
@@ -233,13 +230,8 @@ def refresh_tokens(
         if sys.platform != "win32":
             token_path.chmod(0o700)
 
-        garmin.client.dump(str(token_path))
-
-        # Lock down token files to owner-only (client.dump uses default umask).
-        if sys.platform != "win32":
-            for token_file in token_path.iterdir():
-                if token_file.is_file():
-                    token_file.chmod(0o600)
+        # dump() writes garmin_tokens.json with 0o600 from creation time.
+        garmin.dump(str(token_path))
 
         if not silent:
             click.echo()
@@ -256,9 +248,7 @@ def refresh_tokens(
 
     except Exception as e:
         click.echo()
-        gc_ver = getattr(_gc, "__version__", "unknown")
         click.secho(f"❌ Authentication failed: {str(e)}", fg="red", bold=True)
-        click.echo(f"   garminconnect version: {gc_ver}")
         _print_troubleshooting()
         raise click.ClickException("Authentication failed")
 

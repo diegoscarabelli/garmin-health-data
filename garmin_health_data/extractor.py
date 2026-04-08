@@ -17,7 +17,7 @@ from typing import List, Optional, Union, Callable, Dict
 
 import click
 import pendulum
-from garminconnect import Garmin
+from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
@@ -101,9 +101,7 @@ class GarminExtractor:
         click.echo("Authenticating with Garmin Connect using saved tokens.")
 
         try:
-            # Initialize Garmin client and load existing tokens.
-            garmin = Garmin()
-            garmin.login(str(token_store_path))
+            garmin = GarminClient.from_tokens(token_store_path)
             self.garmin_client = garmin
             click.secho(
                 f"Authentication successful for {self.garmin_client.full_name}"
@@ -411,7 +409,7 @@ class GarminExtractor:
             # Download FIT file.
             fit_data = self.garmin_client.download_activity(
                 activity_id,
-                dl_fmt=self.garmin_client.ActivityDownloadFormat.ORIGINAL,
+                dl_fmt=ActivityDownloadFormat.ORIGINAL,
             )
 
             # Extract FIT file from ZIP archive.
