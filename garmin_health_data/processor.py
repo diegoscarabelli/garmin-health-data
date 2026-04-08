@@ -181,6 +181,32 @@ class GarminProcessor(Processor):
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
+    @staticmethod
+    def _parse_garmin_gmt(ts_str: str) -> datetime:
+        """
+        Parse a Garmin GMT timestamp string into a UTC-aware datetime.
+
+        Garmin Connect returns naive ISO 8601 timestamps for GMT fields, often with
+        a single-digit fractional second (e.g. ``"2026-04-06T05:47:59.0"``). Python
+        3.10's ``datetime.fromisoformat`` is strict and only accepts 0, 3, or 6
+        fractional digits, raising ``ValueError`` on the Garmin format. Python 3.11+
+        relaxed the parser, but garmin-health-data still supports Python 3.10. This
+        helper normalizes any fractional component to 6 digits and tolerates an
+        optional trailing ``Z`` (UTC) suffix.
+
+        :param ts_str: ISO 8601-like timestamp string from Garmin Connect.
+        :return: Timezone-aware datetime in UTC.
+        """
+
+        if ts_str.endswith("Z"):
+            ts_str = ts_str[:-1]
+        if "." in ts_str:
+            date_part, frac = ts_str.rsplit(".", 1)
+            # Pad/truncate fractional seconds to 6 digits so Python 3.10's strict
+            # fromisoformat parser can handle Garmin's single-digit format.
+            ts_str = f"{date_part}.{frac.ljust(6, '0')[:6]}"
+        return datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+
     def _parse_filename(self, filename: str) -> Dict[str, str]:
         """
         Parse a Garmin filename to extract `user_id`, `data_type`, and `timestamp`.
@@ -1315,12 +1341,8 @@ class GarminProcessor(Processor):
             level_records.append(
                 SleepLevel(
                     sleep_id=sleep_id,
-                    start_ts=datetime.fromisoformat(start_gmt_str).replace(
-                        tzinfo=timezone.utc
-                    ),
-                    end_ts=datetime.fromisoformat(end_gmt_str).replace(
-                        tzinfo=timezone.utc
-                    ),
+                    start_ts=self._parse_garmin_gmt(start_gmt_str),
+                    end_ts=self._parse_garmin_gmt(end_gmt_str),
                     stage=stage.value,
                     stage_label=stage.name,
                 )
@@ -1357,9 +1379,7 @@ class GarminProcessor(Processor):
         for movement in sleep_movement:
             timestamp_str = movement.pop("startGMT")
             if timestamp_str:
-                timestamp = datetime.fromisoformat(timestamp_str).replace(
-                    tzinfo=timezone.utc
-                )
+                timestamp = self._parse_garmin_gmt(timestamp_str)
                 movement_records.append(
                     SleepMovement(
                         sleep_id=sleep_id,
