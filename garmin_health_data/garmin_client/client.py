@@ -423,9 +423,10 @@ class GarminClient:
             URL used during the originating login flow.
         :raises GarminTooManyRequestsError: On HTTP 429.
         :raises GarminConnectionError: If every client ID fails due to transport errors
-            (connection, timeout, SSL).
+            (connection, timeout, SSL) or HTTP 5xx server errors.
         :raises GarminAuthenticationError: If exchange fails on all client IDs for non-
-            transport reasons (HTTP error, malformed response, missing token).
+            transport, non-server reasons (4xx HTTP error, malformed response, missing
+            token).
         """
 
         svc_url = service_url or MOBILE_SSO_SERVICE_URL
@@ -434,6 +435,7 @@ class GarminClient:
         di_refresh = None
         di_client_id = None
         last_transport_error: Optional[Exception] = None
+        last_server_error: Optional[tuple] = None
 
         for client_id in DI_CLIENT_IDS:
             try:
@@ -472,6 +474,8 @@ class GarminClient:
                     r.status_code,
                     r.text[:200],
                 )
+                if r.status_code >= 500:
+                    last_server_error = (r.status_code, r.text[:200])
                 continue
             try:
                 data = r.json()
@@ -497,6 +501,11 @@ class GarminClient:
                     f"DI token exchange transport error on all client IDs: "
                     f"{last_transport_error}"
                 ) from last_transport_error
+            if last_server_error is not None:
+                raise GarminConnectionError(
+                    f"DI token exchange server error on all client IDs: "
+                    f"HTTP {last_server_error[0]}: {last_server_error[1]}"
+                )
             raise GarminAuthenticationError(
                 "DI token exchange failed for all client IDs"
             )

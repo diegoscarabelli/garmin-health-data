@@ -67,14 +67,25 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
     # Use os.open with an explicit mode so new files are created with 0o600
     # from the start, eliminating the write-then-chmod TOCTOU window where a
     # freshly created file briefly has umask-derived permissions (often 0o644).
-    # os.fchmod re-asserts 0o600 on the open fd before any bytes are written,
-    # which also covers pre-existing files whose permissions may have drifted.
+    # Where available, os.fchmod re-asserts 0o600 on the open fd before any
+    # bytes are written, which also covers pre-existing files whose permissions
+    # may have drifted. On platforms without os.fchmod (notably Windows), fall
+    # back to a best-effort os.chmod after close.
     fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    needs_post_close_chmod = not hasattr(os, "fchmod")
     try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, content)
+        if not needs_post_close_chmod:
+            os.fchmod(fd, 0o600)  # type: ignore[attr-defined]
+        total_written = 0
+        while total_written < len(content):
+            written = os.write(fd, content[total_written:])
+            if written == 0:
+                raise OSError("Failed to write token store to disk")
+            total_written += written
     finally:
         os.close(fd)
+    if needs_post_close_chmod:
+        os.chmod(str(p), 0o600)
 
 
 def loads(client: "GarminClient", tokenstore: str) -> None:
