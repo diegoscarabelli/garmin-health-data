@@ -295,9 +295,10 @@ strength_set (per-set data: reps, weight, ML-classified exercise name)
 ```
 *Foreign keys: both tables → `activity.activity_id`*
 
-**Sleep Metrics (6 tables)**
+**Sleep Metrics (7 tables)**
 ```
 sleep (main sleep sessions)
+├── sleep_level (discrete sleep stage intervals)
 ├── sleep_movement (movement during sleep)
 ├── sleep_restless_moment (restless periods)
 ├── spo2 (blood oxygen saturation)
@@ -402,8 +403,9 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 
 #### Sleep Data Granularity
 
-**garmin-health-data** provides comprehensive sleep tracking with 6 tables:
+**garmin-health-data** provides comprehensive sleep tracking with 7 tables:
 - `sleep`: Main sleep session with scores and metadata.
+- `sleep_level`: Variable-length intervals classifying each segment of the night as Deep, Light, REM, or Awake.
 - `sleep_movement`: 1-minute interval movement data throughout sleep.
 - `hrv`: 5-minute interval heart rate variability measurements.
 - `spo2`: 1-minute interval blood oxygen saturation.

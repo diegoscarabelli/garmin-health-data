@@ -21,6 +21,7 @@ from garmin_health_data.models import (
     ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
+    SleepLevel,
     StrengthExercise,
     StrengthSet,
     User,
@@ -711,6 +712,245 @@ class TestSleepUpsert:
         assert "start_ts" not in update_columns
         assert "end_ts" in update_columns
         assert "update_ts" in update_columns
+
+
+# --- Sleep level tests ------------------------------------------------------
+
+
+class TestProcessSleepLevel:
+    """
+    Tests for _process_sleep_level method.
+    """
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level method.
+
+        Verifies that sleepLevels intervals are converted to SleepLevel ORM instances
+        with the correct UTC timestamps and stage labels, that the upsert is called with
+        insert-or-ignore semantics on (sleep_id, start_ts), and that intervals with
+        unknown stage codes are skipped.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 1,  # LIGHT.
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T01:30:00.0",
+                    "activityLevel": 0,  # DEEP.
+                },
+                {
+                    "startGMT": "2022-01-01T01:30:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 2,  # REM.
+                },
+                {
+                    "startGMT": "2022-01-01T02:00:00.0",
+                    "endGMT": "2022-01-01T02:15:00.0",
+                    "activityLevel": 3,  # AWAKE.
+                },
+                {
+                    # Unknown code: should be skipped without raising.
+                    "startGMT": "2022-01-01T02:15:00.0",
+                    "endGMT": "2022-01-01T02:30:00.0",
+                    "activityLevel": 99,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert: upsert called once with insert-or-ignore semantics.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["sleep_id", "start_ts"]
+        assert kwargs["on_conflict_update"] is False
+
+        # Four valid intervals (the unknown code was dropped).
+        records = kwargs["model_instances"]
+        assert len(records) == 4
+        assert all(isinstance(rec, SleepLevel) for rec in records)
+
+        # Verify field mapping for the first record (LIGHT).
+        first = records[0]
+        assert first.sleep_id == 123456
+        assert first.start_ts == datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert first.end_ts == datetime(2022, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        assert first.stage == 1
+        assert first.stage_label == "LIGHT"
+
+        # Verify all stage labels in order.
+        assert [rec.stage_label for rec in records] == [
+            "LIGHT",
+            "DEEP",
+            "REM",
+            "AWAKE",
+        ]
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_empty(self, mock_upsert, processor, mock_session):
+        """
+        Test _process_sleep_level with no sleepLevels in payload.
+
+        Should return early without calling upsert.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with no sleepLevels key.
+        data = {}
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_real_garmin_format(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Regression test for Python 3.10 ``datetime.fromisoformat`` compatibility.
+
+        Garmin Connect returns timestamps with a single-digit fractional second
+        (e.g. ``"2026-04-06T05:47:59.0"``) which Python 3.10 cannot parse natively.
+        This exercises the production format end-to-end via the
+        :meth:`GarminProcessor._parse_garmin_gmt` helper to ensure the path stays
+        green on every supported Python.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: real Garmin sleepLevels format with .0 fractional second.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2026-04-06T05:47:59.0",
+                    "endGMT": "2026-04-06T05:48:59.0",
+                    "activityLevel": 1.0,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 999, mock_session)
+
+        # Assert: parsed correctly and tagged as UTC.
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].start_ts == datetime(
+            2026, 4, 6, 5, 47, 59, tzinfo=timezone.utc
+        )
+        assert records[0].end_ts == datetime(2026, 4, 6, 5, 48, 59, tzinfo=timezone.utc)
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_all_invalid(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Test _process_sleep_level when every interval has an unknown stage code.
+
+        Should log and return without calling upsert (no spurious empty insert).
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: payload with only unknown stage codes.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2022-01-01T00:00:00.0",
+                    "endGMT": "2022-01-01T01:00:00.0",
+                    "activityLevel": 99,
+                },
+                {
+                    "startGMT": "2022-01-01T01:00:00.0",
+                    "endGMT": "2022-01-01T02:00:00.0",
+                    "activityLevel": 100,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 123456, mock_session)
+
+        # Assert.
+        mock_upsert.assert_not_called()
+
+
+class TestParseGarminIso:
+    """
+    Tests for ``GarminProcessor._parse_garmin_iso`` and ``_parse_garmin_gmt``.
+
+    These helpers exist because Python 3.10's strict ``datetime.fromisoformat``
+    rejects Garmin's single-digit fractional second format. The class is the
+    central regression test for that compatibility shim.
+    """
+
+    @pytest.mark.parametrize(
+        "ts_str, expected",
+        [
+            # Garmin's real-world format: single-digit fractional second.
+            ("2026-04-06T05:47:59.0", datetime(2026, 4, 6, 5, 47, 59)),
+            # No fractional component at all.
+            ("2026-04-06T05:47:59", datetime(2026, 4, 6, 5, 47, 59)),
+            # Six-digit fractional (already isoformat-canonical).
+            ("2026-04-06T05:47:59.123456", datetime(2026, 4, 6, 5, 47, 59, 123456)),
+            # Three-digit fractional (millisecond precision).
+            ("2026-04-06T05:47:59.500", datetime(2026, 4, 6, 5, 47, 59, 500000)),
+            # Trailing Z suffix gets stripped.
+            ("2026-04-06T05:47:59.0Z", datetime(2026, 4, 6, 5, 47, 59)),
+            # Z with no fractional.
+            ("2026-04-06T05:47:59Z", datetime(2026, 4, 6, 5, 47, 59)),
+            # Explicit +00:00 offset behaves like Z (same wall clock).
+            ("2026-04-06T05:47:59.0+00:00", datetime(2026, 4, 6, 5, 47, 59)),
+            # Non-zero offset gets converted to UTC before tzinfo is dropped.
+            ("2026-04-06T05:47:59.0+05:30", datetime(2026, 4, 6, 0, 17, 59)),
+            # Negative offset converts the other way.
+            ("2026-04-06T05:47:59-08:00", datetime(2026, 4, 6, 13, 47, 59)),
+        ],
+    )
+    def test_parse_garmin_iso(self, ts_str, expected):
+        """
+        Parse a variety of Garmin ISO timestamp shapes into naive datetimes.
+
+        :param ts_str: Input timestamp string.
+        :param expected: Expected naive datetime.
+        """
+
+        result = GarminProcessor._parse_garmin_iso(ts_str)
+        assert result == expected
+        assert result.tzinfo is None
+
+    def test_parse_garmin_gmt_tags_utc(self):
+        """
+        ``_parse_garmin_gmt`` should return the same wall clock as ``_parse_garmin_iso``
+        but tagged with UTC timezone info.
+        """
+
+        result = GarminProcessor._parse_garmin_gmt("2026-04-06T05:47:59.0")
+        assert result == datetime(2026, 4, 6, 5, 47, 59, tzinfo=timezone.utc)
+        assert result.tzinfo == timezone.utc
 
 
 # --- Strength training tests ------------------------------------------------

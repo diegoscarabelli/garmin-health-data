@@ -470,6 +470,26 @@ class Sleep(Base, UpsertBase):
     next_sleep_need_nap_adj = Column(String)
 
 
+class SleepLevel(Base, InsertBase):
+    """
+    Sleep stage classification intervals from Garmin Connect sleepLevels array.
+
+    Each row is a contiguous interval during which a single discrete sleep stage
+    (Deep, Light, REM, Awake) was detected. Used to reconstruct the per-night sleep
+    stages timeline shown in the Garmin Connect sleep view.
+
+    Time interval: Variable-length contiguous intervals (one row per stage segment).
+    """
+
+    __tablename__ = "sleep_level"
+
+    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    start_ts = Column(DateTime(timezone=True), primary_key=True)
+    end_ts = Column(DateTime(timezone=True), nullable=False)
+    stage = Column(Integer, nullable=False)
+    stage_label = Column(String, nullable=False)
+
+
 class SleepMovement(Base, InsertBase):
     """
     Timeseries data capturing movement activity levels throughout a sleep session.

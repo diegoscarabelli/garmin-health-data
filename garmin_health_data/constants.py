@@ -8,7 +8,7 @@ metadata.
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Dict, List, Optional
 
 
@@ -331,6 +331,22 @@ GARMIN_DATA_REGISTRY = GarminDataRegistry()
 
 # Dynamically created file types enum based on registered data types.
 GARMIN_FILE_TYPES = _create_garmin_file_types()
+
+
+class SleepStage(IntEnum):
+    """
+    Discrete sleep stage classification used by Garmin Connect.
+
+    Values map to the integer codes found in the SLEEP JSON response under
+    sleepLevels[*].activityLevel. The enum name (e.g. "DEEP") is stored in
+    sleep_level.stage_label as a denormalized human-readable label.
+    """
+
+    DEEP = 0
+    LIGHT = 1
+    REM = 2
+    AWAKE = 3
+
 
 PR_TYPE_LABELS = {
     1: "Run: 1 km",
