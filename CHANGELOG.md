@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Index on `stage` for cheap stage-distribution queries.
 - New `SleepStage` IntEnum in `constants.py` mapping the integer codes in `sleepLevels[*].activityLevel` to their human-readable names (`DEEP`, `LIGHT`, `REM`, `AWAKE`).
 
+### Fixed
+
+- **Python 3.10 compatibility for Garmin GMT timestamps**: Several processors called `datetime.fromisoformat` directly on Garmin's single-digit fractional second format (e.g. `"2026-04-06T05:47:59.0"`), which Python 3.10's strict parser rejects with `ValueError`. New `_parse_garmin_iso` / `_parse_garmin_gmt` helpers on `GarminProcessor` normalize the fractional component to 6 digits and tolerate an optional trailing `Z` suffix. Applied to `sleep_level`, `sleep_movement`, `sleep_spo2`, `steps`, `floors`, and `training_readiness` ingestion paths. The bug was latent on Python 3.10 because no existing tests exercised these paths with the real Garmin format; only the new `sleep_level` test surfaced it.
+
 ## [2.4.0] - 2026-04-06
 
 ### Added

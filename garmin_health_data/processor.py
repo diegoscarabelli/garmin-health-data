@@ -182,20 +182,22 @@ class GarminProcessor(Processor):
             return json.load(f)
 
     @staticmethod
-    def _parse_garmin_gmt(ts_str: str) -> datetime:
+    def _parse_garmin_iso(ts_str: str) -> datetime:
         """
-        Parse a Garmin GMT timestamp string into a UTC-aware datetime.
+        Parse a Garmin ISO 8601 timestamp string into a naive datetime.
 
-        Garmin Connect returns naive ISO 8601 timestamps for GMT fields, often with
-        a single-digit fractional second (e.g. ``"2026-04-06T05:47:59.0"``). Python
-        3.10's ``datetime.fromisoformat`` is strict and only accepts 0, 3, or 6
-        fractional digits, raising ``ValueError`` on the Garmin format. Python 3.11+
-        relaxed the parser, but garmin-health-data still supports Python 3.10. This
-        helper normalizes any fractional component to 6 digits and tolerates an
-        optional trailing ``Z`` (UTC) suffix.
+        Garmin Connect returns ISO 8601 timestamps with a single-digit fractional
+        second (e.g. ``"2026-04-06T05:47:59.0"``). Python 3.10's
+        ``datetime.fromisoformat`` is strict and only accepts 0, 3, or 6 fractional
+        digits, raising ``ValueError`` on the Garmin format. Python 3.11+ relaxed
+        the parser, but garmin-health-data still supports Python 3.10. This helper
+        normalizes any fractional component to 6 digits and tolerates an optional
+        trailing ``Z`` (UTC) suffix, returning a naive datetime so callers can
+        either tag it as UTC or use it for naive arithmetic (e.g. local-vs-UTC
+        offset calculations).
 
         :param ts_str: ISO 8601-like timestamp string from Garmin Connect.
-        :return: Timezone-aware datetime in UTC.
+        :return: Naive datetime parsed from the input string.
         """
 
         if ts_str.endswith("Z"):
@@ -205,7 +207,24 @@ class GarminProcessor(Processor):
             # Pad/truncate fractional seconds to 6 digits so Python 3.10's strict
             # fromisoformat parser can handle Garmin's single-digit format.
             ts_str = f"{date_part}.{frac.ljust(6, '0')[:6]}"
-        return datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(ts_str)
+
+    @classmethod
+    def _parse_garmin_gmt(cls, ts_str: str) -> datetime:
+        """
+        Parse a Garmin GMT timestamp string into a UTC-aware datetime.
+
+        Thin wrapper around :meth:`_parse_garmin_iso` that tags the result as UTC.
+        Use this for any Garmin field documented as GMT/UTC (e.g. ``startGMT``,
+        ``endGMT``, ``epochTimestamp``). Do **not** use for local-time fields like
+        ``timestampLocal``: those need :meth:`_parse_garmin_iso` directly so they
+        can participate in naive offset arithmetic against the UTC counterpart.
+
+        :param ts_str: ISO 8601-like GMT timestamp string from Garmin Connect.
+        :return: Timezone-aware datetime in UTC.
+        """
+
+        return cls._parse_garmin_iso(ts_str).replace(tzinfo=timezone.utc)
 
     def _parse_filename(self, filename: str) -> Dict[str, str]:
         """
@@ -1462,9 +1481,7 @@ class GarminProcessor(Processor):
         for spo2_reading in spo2_data:
             timestamp_str = spo2_reading.pop("epochTimestamp")
             if timestamp_str:
-                timestamp = datetime.fromisoformat(timestamp_str).replace(
-                    tzinfo=timezone.utc
-                )
+                timestamp = self._parse_garmin_gmt(timestamp_str)
                 spo2_records.append(
                     SpO2(
                         sleep_id=sleep_id,
@@ -1865,19 +1882,21 @@ class GarminProcessor(Processor):
             if not timestamp_str:
                 continue
 
-            # Parse timestamps and calculate timezone offset.
-            timestamp_utc = datetime.fromisoformat(timestamp_str)
+            # Parse the UTC timestamp as naive first so we can do naive arithmetic
+            # against the local string for the offset calculation, then tag UTC
+            # when assembling the record.
+            timestamp_utc_naive = self._parse_garmin_iso(timestamp_str)
             timezone_offset_hours = 0.0
 
             if timestamp_local_str:
-                timestamp_local = datetime.fromisoformat(timestamp_local_str)
-                offset_seconds = (timestamp_local - timestamp_utc).total_seconds()
+                timestamp_local = self._parse_garmin_iso(timestamp_local_str)
+                offset_seconds = (timestamp_local - timestamp_utc_naive).total_seconds()
                 timezone_offset_hours = offset_seconds / 3600
 
             # Start building the training readiness record.
             readiness_record = {
                 "user_id": int(self.user_id),
-                "timestamp": timestamp_utc.replace(tzinfo=timezone.utc),
+                "timestamp": timestamp_utc_naive.replace(tzinfo=timezone.utc),
                 "timezone_offset_hours": timezone_offset_hours,
             }
 
@@ -2046,7 +2065,7 @@ class GarminProcessor(Processor):
             activity_level_constant = record.pop("activityLevelConstant", None)
 
             if end_gmt and steps is not None:
-                timestamp = datetime.fromisoformat(end_gmt).replace(tzinfo=timezone.utc)
+                timestamp = self._parse_garmin_gmt(end_gmt)
                 steps_records.append(
                     Steps(
                         user_id=int(self.user_id),
@@ -2246,7 +2265,7 @@ class GarminProcessor(Processor):
                     floor_value[3],
                 )
                 # Use endTimeGMT as timestamp.
-                timestamp = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
+                timestamp = self._parse_garmin_gmt(end_time_str)
                 floors_records.append(
                     Floors(
                         user_id=int(self.user_id),

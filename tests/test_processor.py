@@ -822,6 +822,46 @@ class TestProcessSleepLevel:
         mock_upsert.assert_not_called()
 
     @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_process_sleep_level_real_garmin_format(
+        self, mock_upsert, processor, mock_session
+    ):
+        """
+        Regression test for Python 3.10 ``datetime.fromisoformat`` compatibility.
+
+        Garmin Connect returns timestamps with a single-digit fractional second
+        (e.g. ``"2026-04-06T05:47:59.0"``) which Python 3.10 cannot parse natively.
+        This exercises the production format end-to-end via the
+        :meth:`GarminProcessor._parse_garmin_gmt` helper to ensure the path stays
+        green on every supported Python.
+
+        :param mock_upsert: Mock upsert function.
+        :param processor: GarminProcessor fixture.
+        :param mock_session: Mock session fixture.
+        """
+
+        # Arrange: real Garmin sleepLevels format with .0 fractional second.
+        data = {
+            "sleepLevels": [
+                {
+                    "startGMT": "2026-04-06T05:47:59.0",
+                    "endGMT": "2026-04-06T05:48:59.0",
+                    "activityLevel": 1.0,
+                },
+            ]
+        }
+
+        # Act.
+        processor._process_sleep_level(data, 999, mock_session)
+
+        # Assert: parsed correctly and tagged as UTC.
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].start_ts == datetime(
+            2026, 4, 6, 5, 47, 59, tzinfo=timezone.utc
+        )
+        assert records[0].end_ts == datetime(2026, 4, 6, 5, 48, 59, tzinfo=timezone.utc)
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
     def test_process_sleep_level_all_invalid(
         self, mock_upsert, processor, mock_session
     ):
@@ -856,6 +896,53 @@ class TestProcessSleepLevel:
 
         # Assert.
         mock_upsert.assert_not_called()
+
+
+class TestParseGarminIso:
+    """
+    Tests for ``GarminProcessor._parse_garmin_iso`` and ``_parse_garmin_gmt``.
+
+    These helpers exist because Python 3.10's strict ``datetime.fromisoformat``
+    rejects Garmin's single-digit fractional second format. The class is the
+    central regression test for that compatibility shim.
+    """
+
+    @pytest.mark.parametrize(
+        "ts_str, expected",
+        [
+            # Garmin's real-world format: single-digit fractional second.
+            ("2026-04-06T05:47:59.0", datetime(2026, 4, 6, 5, 47, 59)),
+            # No fractional component at all.
+            ("2026-04-06T05:47:59", datetime(2026, 4, 6, 5, 47, 59)),
+            # Six-digit fractional (already isoformat-canonical).
+            ("2026-04-06T05:47:59.123456", datetime(2026, 4, 6, 5, 47, 59, 123456)),
+            # Three-digit fractional (millisecond precision).
+            ("2026-04-06T05:47:59.500", datetime(2026, 4, 6, 5, 47, 59, 500000)),
+            # Trailing Z suffix gets stripped.
+            ("2026-04-06T05:47:59.0Z", datetime(2026, 4, 6, 5, 47, 59)),
+            # Z with no fractional.
+            ("2026-04-06T05:47:59Z", datetime(2026, 4, 6, 5, 47, 59)),
+        ],
+    )
+    def test_parse_garmin_iso(self, ts_str, expected):
+        """
+        Parse a variety of Garmin ISO timestamp shapes into naive datetimes.
+
+        :param ts_str: Input timestamp string.
+        :param expected: Expected naive datetime.
+        """
+
+        assert GarminProcessor._parse_garmin_iso(ts_str) == expected
+
+    def test_parse_garmin_gmt_tags_utc(self):
+        """
+        ``_parse_garmin_gmt`` should return the same wall clock as ``_parse_garmin_iso``
+        but tagged with UTC timezone info.
+        """
+
+        result = GarminProcessor._parse_garmin_gmt("2026-04-06T05:47:59.0")
+        assert result == datetime(2026, 4, 6, 5, 47, 59, tzinfo=timezone.utc)
+        assert result.tzinfo == timezone.utc
 
 
 # --- Strength training tests ------------------------------------------------
