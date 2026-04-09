@@ -55,37 +55,62 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
     by other users, even if the file is freshly created (umask) or if a caller
     forgets to chmod after the initial bootstrap.
 
+    Writes to a sibling temp file first, then atomically replaces the destination
+    via ``os.replace`` so an interrupted write never leaves a truncated token store.
+
     :param client: GarminClient with populated DI fields.
     :param path: Directory or ``.json`` file path.
+    :raises GarminConnectionError: If the token store cannot be written.
     """
 
     p = Path(path).expanduser()
     if p.is_dir() or not p.name.endswith(".json"):
         p = p / "garmin_tokens.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
+
     content = dumps(client).encode()
-    # Use os.open with an explicit mode so new files are created with 0o600
-    # from the start, eliminating the write-then-chmod TOCTOU window where a
-    # freshly created file briefly has umask-derived permissions (often 0o644).
-    # Where available, os.fchmod re-asserts 0o600 on the open fd before any
-    # bytes are written, which also covers pre-existing files whose permissions
-    # may have drifted. On platforms without os.fchmod (notably Windows), fall
-    # back to a best-effort os.chmod after close.
-    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    temp_path = p.parent / f".{p.name}.tmp.{os.getpid()}"
     needs_post_close_chmod = not hasattr(os, "fchmod")
+    fd: int = -1
+
     try:
-        if not needs_post_close_chmod:
-            os.fchmod(fd, 0o600)  # type: ignore[attr-defined]
-        total_written = 0
-        while total_written < len(content):
-            written = os.write(fd, content[total_written:])
-            if written == 0:
-                raise OSError("Failed to write token store to disk")
-            total_written += written
-    finally:
-        os.close(fd)
-    if needs_post_close_chmod:
-        os.chmod(str(p), 0o600)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a sibling temp file first, then atomically replace the
+        # destination so an interrupted write does not leave a truncated token
+        # store behind. O_EXCL ensures we own this temp file exclusively.
+        fd = os.open(
+            str(temp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            if not needs_post_close_chmod:
+                os.fchmod(fd, 0o600)  # type: ignore[attr-defined]
+            total_written = 0
+            while total_written < len(content):
+                written = os.write(fd, content[total_written:])
+                if written == 0:
+                    raise OSError("Failed to write token store to disk")
+                total_written += written
+        finally:
+            os.close(fd)
+            fd = -1
+
+        if needs_post_close_chmod:
+            os.chmod(str(temp_path), 0o600)
+
+        os.replace(str(temp_path), str(p))
+    except OSError as e:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        raise GarminConnectionError(f"Token store dump() write failed: {e}") from e
 
 
 def loads(client: "GarminClient", tokenstore: str) -> None:

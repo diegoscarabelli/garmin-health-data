@@ -423,10 +423,10 @@ class GarminClient:
             URL used during the originating login flow.
         :raises GarminTooManyRequestsError: On HTTP 429.
         :raises GarminConnectionError: If every client ID fails due to transport errors
-            (connection, timeout, SSL) or HTTP 5xx server errors.
-        :raises GarminAuthenticationError: If exchange fails on all client IDs for non-
-            transport, non-server reasons (4xx HTTP error, malformed response, missing
-            token).
+            (connection, timeout, SSL), or if all HTTP failures are 5xx with no 4xx
+            responses (pure server-side outage).
+        :raises GarminAuthenticationError: If any client ID returns a 4xx, or if all
+            fail for non-transport reasons (malformed response, missing token).
         """
 
         svc_url = service_url or MOBILE_SSO_SERVICE_URL
@@ -436,6 +436,7 @@ class GarminClient:
         di_client_id = None
         last_transport_error: Optional[Exception] = None
         last_server_error: Optional[tuple] = None
+        had_auth_failure = False  # True if any non-429 4xx response seen
 
         for client_id in DI_CLIENT_IDS:
             try:
@@ -476,6 +477,8 @@ class GarminClient:
                 )
                 if r.status_code >= 500:
                     last_server_error = (r.status_code, r.text[:200])
+                else:
+                    had_auth_failure = True
                 continue
             try:
                 data = r.json()
@@ -501,7 +504,10 @@ class GarminClient:
                     f"DI token exchange transport error on all client IDs: "
                     f"{last_transport_error}"
                 ) from last_transport_error
-            if last_server_error is not None:
+            if last_server_error is not None and not had_auth_failure:
+                # Only treat as a server-side failure if every HTTP response
+                # was a 5xx: a mix of 5xx and 4xx suggests the ticket itself
+                # was invalid (auth problem), not a Garmin outage.
                 raise GarminConnectionError(
                     f"DI token exchange server error on all client IDs: "
                     f"HTTP {last_server_error[0]}: {last_server_error[1]}"
