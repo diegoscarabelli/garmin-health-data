@@ -69,11 +69,11 @@ garmin auth
 
 `garmin auth` uses a self-contained SSO client (`garmin_health_data/garmin_client/`) that tries five login strategies in order until one succeeds:
 
-1. Widget login via `curl_cffi` (TLS browser fingerprint impersonation)
-2. Portal web login via `curl_cffi` (browser impersonation + 30-45s pre-submit delay)
-3. Portal login via `curl_cffi` (mobile impersonation + 30-45s pre-submit delay)
-4. Portal web login via `requests`
-5. Mobile login via `requests`
+1. Portal web login via `curl_cffi` (TLS browser fingerprint impersonation, 30-45s pre-submit delay)
+2. Portal web login via `requests` (30-45s pre-submit delay)
+3. Mobile portal login via `curl_cffi` (mobile TLS impersonation, 30-45s pre-submit delay)
+4. Mobile login via `requests` (30-45s pre-submit delay)
+5. Widget login via `curl_cffi` (last resort — 429s reliably under current Cloudflare config, kept for future use)
 
 **If you see a 30-45 second pause during `garmin auth`, this is normal.** The delay is a deliberate Cloudflare WAF countermeasure — submitting credentials too quickly triggers a 429 rate limit. Tokens obtained are DI OAuth2 Bearer tokens; no session cookies or password are stored after the initial login.
 
