@@ -406,6 +406,8 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - `running_agg_metrics`: Running cadence, vertical oscillation, ground contact time, stride length, VO2 max.
 - `cycling_agg_metrics`: Power metrics (avg/max/normalized), cadence, pedal dynamics, FTP.
 - `swimming_agg_metrics`: Stroke count, SWOLF, pool length, stroke type.
+- `strength_exercise`: Per-exercise aggregates (sets, reps, volume, duration, max weight) from the activities list.
+- `strength_set`: Per-set granular data (set type, duration, reps, weight, ML-classified exercise name/category) from the exercise sets API endpoint.
 
 **garmindb** uses activity-type tables:
 - `StepsActivities`, `PaddleActivities`, `CycleActivities`, `ClimbingActivities`
