@@ -92,7 +92,12 @@ class GarminExtractor:
         - Idle for 30+ days (refresh token expired).
         - Authentication errors occur during extraction.
 
-        :param token_store_dir: Directory containing authentication tokens.
+        :param token_store_dir: Per-account directory containing
+            ``garmin_tokens.json`` (e.g. ``~/.garminconnect/12345678/``).
+            Must point to the account-level subdirectory, not the root
+            ``~/.garminconnect/`` directory. In normal usage this is always
+            supplied by the caller; the default is a placeholder that will
+            fail unless a ``garmin_tokens.json`` happens to exist there.
         :raises RuntimeError: If tokens are missing, expired, or invalid. Run
             ``garmin auth`` to resolve authentication issues.
         """

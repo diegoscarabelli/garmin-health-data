@@ -35,8 +35,23 @@ def dumps(client: "GarminClient") -> str:
 
     :param client: GarminClient with populated DI fields.
     :return: JSON string with ``di_token``, ``di_refresh_token``, ``di_client_id``.
+    :raises GarminAuthenticationError: If any required token field is missing,
+        indicating the client was not fully authenticated before dumping.
     """
 
+    missing = [
+        k
+        for k, v in (
+            ("di_token", client.di_token),
+            ("di_refresh_token", client.di_refresh_token),
+            ("di_client_id", client.di_client_id),
+        )
+        if not v
+    ]
+    if missing:
+        raise GarminAuthenticationError(
+            f"Cannot serialize unauthenticated client; missing fields: {missing!r}"
+        )
     data = {
         "di_token": client.di_token,
         "di_refresh_token": client.di_refresh_token,
