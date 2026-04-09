@@ -31,6 +31,7 @@ dependencies = [
     "click>=8.0",
     "sqlalchemy>=2.0",
     "curl-cffi>=0.7",
+    "requests>=2.28",
     "ua-generator>=1.0",
     "fitdecode>=0.10.0",
     "pendulum>=2.1.0",
