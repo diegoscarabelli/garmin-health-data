@@ -293,7 +293,7 @@ class GarminClient:
         last_err: Optional[Exception] = None
         for name, method in strategy_chain:
             try:
-                _LOGGER.debug("Trying login strategy: %s", name)
+                _LOGGER.info("Trying login strategy: %s", name)
                 result = method(
                     email,
                     password,
