@@ -1,6 +1,6 @@
 Extract your complete Garmin Connect health and activity data to a local SQLite database.
 
-**Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure. Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) for Garmin Connect API usage with native OAuth2 authentication.
+**Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure. Ships a self-contained Garmin Connect client (`garmin_health_data/garmin_client/`) that handles SSO authentication and API access with no dependency on `python-garminconnect`.
 
 ## Features
 
@@ -64,6 +64,20 @@ garmin auth
 - You typically only need to run `garmin auth` once per account initially, or after 30+ days of inactivity.
 - `garmin extract` automatically checks for existing tokens and only prompts for authentication if they're missing.
 - **Recommendation:** Run `garmin auth` once per account for initial setup, then just use `garmin extract` for regular data extraction.
+
+#### How Authentication Works
+
+`garmin auth` uses a self-contained SSO client (`garmin_health_data/garmin_client/`) that tries five login strategies in order until one succeeds:
+
+1. Portal web login via `curl_cffi` (TLS browser fingerprint impersonation, 30-45s pre-submit delay)
+2. Portal web login via `requests` (30-45s pre-submit delay)
+3. Mobile portal login via `curl_cffi` (mobile TLS impersonation, 30-45s pre-submit delay)
+4. Mobile login via `requests` (30-45s pre-submit delay)
+5. Widget login via `curl_cffi` (last resort — 429s reliably under current Cloudflare config, kept for future use)
+
+**If you see a 30-45 second pause during `garmin auth`, this is normal.** The delay is a deliberate Cloudflare WAF countermeasure — submitting credentials too quickly triggers a 429 rate limit. Tokens obtained are DI OAuth2 Bearer tokens; no session cookies or password are stored after the initial login.
+
+If all five strategies are exhausted without success (uncommon — typically only during Garmin-side outages), `garmin auth` will exit with an error. Wait a few minutes and retry.
 
 #### Multi-Account Support
 
@@ -339,7 +353,7 @@ race_predictions (predicted race times)
 
 - **Your credentials never leave your machine**: they're only used to obtain OAuth tokens, stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
 - **All data stays on your machine**: no cloud services involved.
-- **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API using the wrapper [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
+- **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API directly.
 
 ## Comparison With Other Tools
 

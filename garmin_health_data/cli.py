@@ -2,6 +2,7 @@
 Command-line interface for garmin-health-data.
 """
 
+import logging
 import shutil
 import tempfile
 from datetime import datetime, timedelta
@@ -41,6 +42,18 @@ def cli():
 
     Extract your complete Garmin Connect health data to a local SQLite database.
     """
+    # Show INFO-level messages from our own code (e.g. login delay warnings)
+    # without exposing noisy INFO output from third-party libraries.
+    # Guard against duplicate handlers when the CLI entrypoint is invoked
+    # multiple times in-process (e.g. in tests). propagate=False prevents
+    # double-printing via the root logger.
+    _log = logging.getLogger("garmin_health_data")
+    if not any(isinstance(h, logging.StreamHandler) for h in _log.handlers):
+        _handler = logging.StreamHandler()
+        _handler.setFormatter(logging.Formatter("%(message)s"))
+        _log.addHandler(_handler)
+    _log.setLevel(logging.INFO)
+    _log.propagate = False
 
 
 @cli.command()

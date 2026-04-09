@@ -17,7 +17,7 @@ from typing import List, Optional, Union, Callable, Dict
 
 import click
 import pendulum
-from garminconnect import Garmin
+from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
@@ -92,7 +92,12 @@ class GarminExtractor:
         - Idle for 30+ days (refresh token expired).
         - Authentication errors occur during extraction.
 
-        :param token_store_dir: Directory containing authentication tokens.
+        :param token_store_dir: Per-account directory containing
+            ``garmin_tokens.json`` (e.g. ``~/.garminconnect/12345678/``).
+            Must point to the account-level subdirectory, not the root
+            ``~/.garminconnect/`` directory. In normal usage this is always
+            supplied by the caller; the default is a placeholder that will
+            fail unless a ``garmin_tokens.json`` happens to exist there.
         :raises RuntimeError: If tokens are missing, expired, or invalid. Run
             ``garmin auth`` to resolve authentication issues.
         """
@@ -101,9 +106,7 @@ class GarminExtractor:
         click.echo("Authenticating with Garmin Connect using saved tokens.")
 
         try:
-            # Initialize Garmin client and load existing tokens.
-            garmin = Garmin()
-            garmin.login(str(token_store_path))
+            garmin = GarminClient.from_tokens(token_store_path)
             self.garmin_client = garmin
             click.secho(
                 f"Authentication successful for {self.garmin_client.full_name}"
@@ -411,7 +414,7 @@ class GarminExtractor:
             # Download FIT file.
             fit_data = self.garmin_client.download_activity(
                 activity_id,
-                dl_fmt=self.garmin_client.ActivityDownloadFormat.ORIGINAL,
+                dl_fmt=ActivityDownloadFormat.ORIGINAL,
             )
 
             # Extract FIT file from ZIP archive.
