@@ -444,7 +444,9 @@ def _portal_web_login(
     # Garmin's Cloudflare WAF rate-limits requests that go directly from the SSO
     # page GET to the login POST without intervening activity.
     delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
-    _LOGGER.debug("Portal login: sleeping %.1fs before credential POST", delay_s)
+    _LOGGER.info(
+        "Portal login: waiting %.0fs to avoid Cloudflare rate limiting...", delay_s
+    )
     time.sleep(delay_s)
 
     # Step 2: POST credentials to the portal login API.
@@ -720,7 +722,10 @@ def portal_login(
 
     # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
     delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
-    _LOGGER.debug("Mobile portal login: sleeping %.1fs before credential POST", delay_s)
+    _LOGGER.info(
+        "Mobile portal login: waiting %.0fs to avoid Cloudflare rate limiting...",
+        delay_s,
+    )
     time.sleep(delay_s)
 
     # Step 2: POST credentials.
@@ -905,7 +910,9 @@ def mobile_login(
 
     # Same Cloudflare WAF rate-limiting protection as the browser portal flow.
     delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
-    _LOGGER.debug("Mobile login: sleeping %.1fs before credential POST", delay_s)
+    _LOGGER.info(
+        "Mobile login: waiting %.0fs to avoid Cloudflare rate limiting...", delay_s
+    )
     time.sleep(delay_s)
 
     r = sess.post(
