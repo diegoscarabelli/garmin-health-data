@@ -7,17 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-04-08
+
 ### Added
 
-- **`sleep_level` table**: New table populated from the `sleepLevels` array in the SLEEP JSON response. Each row is a contiguous interval during which a single discrete sleep stage (Deep, Light, REM, Awake) was detected, allowing reconstruction of the per-night sleep stages timeline shown in the Garmin Connect sleep view. Mirrors the `garmin.sleep_level` table added to the openetl Garmin pipeline.
+- **Vendored `garmin_client/` module** ([#25](https://github.com/diegoscarabelli/garmin-health-data/pull/25)): Replaced the `python-garminconnect` PyPI dependency with a self-contained `garmin_client/` module shipped directly in this package.
+  - Five-strategy SSO fallback chain with `curl_cffi` TLS fingerprint impersonation: portal+cffi → portal+requests → mobile+cffi → mobile+requests → widget+cffi. Each strategy tries in order; the next is attempted on 429 or failure.
+  - 30-45s randomized delay before the credential POST on strategies 1-4, visible at INFO log level (`"Portal login: waiting ~35s to avoid Cloudflare rate limiting..."`), so long auth runs no longer appear hung.
+  - Runtime token refresh: access tokens (~18h) are auto-refreshed transparently when within 15 minutes of expiry or on a 401 retry. Refresh tokens (~30d) rotate on each use and are persisted back to disk immediately. The token chain stays alive indefinitely as long as extraction runs at least once within 30 days.
+  - Atomic token writes: tokens are written to a PID-namespaced temp file and swapped in via `os.replace`, preventing truncated token stores on interrupted writes.
+  - No external Garmin client library required. `curl-cffi` and `ua-generator` are now explicit runtime dependencies (previously transitive via `garminconnect`).
+  - Token file format (`garmin_tokens.json`) and storage path (`~/.garminconnect/<user_id>/`) are unchanged. Existing tokens from v2.3.0+ do not require re-bootstrapping.
+- **`sleep_level` table** ([#24](https://github.com/diegoscarabelli/garmin-health-data/pull/24)): New table populated from the `sleepLevels` array in the SLEEP JSON response. Each row is a contiguous interval during which a single discrete sleep stage (Deep, Light, REM, Awake) was detected, allowing reconstruction of the per-night sleep stages timeline shown in the Garmin Connect sleep view.
   - Stage codes (`stage`) and human-readable labels (`stage_label`) are sourced from the new `SleepStage` IntEnum in `constants.py`. Unknown stage codes are logged and skipped instead of failing the file.
-  - Idempotent on `(sleep_id, start_ts)` via `INSERT ... ON CONFLICT DO NOTHING`, matching the runtime pattern of the sibling sleep time-series tables.
+  - Idempotent on `(sleep_id, start_ts)` via `INSERT ... ON CONFLICT DO NOTHING`.
   - Index on `stage` for cheap stage-distribution queries.
-- New `SleepStage` IntEnum in `constants.py` mapping the integer codes in `sleepLevels[*].activityLevel` to their human-readable names (`DEEP`, `LIGHT`, `REM`, `AWAKE`).
+- New `SleepStage` IntEnum in `constants.py` mapping integer codes in `sleepLevels[*].activityLevel` to their human-readable names (`DEEP`, `LIGHT`, `REM`, `AWAKE`).
 
 ### Fixed
 
-- **Python 3.10 compatibility for Garmin GMT timestamps**: Several processors called `datetime.fromisoformat` directly on Garmin's single-digit fractional second format (e.g. `"2026-04-06T05:47:59.0"`), which Python 3.10's strict parser rejects with `ValueError`. New `_parse_garmin_iso` / `_parse_garmin_gmt` helpers on `GarminProcessor` normalize the fractional component to 6 digits and tolerate an optional trailing timezone designator (`Z` or `±HH:MM`). Applied to `sleep_level`, `sleep_movement`, `spo2`, `steps`, `floors`, `training_readiness`, and `strength_set` ingestion paths. The `activity` path was migrated to the same helpers for consistency even though its `startTimeGMT` / `endTimeGMT` use a space-separated no-fractional format that Python 3.10 already accepts. The strength set bug was latent because no existing tests exercised the path with real Garmin data; the new `sleep_level` test was the first to surface the class of issue.
+- **Python 3.10 compatibility for Garmin GMT timestamps** ([#24](https://github.com/diegoscarabelli/garmin-health-data/pull/24)): Several processors called `datetime.fromisoformat` directly on Garmin's single-digit fractional second format (e.g. `"2026-04-06T05:47:59.0"`), which Python 3.10's strict parser rejects with `ValueError`. New `_parse_garmin_iso` / `_parse_garmin_gmt` helpers on `GarminProcessor` normalize the fractional component to 6 digits and tolerate an optional trailing timezone designator (`Z` or `±HH:MM`). Applied to `sleep_level`, `sleep_movement`, `spo2`, `steps`, `floors`, `training_readiness`, and `strength_set` ingestion paths.
+
+### Removed
+
+- `python-garminconnect` runtime dependency ([#25](https://github.com/diegoscarabelli/garmin-health-data/pull/25)).
 
 ## [2.4.0] - 2026-04-06
 
@@ -63,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **SSO authentication**: Override garth's default User-Agent to avoid Cloudflare blocks during programmatic login.
 - **Token file permissions**: `chmod 0o600` on token files after `garth.dump()` (garth uses default umask, leaving tokens world-readable).
+- **Idempotent FIT metric reprocessing** ([#15](https://github.com/diegoscarabelli/garmin-health-data/pull/15)): Replaced the early-return guard on `activity_ts_metric`, `activity_split_metric`, and `activity_lap_metric` with a delete+insert pattern, preventing `UNIQUE` constraint violations on re-runs ([#14](https://github.com/diegoscarabelli/garmin-health-data/issues/14)). Also excludes `create_ts` from `Activity` and `Sleep` upsert update columns to preserve audit timestamps.
 
 ## [2.1.1] - 2026-04-01
 
@@ -222,7 +236,9 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.4.0...v2.5.0
+[2.4.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.1.0...v2.1.1
