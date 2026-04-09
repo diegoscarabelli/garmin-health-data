@@ -336,9 +336,9 @@ intensity_minutes (activity intensity tracking)
 **Training Metrics (4 tables)**
 ```
 vo2_max (VO2 max estimates)
-├── acclimation (heat/altitude acclimation)
-├── training_load (training load metrics)
-└── training_readiness (daily readiness scores)
+acclimation (heat/altitude acclimation)
+training_load (training load metrics)
+training_readiness (daily readiness scores)
 ```
 *Foreign keys: all tables → `user.user_id`*
 
@@ -347,7 +347,7 @@ vo2_max (VO2 max estimates)
 personal_record (personal bests)
 race_predictions (predicted race times)
 ```
-*Foreign keys: all tables → `user.user_id`; `personal_record` → `activity.activity_id` (optional)*
+*Foreign keys: all tables → `user.user_id`. Note: `personal_record.activity_id` column exists but has no FK constraint (allows processing PRs before the linked activity is extracted).*
 
 ## Privacy & Security
 
