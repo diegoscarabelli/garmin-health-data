@@ -9,12 +9,12 @@ Extract your complete Garmin Connect health and activity data to a local SQLite 
 - 💾 **Local Storage**: SQLite database - your data stays on your machine.
 - 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics.
 - 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data.
-- 👥 **Multi-Account**: Extract data from multiple Garmin Connect accounts into a single database.
+- 👥 **Multi-Account**: Extract data from multiple Garmin Connect accounts (e.g., family members) into a single database. Run `garmin auth` once per account — accounts are discovered and extracted automatically.
 - 🔄 **Auto-Resume**: Automatically detects last update and syncs new data.
 
 ## Requirements
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - Garmin Connect account
 - Internet connection for data extraction
 
