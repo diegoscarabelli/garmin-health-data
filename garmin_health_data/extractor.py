@@ -18,6 +18,7 @@ from typing import List, Optional, Union, Callable, Dict
 import click
 import pendulum
 from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
+from garmin_health_data.garmin_client.exceptions import GarminConnectionError
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
@@ -529,10 +530,21 @@ class GarminExtractor:
             timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
 
             # Download activity file (ORIGINAL format = ZIP archive).
-            raw_data = self.garmin_client.download_activity(
-                activity_id,
-                dl_fmt=ActivityDownloadFormat.ORIGINAL,
-            )
+            # A 404 means the activity exists in the list but has no
+            # downloadable file (manually entered activity, deleted upload,
+            # or a very old activity whose file is no longer retained by
+            # Garmin). Skip and continue rather than aborting the run.
+            try:
+                raw_data = self.garmin_client.download_activity(
+                    activity_id,
+                    dl_fmt=ActivityDownloadFormat.ORIGINAL,
+                )
+            except GarminConnectionError as e:
+                click.secho(
+                    f"⚠️  Skipping activity {activity_id}: {e}.",
+                    fg="yellow",
+                )
+                continue
 
             # Detect actual file format and extract content.
             result = self._extract_activity_content(activity_id, raw_data)
