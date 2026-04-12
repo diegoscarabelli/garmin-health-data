@@ -47,6 +47,14 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# Secrets / credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials.json
+
 # Garmin tokens
 .garminconnect/
 
