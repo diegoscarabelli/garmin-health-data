@@ -317,6 +317,12 @@ def extract(
                                 fg="yellow",
                             )
 
+                    # Skip this timestamp group if no files matched a known type.
+                    # This happens when all downloaded files are in formats that
+                    # the processor does not yet support (e.g. TCX, GPX).
+                    if not files_by_type:
+                        continue
+
                     # Create FileSet for this timestamp
                     file_set = FileSet(file_paths=timestamp_files, files=files_by_type)
 
