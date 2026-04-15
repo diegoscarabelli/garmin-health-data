@@ -28,7 +28,7 @@ from garmin_health_data.constants import (
 
 # File extensions that the downstream processor knows how to route.
 # Used as a fallback when magic-byte detection is inconclusive.
-_KNOWN_ACTIVITY_EXTENSIONS: frozenset = frozenset({"fit", "tcx", "gpx", "kml"})
+_KNOWN_ACTIVITY_EXTENSIONS: frozenset[str] = frozenset({"fit", "tcx", "gpx", "kml"})
 
 
 def _detect_format_from_magic(content: bytes) -> Optional[str]:
@@ -399,7 +399,7 @@ class GarminExtractor:
 
     def _extract_activity_content(
         self, activity_id: int, raw_data: bytes
-    ) -> Optional[tuple]:
+    ) -> Optional[tuple[str, bytes]]:
         """
         Extract and identify the content of a downloaded activity file.
 
