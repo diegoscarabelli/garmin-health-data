@@ -454,6 +454,125 @@ class TestUpsertModelInstances:
             assert user1.full_name is None
             assert user1.birth_date is None
 
+    def test_chunking_exceeds_parameter_limit(self, temp_db):
+        """
+        Test that large batches are split into chunks to stay within SQLite's
+        SQLITE_MAX_VARIABLE_NUMBER limit.
+
+        HeartRate has 4 columns (user_id, timestamp, value, create_ts). With
+        _SQLITE_MAX_PARAMS=999 the chunk size is 249 rows, so 500 records forces at
+        least two chunks.
+        """
+        engine = get_engine(temp_db)
+
+        # Create user first (foreign key requirement).
+        with Session(engine) as session:
+            user = User(user_id=1, full_name="User 1", birth_date=date(1990, 1, 1))
+            upsert_model_instances(
+                session=session,
+                model_instances=[user],
+                conflict_columns=["user_id"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+        # Insert 500 heart rate records (forces multiple chunks).
+        with Session(engine) as session:
+            records = [
+                HeartRate(
+                    user_id=1,
+                    timestamp=datetime(
+                        2024, 1, 1, i // 60, i % 60, 0, tzinfo=timezone.utc
+                    ),
+                    value=60 + (i % 40),
+                )
+                for i in range(500)
+            ]
+            result = upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "timestamp"],
+                on_conflict_update=False,
+            )
+            session.commit()
+
+            assert len(result) == 500
+            count = session.scalar(select(func.count()).select_from(HeartRate))
+            assert count == 500
+
+    def test_chunking_with_conflict_update(self, temp_db):
+        """
+        Test that chunked upserts correctly update rows across chunk boundaries.
+        """
+        engine = get_engine(temp_db)
+
+        # Create user first (foreign key requirement).
+        with Session(engine) as session:
+            user = User(user_id=1, full_name="User 1", birth_date=date(1990, 1, 1))
+            upsert_model_instances(
+                session=session,
+                model_instances=[user],
+                conflict_columns=["user_id"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+        # Insert 500 heart rate records.
+        with Session(engine) as session:
+            records = [
+                HeartRate(
+                    user_id=1,
+                    timestamp=datetime(
+                        2024, 1, 1, i // 60, i % 60, 0, tzinfo=timezone.utc
+                    ),
+                    value=60,
+                )
+                for i in range(500)
+            ]
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "timestamp"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+        # Re-upsert with updated values (should update, not duplicate).
+        with Session(engine) as session:
+            updated_records = [
+                HeartRate(
+                    user_id=1,
+                    timestamp=datetime(
+                        2024, 1, 1, i // 60, i % 60, 0, tzinfo=timezone.utc
+                    ),
+                    value=99,
+                )
+                for i in range(500)
+            ]
+            upsert_model_instances(
+                session=session,
+                model_instances=updated_records,
+                conflict_columns=["user_id", "timestamp"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+            count = session.scalar(select(func.count()).select_from(HeartRate))
+            assert count == 500
+
+            # Verify a record from the second chunk was updated.
+            hr = (
+                session.execute(
+                    select(HeartRate).where(
+                        HeartRate.timestamp
+                        == datetime(2024, 1, 1, 4, 30, 0, tzinfo=timezone.utc)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            assert hr.value == 99
+
     def test_update_ts_refreshes_on_conflict_update(self, temp_db):
         """
         Test that update_ts is refreshed when records are updated.

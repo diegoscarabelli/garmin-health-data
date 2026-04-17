@@ -10,6 +10,11 @@ from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+# Lowest SQLITE_MAX_VARIABLE_NUMBER across supported builds.
+# Pre-3.32.0 defaulted to 999; 3.32.0+ raised it to 32 766.
+# Using the floor guarantees safety on all platforms.
+_SQLITE_MAX_PARAMS = 999
+
 
 @dataclass
 class FileSet:
@@ -57,8 +62,10 @@ def upsert_model_instances(
     Bulk upsert SQLAlchemy ORM model instances into SQLite database tables.
 
     This function uses SQLite's INSERT ... ON CONFLICT syntax to perform
-    efficient bulk upsert operations in a single SQL statement, matching
-    the implementation pattern used in OpenETL for PostgreSQL.
+    efficient bulk upsert operations, matching the implementation pattern
+    used in OpenETL for PostgreSQL. Large batches are automatically split
+    into chunks so the total parameter count stays within SQLite's
+    SQLITE_MAX_VARIABLE_NUMBER limit.
 
     :param session: SQLAlchemy session.
     :param model_instances: List of model instances to upsert.
@@ -90,32 +97,38 @@ def upsert_model_instances(
         excluded_cols = set(conflict_columns) | {"create_ts", "update_ts"}
         update_columns = [col for col in model_columns if col not in excluded_cols]
 
-    # Create bulk insert statement with all values.
-    insert_stmt = sqlite_insert(model_class).values(values)
+    # Clamp chunk size so total parameters stay within the SQLite
+    # limit. Use the full model column count because SQLAlchemy
+    # fills in columns with Python-side defaults even when omitted
+    # from the values dicts.
+    num_cols = len(model_class.__table__.columns)
+    max_rows = max(1, _SQLITE_MAX_PARAMS // num_cols)
 
-    if on_conflict_update:
-        # Build update dictionary for ON CONFLICT DO UPDATE.
-        update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
+    for chunk_start in range(0, len(values), max_rows):
+        chunk = values[chunk_start : chunk_start + max_rows]
 
-        # Automatically update update_ts column if it exists in the model.
-        # SQLite's DEFAULT CURRENT_TIMESTAMP only applies on INSERT, not UPDATE.
-        # We must explicitly set update_ts to the current timestamp on updates.
-        if hasattr(model_class, "update_ts"):
-            update_dict["update_ts"] = func.current_timestamp()
+        insert_stmt = sqlite_insert(model_class).values(chunk)
 
-        upsert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=conflict_columns, set_=update_dict
-        )
-    else:
-        # Ignore conflicts (insert-only).
-        upsert_stmt = insert_stmt.on_conflict_do_nothing(
-            index_elements=conflict_columns
-        )
+        if on_conflict_update:
+            # Build update dictionary for ON CONFLICT DO UPDATE.
+            update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
 
-    # Execute the bulk upsert statement (single SQL statement for all rows).
-    session.execute(upsert_stmt)
+            # Automatically update update_ts column if it exists in the
+            # model. SQLite's DEFAULT CURRENT_TIMESTAMP only applies on
+            # INSERT, not UPDATE. We must explicitly set update_ts to the
+            # current timestamp on updates.
+            if hasattr(model_class, "update_ts"):
+                update_dict["update_ts"] = func.current_timestamp()
 
-    # Flush session to force immediate resolution of foreign key relationships.
-    session.flush()
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=conflict_columns, set_=update_dict
+            )
+        else:
+            # Ignore conflicts (insert-only).
+            upsert_stmt = insert_stmt.on_conflict_do_nothing(
+                index_elements=conflict_columns
+            )
+
+        session.execute(upsert_stmt)
 
     return model_instances
