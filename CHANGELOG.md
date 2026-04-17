@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **SQLite parameter limit safety** : `upsert_model_instances` now automatically splits large batches into chunks so the total parameter count stays within SQLite's `SQLITE_MAX_VARIABLE_NUMBER` limit (999 on pre-3.32.0 builds). Previously, a single INSERT with many rows on wide tables (e.g., Sleep at 73 columns) could exceed the limit and fail. The conservative floor of 999 guarantees safety across all supported platforms.
+- **SQLite parameter limit safety**: `upsert_model_instances` now automatically splits large batches into chunks so the total parameter count stays within SQLite's `SQLITE_MAX_VARIABLE_NUMBER` limit (999 on pre-3.32.0 builds). Previously, a single INSERT with many rows on wide tables (e.g., Sleep at 73 columns) could exceed the limit and fail. The conservative floor of 999 guarantees safety across all supported platforms.
 
 ## [2.6.0] - 2026-04-17
 

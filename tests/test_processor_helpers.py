@@ -478,7 +478,6 @@ class TestUpsertModelInstances:
 
         # Insert 500 heart rate records (forces multiple chunks).
         with Session(engine) as session:
-            base_ts = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
             records = [
                 HeartRate(
                     user_id=1,
