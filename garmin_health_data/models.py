@@ -21,12 +21,16 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.sql import func
 from sqlalchemy.sql.expression import text
 
+
 # Base class for all models.
-Base = declarative_base()
+class Base(DeclarativeBase):
+    """
+    Base class for all ORM models.
+    """
 
 
 class InsertBase:

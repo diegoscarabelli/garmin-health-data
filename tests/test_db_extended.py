@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -66,7 +67,11 @@ class TestGetSession:
 
         # Verify the record was committed.
         with get_session(temp_db_path) as session:
-            result = session.query(User).filter_by(user_id=12345).first()
+            result = (
+                session.execute(select(User).where(User.user_id == 12345))
+                .scalars()
+                .first()
+            )
             assert result is not None
             assert result.full_name == "Test User"
 
@@ -86,7 +91,11 @@ class TestGetSession:
 
         # Verify the record was not committed.
         with get_session(temp_db_path) as session:
-            result = session.query(User).filter_by(user_id=12345).first()
+            result = (
+                session.execute(select(User).where(User.user_id == 12345))
+                .scalars()
+                .first()
+            )
             assert result is None
 
 

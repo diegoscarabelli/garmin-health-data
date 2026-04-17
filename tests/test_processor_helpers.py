@@ -11,6 +11,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from garmin_health_data.db import get_engine
@@ -72,7 +73,7 @@ class TestUpsertModelInstances:
             session.commit()
 
             assert len(result) == 1
-            count = session.query(User).count()
+            count = session.scalar(select(func.count()).select_from(User))
             assert count == 1
 
     def test_bulk_insert_multiple_records(self, temp_db):
@@ -95,7 +96,7 @@ class TestUpsertModelInstances:
             session.commit()
 
             assert len(result) == 100
-            count = session.query(User).count()
+            count = session.scalar(select(func.count()).select_from(User))
             assert count == 100
 
     def test_bulk_update_on_conflict(self, temp_db):
@@ -137,11 +138,15 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify updates.
-            user1 = session.query(User).filter(User.user_id == 1).first()
-            user2 = session.query(User).filter(User.user_id == 2).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
+            user2 = (
+                session.execute(select(User).where(User.user_id == 2)).scalars().first()
+            )
             assert user1.full_name == "Updated User 1"
             assert user2.full_name == "Updated User 2"
-            assert session.query(User).count() == 2
+            assert session.scalar(select(func.count()).select_from(User)) == 2
 
     def test_insert_ignore_on_conflict(self, temp_db):
         """
@@ -182,11 +187,15 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify user 1 was NOT updated, user 3 was inserted.
-            user1 = session.query(User).filter(User.user_id == 1).first()
-            user3 = session.query(User).filter(User.user_id == 3).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
+            user3 = (
+                session.execute(select(User).where(User.user_id == 3)).scalars().first()
+            )
             assert user1.full_name == "User 1"  # Not updated.
             assert user3.full_name == "User 3"  # Inserted.
-            assert session.query(User).count() == 3
+            assert session.scalar(select(func.count()).select_from(User)) == 3
 
     def test_partial_column_update(self, temp_db):
         """
@@ -220,7 +229,9 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify only full_name was updated.
-            user1 = session.query(User).filter(User.user_id == 1).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
             assert user1.full_name == "Updated User 1"
             assert user1.birth_date == date(1990, 1, 1)  # Not updated.
 
@@ -258,7 +269,7 @@ class TestUpsertModelInstances:
             )
             session.commit()
 
-            count = session.query(HeartRate).count()
+            count = session.scalar(select(func.count()).select_from(HeartRate))
             assert count == 2
 
         # Try to insert duplicate (should be ignored).
@@ -274,12 +285,14 @@ class TestUpsertModelInstances:
 
             # Verify value was NOT updated.
             hr = (
-                session.query(HeartRate)
-                .filter(HeartRate.timestamp == timestamp1)
+                session.execute(
+                    select(HeartRate).where(HeartRate.timestamp == timestamp1)
+                )
+                .scalars()
                 .first()
             )
             assert hr.value == 70  # Original value.
-            assert session.query(HeartRate).count() == 2
+            assert session.scalar(select(func.count()).select_from(HeartRate)) == 2
 
     def test_empty_list(self, temp_db):
         """
@@ -339,9 +352,13 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify all operations.
-            assert session.query(User).count() == 4
-            user1 = session.query(User).filter(User.user_id == 1).first()
-            user3 = session.query(User).filter(User.user_id == 3).first()
+            assert session.scalar(select(func.count()).select_from(User)) == 4
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
+            user3 = (
+                session.execute(select(User).where(User.user_id == 3)).scalars().first()
+            )
             assert user1.full_name == "Updated User 1"
             assert user3.full_name == "User 3"
 
@@ -363,7 +380,9 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Get original create_ts.
-            user1 = session.query(User).filter(User.user_id == 1).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
             original_create_ts = user1.create_ts
 
         # Update the record (create_ts should not change).
@@ -381,7 +400,9 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify create_ts did not change.
-            user1 = session.query(User).filter(User.user_id == 1).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
             assert user1.create_ts == original_create_ts
             assert user1.full_name == "Updated User 1"
 
@@ -406,7 +427,7 @@ class TestUpsertModelInstances:
             session.commit()
 
             assert len(result) == 1000
-            count = session.query(User).count()
+            count = session.scalar(select(func.count()).select_from(User))
             assert count == 1000
 
     def test_null_values_in_optional_columns(self, temp_db):
@@ -427,7 +448,9 @@ class TestUpsertModelInstances:
             session.commit()
 
             # Verify NULL values were inserted.
-            user1 = session.query(User).filter(User.user_id == 1).first()
+            user1 = (
+                session.execute(select(User).where(User.user_id == 1)).scalars().first()
+            )
             assert user1.full_name is None
             assert user1.birth_date is None
 
@@ -488,7 +511,9 @@ class TestUpsertModelInstances:
 
             # Get original update_ts.
             activity1 = (
-                session.query(Activity).filter(Activity.activity_id == 1).first()
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
             )
             original_update_ts = activity1.update_ts
 
@@ -528,7 +553,9 @@ class TestUpsertModelInstances:
 
             # Verify update_ts was refreshed.
             activity1 = (
-                session.query(Activity).filter(Activity.activity_id == 1).first()
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
             )
             assert activity1.update_ts > original_update_ts
             assert activity1.favorite is True  # Verify the update worked.

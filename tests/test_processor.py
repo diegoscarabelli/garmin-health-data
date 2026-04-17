@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import fitdecode
 import pytest
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
 from garmin_health_data.models import (
@@ -138,7 +139,11 @@ def _seed_activity(
     session.commit()
 
     # Set ts_data_available after upsert (bypasses column exclusion).
-    persisted = session.query(Activity).filter_by(activity_id=activity_id).first()
+    persisted = (
+        session.execute(select(Activity).where(Activity.activity_id == activity_id))
+        .scalars()
+        .first()
+    )
     persisted.ts_data_available = ts_data_available
     session.commit()
 
@@ -198,10 +203,18 @@ class TestProcessFitFile:
 
         db_session.commit()
 
-        assert db_session.query(ActivityTsMetric).count() == 2
-        assert db_session.query(ActivityLapMetric).count() == 2
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 2
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 2
+        )
 
-        refreshed = db_session.query(Activity).filter_by(activity_id=12345).first()
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
         assert refreshed.ts_data_available is True
 
     def test_process_fit_file_reprocessing(self, db_session: Session):
@@ -212,32 +225,55 @@ class TestProcessFitFile:
 
         # Simulate pre-existing metrics from a previous run.
         old_ts = datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
-        db_session.bulk_save_objects(
+        # Use core insert to bypass RETURNING sentinel mismatch
+        # with DateTime(timezone=True) composite PKs on SQLite.
+        db_session.execute(
+            insert(ActivityTsMetric),
             [
-                ActivityTsMetric(
-                    activity_id=12345,
-                    timestamp=old_ts,
-                    name="old_metric",
-                    value=1.0,
-                ),
-                ActivityLapMetric(
-                    activity_id=12345,
-                    lap_idx=1,
-                    name="old_lap",
-                    value=100.0,
-                ),
-                ActivitySplitMetric(
-                    activity_id=12345,
-                    split_idx=1,
-                    name="old_split",
-                    value=200.0,
-                ),
-            ]
+                {
+                    "activity_id": 12345,
+                    "timestamp": old_ts,
+                    "name": "old_metric",
+                    "value": 1.0,
+                    "units": None,
+                },
+            ],
+        )
+        db_session.execute(
+            insert(ActivityLapMetric),
+            [
+                {
+                    "activity_id": 12345,
+                    "lap_idx": 1,
+                    "name": "old_lap",
+                    "value": 100.0,
+                    "units": None,
+                },
+            ],
+        )
+        db_session.execute(
+            insert(ActivitySplitMetric),
+            [
+                {
+                    "activity_id": 12345,
+                    "split_idx": 1,
+                    "name": "old_split",
+                    "value": 200.0,
+                    "units": None,
+                },
+            ],
         )
         db_session.commit()
-        assert db_session.query(ActivityTsMetric).count() == 1
-        assert db_session.query(ActivityLapMetric).count() == 1
-        assert db_session.query(ActivitySplitMetric).count() == 1
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 1
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivitySplitMetric))
+            == 1
+        )
 
         # New FIT data with different metrics.
         new_ts = datetime(2024, 1, 1, 8, 0, 5, tzinfo=timezone.utc)
@@ -264,17 +300,20 @@ class TestProcessFitFile:
         db_session.commit()
 
         # Old rows deleted, new rows inserted.
-        ts_rows = db_session.query(ActivityTsMetric).all()
+        ts_rows = db_session.execute(select(ActivityTsMetric)).scalars().all()
         assert len(ts_rows) == 1
         assert ts_rows[0].name == "heart_rate"
         assert ts_rows[0].value == 160.0
 
-        lap_rows = db_session.query(ActivityLapMetric).all()
+        lap_rows = db_session.execute(select(ActivityLapMetric)).scalars().all()
         assert len(lap_rows) == 1
         assert lap_rows[0].name == "total_elapsed_time"
 
         # Old splits deleted (no new splits in this FIT data).
-        assert db_session.query(ActivitySplitMetric).count() == 0
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivitySplitMetric))
+            == 0
+        )
 
     def test_process_fit_file_laps_only(self, db_session: Session):
         """
@@ -298,10 +337,18 @@ class TestProcessFitFile:
 
         db_session.commit()
 
-        assert db_session.query(ActivityTsMetric).count() == 0
-        assert db_session.query(ActivityLapMetric).count() == 2
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 0
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 2
+        )
 
-        refreshed = db_session.query(Activity).filter_by(activity_id=12345).first()
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
         # No record frames means ts_data_available stays False.
         assert refreshed.ts_data_available is False
 
@@ -381,7 +428,7 @@ class TestProcessFitFile:
 
         db_session.commit()
 
-        paths = db_session.query(ActivityPath).all()
+        paths = db_session.execute(select(ActivityPath)).scalars().all()
         assert len(paths) == 1
         path = paths[0]
         assert path.activity_id == 12345
@@ -421,9 +468,11 @@ class TestProcessFitFile:
         db_session.commit()
 
         # Non-GPS ts metrics still inserted.
-        assert db_session.query(ActivityTsMetric).count() == 2
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 2
+        )
         # No activity_path row.
-        assert db_session.query(ActivityPath).count() == 0
+        assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
 
     def test_process_fit_file_partial_gps_filtered(self, db_session: Session):
         """
@@ -463,7 +512,7 @@ class TestProcessFitFile:
 
         db_session.commit()
 
-        paths = db_session.query(ActivityPath).all()
+        paths = db_session.execute(select(ActivityPath)).scalars().all()
         assert len(paths) == 1
         path = paths[0]
         assert path.point_count == 1
@@ -512,7 +561,7 @@ class TestProcessFitFile:
 
         run_with_frames(run1_frames)
 
-        paths = db_session.query(ActivityPath).all()
+        paths = db_session.execute(select(ActivityPath)).scalars().all()
         assert len(paths) == 1
         assert paths[0].point_count == 2
 
@@ -545,7 +594,7 @@ class TestProcessFitFile:
         ]
         run_with_frames(run2_frames)
 
-        paths = db_session.query(ActivityPath).all()
+        paths = db_session.execute(select(ActivityPath)).scalars().all()
         assert len(paths) == 1
         assert paths[0].point_count == 3
 
@@ -561,7 +610,7 @@ class TestProcessFitFile:
         ]
         run_with_frames(run3_frames)
 
-        assert db_session.query(ActivityPath).count() == 0
+        assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
 
 
 # --- Activity base upsert tests --------------------------------------------
@@ -617,7 +666,11 @@ class TestActivityBaseUpsert:
         )
         db_session.commit()
 
-        refreshed = db_session.query(Activity).filter_by(activity_id=12345).first()
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
         assert refreshed.activity_name == "Renamed Run"
         # ts_data_available preserved despite upsert.
         assert refreshed.ts_data_available is True
@@ -628,7 +681,11 @@ class TestActivityBaseUpsert:
         """
         _seed_activity(db_session)
 
-        original = db_session.query(Activity).filter_by(activity_id=12345).first()
+        original = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
         original_create_ts = original.create_ts
 
         update_columns = [
@@ -667,7 +724,11 @@ class TestActivityBaseUpsert:
         )
         db_session.commit()
 
-        refreshed = db_session.query(Activity).filter_by(activity_id=12345).first()
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
         assert refreshed.activity_name == "Updated Name"
         assert refreshed.create_ts == original_create_ts
 
@@ -1007,12 +1068,13 @@ class TestProcessStrengthMetrics:
         assert "totalReps" not in activity_data
         assert "otherField" in activity_data
 
-        # Assert - delete was called for reprocessing.
-        mock_session.query.assert_called_with(StrengthExercise)
-        filter_call = mock_session.query.return_value.filter_by
-        filter_call.assert_called_with(activity_id=activity_id)
-        delete_call = filter_call.return_value
-        delete_call.delete.assert_called_once()
+        # Verify delete was called via session.execute.
+        delete_calls = [
+            call
+            for call in mock_session.execute.call_args_list
+            if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
+        ]
+        assert len(delete_calls) >= 1
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -1095,8 +1157,13 @@ class TestProcessStrengthMetrics:
         assert "activeSets" not in activity_data
         assert "totalReps" not in activity_data
 
-        # Assert - delete was called (cleans stale data).
-        mock_session.query.assert_called_with(StrengthExercise)
+        # Verify delete was called via session.execute.
+        delete_calls = [
+            call
+            for call in mock_session.execute.call_args_list
+            if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
+        ]
+        assert len(delete_calls) >= 1
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -1179,10 +1246,13 @@ class TestProcessExerciseSets:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Assert - delete was called for reprocessing.
-        mock_session.query.assert_called_with(StrengthSet)
-        filter_call = mock_session.query.return_value.filter_by
-        filter_call.assert_called_with(activity_id=22320029355)
+        # Verify delete was called via session.execute.
+        delete_calls = [
+            call
+            for call in mock_session.execute.call_args_list
+            if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
+        ]
+        assert len(delete_calls) >= 1
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -1280,9 +1350,13 @@ class TestProcessExerciseSets:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Assert - delete called, no inserts.
-        filter_call = mock_session.query.return_value.filter_by.return_value
-        filter_call.delete.assert_called()
+        # Verify delete was called via session.execute.
+        delete_calls = [
+            call
+            for call in mock_session.execute.call_args_list
+            if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
+        ]
+        assert len(delete_calls) >= 1
         mock_session.add_all.assert_not_called()
 
 

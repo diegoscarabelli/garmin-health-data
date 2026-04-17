@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import click
-from sqlalchemy import create_engine, func
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import Session
 
 # Handle importlib.resources for different Python versions
 if sys.version_info >= (3, 9):
@@ -98,8 +98,7 @@ def get_session(db_path: str = "garmin_data.db"):
     :yield: SQLAlchemy Session.
     """
     engine = get_engine(db_path)
-    SessionLocal = sessionmaker(bind=engine)
-    session = SessionLocal()
+    session = Session(engine)
 
     try:
         yield session
@@ -143,43 +142,45 @@ def get_last_update_dates(db_path: str = "garmin_data.db") -> Dict[str, Optional
         dates = {}
 
         # Sleep data.
-        last_sleep = session.query(func.max(Sleep.start_ts)).scalar()
+        last_sleep = session.execute(select(func.max(Sleep.start_ts))).scalar()
         dates["sleep"] = last_sleep.date() if last_sleep else None
 
         # Heart rate.
-        last_hr = session.query(func.max(HeartRate.timestamp)).scalar()
+        last_hr = session.execute(select(func.max(HeartRate.timestamp))).scalar()
         dates["heart_rate"] = last_hr.date() if last_hr else None
 
         # Activities.
-        last_activity = session.query(func.max(Activity.start_ts)).scalar()
+        last_activity = session.execute(select(func.max(Activity.start_ts))).scalar()
         dates["activity"] = last_activity.date() if last_activity else None
 
         # Stress.
-        last_stress = session.query(func.max(Stress.timestamp)).scalar()
+        last_stress = session.execute(select(func.max(Stress.timestamp))).scalar()
         dates["stress"] = last_stress.date() if last_stress else None
 
         # Body battery.
-        last_bb = session.query(func.max(BodyBattery.timestamp)).scalar()
+        last_bb = session.execute(select(func.max(BodyBattery.timestamp))).scalar()
         dates["body_battery"] = last_bb.date() if last_bb else None
 
         # Steps.
-        last_steps = session.query(func.max(Steps.timestamp)).scalar()
+        last_steps = session.execute(select(func.max(Steps.timestamp))).scalar()
         dates["steps"] = last_steps.date() if last_steps else None
 
         # Respiration.
-        last_resp = session.query(func.max(Respiration.timestamp)).scalar()
+        last_resp = session.execute(select(func.max(Respiration.timestamp))).scalar()
         dates["respiration"] = last_resp.date() if last_resp else None
 
         # Floors.
-        last_floors = session.query(func.max(Floors.timestamp)).scalar()
+        last_floors = session.execute(select(func.max(Floors.timestamp))).scalar()
         dates["floors"] = last_floors.date() if last_floors else None
 
         # Intensity minutes.
-        last_im = session.query(func.max(IntensityMinutes.timestamp)).scalar()
+        last_im = session.execute(select(func.max(IntensityMinutes.timestamp))).scalar()
         dates["intensity_minutes"] = last_im.date() if last_im else None
 
         # Training readiness.
-        last_tr = session.query(func.max(TrainingReadiness.timestamp)).scalar()
+        last_tr = session.execute(
+            select(func.max(TrainingReadiness.timestamp))
+        ).scalar()
         dates["training_readiness"] = last_tr.date() if last_tr else None
 
         return dates
@@ -211,19 +212,27 @@ def get_record_counts(db_path: str = "garmin_data.db") -> Dict[str, int]:
     with get_session(db_path) as session:
         counts = {}
 
-        counts["users"] = session.query(func.count(User.user_id)).scalar()
-        counts["activities"] = session.query(func.count(Activity.activity_id)).scalar()
-        counts["sleep_sessions"] = session.query(func.count(Sleep.sleep_id)).scalar()
-        counts["heart_rate_readings"] = session.query(
-            func.count(HeartRate.timestamp)
+        counts["users"] = session.execute(select(func.count(User.user_id))).scalar()
+        counts["activities"] = session.execute(
+            select(func.count(Activity.activity_id))
         ).scalar()
-        counts["stress_readings"] = session.query(func.count(Stress.timestamp)).scalar()
-        counts["body_battery_readings"] = session.query(
-            func.count(BodyBattery.timestamp)
+        counts["sleep_sessions"] = session.execute(
+            select(func.count(Sleep.sleep_id))
         ).scalar()
-        counts["step_readings"] = session.query(func.count(Steps.timestamp)).scalar()
-        counts["respiration_readings"] = session.query(
-            func.count(Respiration.timestamp)
+        counts["heart_rate_readings"] = session.execute(
+            select(func.count(HeartRate.timestamp))
+        ).scalar()
+        counts["stress_readings"] = session.execute(
+            select(func.count(Stress.timestamp))
+        ).scalar()
+        counts["body_battery_readings"] = session.execute(
+            select(func.count(BodyBattery.timestamp))
+        ).scalar()
+        counts["step_readings"] = session.execute(
+            select(func.count(Steps.timestamp))
+        ).scalar()
+        counts["respiration_readings"] = session.execute(
+            select(func.count(Respiration.timestamp))
         ).scalar()
 
         return counts

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from garmin_health_data.models import Base
 
@@ -52,8 +52,7 @@ def db_session(db_engine: Engine) -> Generator[Session, None, None]:
     :param db_engine: SQLAlchemy engine fixture.
     :return: SQLAlchemy session instance.
     """
-    SessionLocal = sessionmaker(bind=db_engine)
-    session = SessionLocal()
+    session = Session(db_engine)
     yield session
     session.close()
 
