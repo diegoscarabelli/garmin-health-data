@@ -326,7 +326,9 @@ def extract(
                     # Create FileSet for this timestamp
                     # Derive file_paths from matched files only to ensure the processor
                     # only receives files it can handle (those matching GARMIN_FILE_TYPES).
-                    matched_paths = [p for paths in files_by_type.values() for p in paths]
+                    matched_paths = [
+                        p for paths in files_by_type.values() for p in paths
+                    ]
                     file_set = FileSet(file_paths=matched_paths, files=files_by_type)
 
                     # Process this FileSet

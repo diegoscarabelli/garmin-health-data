@@ -21,10 +21,7 @@ from garmin_health_data.extractor import (
 # Bytes 8–11 are the ANT+ FIT protocol magic: b'.FIT'.
 _FIT_MAGIC = b"\x0e\x10\x00\x00\x00\x00\x00\x00.FIT\x00\x00"
 
-_TCX_CONTENT = (
-    b'<?xml version="1.0" encoding="UTF-8"?>'
-    b"<TrainingCenterDatabase/>"
-)
+_TCX_CONTENT = b'<?xml version="1.0" encoding="UTF-8"?>' b"<TrainingCenterDatabase/>"
 _GPX_CONTENT = b'<?xml version="1.0"?><gpx version="1.1"/>'
 _KML_CONTENT = b'<?xml version="1.0"?><kml/>'
 
@@ -677,8 +674,8 @@ class TestExtractActivityContent:
 @patch("garmin_health_data.extractor.time.sleep")
 class TestExtractFitActivitiesFormat:
     """
-    Integration tests verifying that extract_fit_activities saves files
-    with the correct extension based on detected content format.
+    Integration tests verifying that extract_fit_activities saves files with the correct
+    extension based on detected content format.
     """
 
     @pytest.fixture()

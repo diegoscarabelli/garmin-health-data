@@ -235,6 +235,7 @@ $ garmin extract
 | **FLOORS** | Floors climbed and descended | 15-min intervals |
 | **INTENSITY_MINUTES** | Moderate/vigorous activity minutes | 15-min intervals |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |
+| **EXERCISE_SETS** | Per-set strength training data: reps, weight, ML-classified exercise name | Per activity |
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |
 | **RACE_PREDICTIONS** | Predicted race times | Periodic updates |
 | **USER_PROFILE** | Demographics, fitness metrics | Periodic updates |
@@ -288,7 +289,7 @@ user (root table)
 ```
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (9 tables)**
+**Activities (11 tables)**
 ```
 activity (main activity records)
 ├── activity_lap_metric (lap-by-lap metrics)
@@ -297,17 +298,12 @@ activity (main activity records)
 ├── activity_ts_metric (time-series sensor data)
 ├── cycling_agg_metrics (cycling-specific aggregates)
 ├── running_agg_metrics (running-specific aggregates)
+├── strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
+├── strength_set (per-set data: reps, weight, ML-classified exercise name)
 ├── swimming_agg_metrics (swimming-specific aggregates)
 └── supplemental_activity_metric (additional activity metrics)
 ```
 *Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
-
-**Strength Training (2 tables)**
-```
-strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
-strength_set (per-set data: reps, weight, ML-classified exercise name)
-```
-*Foreign keys: both tables → `activity.activity_id`*
 
 **Sleep Metrics (7 tables)**
 ```

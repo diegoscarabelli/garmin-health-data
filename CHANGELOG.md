@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-04-17
+
+### Changed
+
+- **SQLAlchemy 2.0 ORM migration** ([#30](https://github.com/diegoscarabelli/garmin-health-data/pull/30)): Migrated all legacy SQLAlchemy 1.4 patterns to native 2.0 style, aligning runtime code with the `sqlalchemy>=2.0` dependency declared since v2.0.3.
+  - Model base: `declarative_base()` replaced with `DeclarativeBase` subclass.
+  - Sessions: `sessionmaker(bind=engine)` replaced with `Session(engine)` context manager.
+  - Queries: all `session.query()` calls replaced with `session.execute(select(...))`.
+  - Bulk deletes: `.filter_by(...).delete()` replaced with `session.execute(delete(...).where(...))`.
+  - FIT metric bulk inserts: `bulk_save_objects()` replaced with core `insert()` to bypass the ORM identity map and avoid SQLite's RETURNING sentinel mismatch with `DateTime(timezone=True)` composite PKs. Column keys are precomputed once per model to avoid repeated `__table__.columns` iteration on large FIT files.
+  - Strength exercise/set inserts: `bulk_save_objects()` replaced with `add_all()`.
+  - Test assertions for delete statements now verify the target table and WHERE clause rather than just checking that a DELETE was executed.
+
 ### Fixed
 
 - **Activity file format detection** ([#27](https://github.com/diegoscarabelli/garmin-health-data/pull/27)): Activity downloads containing non-FIT files (TCX, GPX, KML) no longer crash the application. Contributed by [@dillten](https://github.com/dillten).
@@ -246,7 +259,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.2.0...v2.3.0
