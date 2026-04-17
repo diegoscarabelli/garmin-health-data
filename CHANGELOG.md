@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Activity file format detection** ([#27](https://github.com/diegoscarabelli/garmin-health-data/pull/27)): Activity downloads containing non-FIT files (TCX, GPX, KML) no longer crash the application. Contributed by [@dillten](https://github.com/dillten).
+  - Magic-byte detection identifies the actual file format from content (ANT+ FIT header, XML root elements) instead of assuming `.fit`.
+  - Three-tier fallback chain: magic bytes, inner filename extension, `.bin` preservation for unrecognised formats.
+  - Files are saved with the correct extension reflecting their detected format.
+  - Non-FIT activity files are preserved on disk but excluded from FIT-specific processing, with clear warnings.
+  - `FileSet.file_paths` now derived from matched files only, preventing `ValueError` when non-processable files sort before `.fit` files in mixed timestamp groups.
+  - `GarminConnectionError` during activity download (e.g., 404 for manually-entered activities) is caught and skipped instead of aborting the entire extraction run.
+
 ## [2.5.0] - 2026-04-08
 
 ### Added
