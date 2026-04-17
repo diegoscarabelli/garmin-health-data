@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-04-17
+
+### Fixed
+
+- **SQLite parameter limit safety** : `upsert_model_instances` now automatically splits large batches into chunks so the total parameter count stays within SQLite's `SQLITE_MAX_VARIABLE_NUMBER` limit (999 on pre-3.32.0 builds). Previously, a single INSERT with many rows on wide tables (e.g., Sleep at 73 columns) could exceed the limit and fail. The conservative floor of 999 guarantees safety across all supported platforms.
+
 ## [2.6.0] - 2026-04-17
 
 ### Changed
@@ -259,7 +265,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.1...HEAD
+[2.6.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.3.0...v2.4.0
