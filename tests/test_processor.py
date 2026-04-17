@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import fitdecode
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from garmin_health_data.models import (
@@ -1068,13 +1068,19 @@ class TestProcessStrengthMetrics:
         assert "totalReps" not in activity_data
         assert "otherField" in activity_data
 
-        # Verify delete was called via session.execute.
+        # Verify delete targets StrengthExercise for the correct activity_id.
+        expected_delete = delete(StrengthExercise).where(
+            StrengthExercise.activity_id == activity_id
+        )
         delete_calls = [
             call
             for call in mock_session.execute.call_args_list
             if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
         ]
-        assert len(delete_calls) >= 1
+        assert len(delete_calls) == 1
+        stmt = delete_calls[0].args[0]
+        assert stmt.table.name == StrengthExercise.__tablename__
+        assert stmt.whereclause.compare(expected_delete.whereclause)
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -1157,13 +1163,19 @@ class TestProcessStrengthMetrics:
         assert "activeSets" not in activity_data
         assert "totalReps" not in activity_data
 
-        # Verify delete was called via session.execute.
+        # Verify delete targets StrengthExercise for the correct activity_id.
+        expected_delete = delete(StrengthExercise).where(
+            StrengthExercise.activity_id == 12345
+        )
         delete_calls = [
             call
             for call in mock_session.execute.call_args_list
             if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
         ]
-        assert len(delete_calls) >= 1
+        assert len(delete_calls) == 1
+        stmt = delete_calls[0].args[0]
+        assert stmt.table.name == StrengthExercise.__tablename__
+        assert stmt.whereclause.compare(expected_delete.whereclause)
 
         # Assert - no insert since sets are empty.
         mock_session.add_all.assert_not_called()
@@ -1246,13 +1258,19 @@ class TestProcessExerciseSets:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Verify delete was called via session.execute.
+        # Verify delete targets StrengthSet for the correct activity_id.
+        expected_delete = delete(StrengthSet).where(
+            StrengthSet.activity_id == 22320029355
+        )
         delete_calls = [
             call
             for call in mock_session.execute.call_args_list
             if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
         ]
-        assert len(delete_calls) >= 1
+        assert len(delete_calls) == 1
+        stmt = delete_calls[0].args[0]
+        assert stmt.table.name == StrengthSet.__tablename__
+        assert stmt.whereclause.compare(expected_delete.whereclause)
 
         # Assert - records were added.
         mock_session.add_all.assert_called_once()
@@ -1350,13 +1368,17 @@ class TestProcessExerciseSets:
         # Act.
         processor._process_exercise_sets(file_path, mock_session)
 
-        # Verify delete was called via session.execute.
+        # Verify delete targets StrengthSet for the correct activity_id.
+        expected_delete = delete(StrengthSet).where(StrengthSet.activity_id == 12345)
         delete_calls = [
             call
             for call in mock_session.execute.call_args_list
             if hasattr(call.args[0], "is_delete") and call.args[0].is_delete
         ]
-        assert len(delete_calls) >= 1
+        assert len(delete_calls) == 1
+        stmt = delete_calls[0].args[0]
+        assert stmt.table.name == StrengthSet.__tablename__
+        assert stmt.whereclause.compare(expected_delete.whereclause)
         mock_session.add_all.assert_not_called()
 
 

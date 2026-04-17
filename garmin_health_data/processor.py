@@ -2734,17 +2734,31 @@ class GarminProcessor(Processor):
         # synchronize_session=False, so stale instances may remain in the
         # map. Core insert also avoids the RETURNING sentinel mismatch
         # that SQLite triggers with DateTime(timezone=True) composite PKs.
+        #
+        # Column keys are precomputed once per model to avoid repeated
+        # __table__.columns iteration on large FIT files. Columns with
+        # server_default (create_ts) are excluded so the database applies
+        # the default rather than receiving a Python None.
+        ts_keys = [
+            c.key
+            for c in ActivityTsMetric.__table__.columns
+            if c.server_default is None
+        ]
+        split_keys = [
+            c.key
+            for c in ActivitySplitMetric.__table__.columns
+            if c.server_default is None
+        ]
+        lap_keys = [
+            c.key
+            for c in ActivityLapMetric.__table__.columns
+            if c.server_default is None
+        ]
+
         if ts_metrics:
             session.execute(
                 insert(ActivityTsMetric),
-                [
-                    {
-                        c.key: getattr(m, c.key)
-                        for c in ActivityTsMetric.__table__.columns
-                        if c.server_default is None
-                    }
-                    for m in ts_metrics
-                ],
+                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
             )
             click.echo(f"Processed {len(ts_metrics)} time-series records.")
         else:
@@ -2755,14 +2769,7 @@ class GarminProcessor(Processor):
         if split_metrics:
             session.execute(
                 insert(ActivitySplitMetric),
-                [
-                    {
-                        c.key: getattr(m, c.key)
-                        for c in ActivitySplitMetric.__table__.columns
-                        if c.server_default is None
-                    }
-                    for m in split_metrics
-                ],
+                [{k: getattr(m, k) for k in split_keys} for m in split_metrics],
             )
             click.echo(f"Processed {len(split_metrics)} split records.")
         else:
@@ -2771,14 +2778,7 @@ class GarminProcessor(Processor):
         if lap_metrics:
             session.execute(
                 insert(ActivityLapMetric),
-                [
-                    {
-                        c.key: getattr(m, c.key)
-                        for c in ActivityLapMetric.__table__.columns
-                        if c.server_default is None
-                    }
-                    for m in lap_metrics
-                ],
+                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
             )
             click.echo(f"Processed {len(lap_metrics)} lap records.")
         else:

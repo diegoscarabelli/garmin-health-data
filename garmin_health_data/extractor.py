@@ -1,8 +1,8 @@
 """
 Garmin Connect data extraction module for standalone use.
 
-Extracts activity files and JSON Garmin data from Garmin Connect API and saves them
-to the ingest directory. Designed for standalone applications without Apache Airflow
+Extracts activity files and JSON Garmin data from Garmin Connect API and saves them to
+the ingest directory. Designed for standalone applications without Apache Airflow
 dependencies.
 """
 
@@ -483,12 +483,11 @@ class GarminExtractor:
         """
         Extract activity files from Garmin Connect.
 
-        This method always processes dates inclusively — both start_date and
-        end_date are included in the extraction. The extract() function
-        handles any exclusion logic before passing dates to the Extractor
-        class. Downloads activity files with user ID, activity ID, and
-        activity start timestamp in filename. The file extension reflects the
-        actual format detected from the downloaded content.
+        This method always processes dates inclusively — both start_date and end_date
+        are included in the extraction. The extract() function handles any exclusion
+        logic before passing dates to the Extractor class. Downloads activity files with
+        user ID, activity ID, and activity start timestamp in filename. The file
+        extension reflects the actual format detected from the downloaded content.
 
         :return: List of saved activity file paths.
         """
