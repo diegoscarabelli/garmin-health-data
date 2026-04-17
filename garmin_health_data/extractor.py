@@ -1,7 +1,7 @@
 """
 Garmin Connect data extraction module for standalone use.
 
-Extracts FIT activity files and JSON Garmin data from Garmin Connect API and saves them
+Extracts activity files and JSON Garmin data from Garmin Connect API and saves them
 to the ingest directory. Designed for standalone applications without Apache Airflow
 dependencies.
 """
@@ -18,12 +18,52 @@ from typing import List, Optional, Union, Callable, Dict
 import click
 import pendulum
 from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
+from garmin_health_data.garmin_client.exceptions import GarminConnectionError
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
     GarminDataType,
     GARMIN_DATA_REGISTRY,
 )
+
+# File extensions that the downstream processor knows how to route.
+# Used as a fallback when magic-byte detection is inconclusive.
+_KNOWN_ACTIVITY_EXTENSIONS: frozenset[str] = frozenset({"fit", "tcx", "gpx", "kml"})
+
+
+def _detect_format_from_magic(content: bytes) -> Optional[str]:
+    """
+    Detect activity file format from magic bytes.
+
+    Uses format-specific byte signatures rather than filename extensions,
+    which are not guaranteed to be accurate for Garmin's download service.
+    Returns ``None`` for unrecognised content so the caller can apply a
+    fallback strategy.
+
+    Detection rules:
+    - FIT: bytes 8–11 equal ``b'.FIT'`` (ANT+ FIT protocol header).
+    - TCX: XML content containing ``<TrainingCenterDatabase``.
+    - GPX: XML content containing ``<gpx``.
+    - KML: XML content containing ``<kml``.
+
+    :param content: Raw bytes of the activity file.
+    :return: Lowercase file extension (``'fit'``, ``'tcx'``, ``'gpx'``,
+        ``'kml'``), or ``None`` if the format cannot be identified.
+    """
+    # FIT: ANT+ FIT protocol magic bytes at offset 8–11.
+    if len(content) >= 12 and content[8:12] == b".FIT":
+        return "fit"
+
+    # XML-based formats: inspect a small header prefix for the root element.
+    text_head = content[:512].decode("utf-8", errors="ignore")
+    if "<TrainingCenterDatabase" in text_head:
+        return "tcx"
+    if "<gpx" in text_head:
+        return "gpx"
+    if "<kml" in text_head:
+        return "kml"
+
+    return None
 
 
 class GarminExtractor:
@@ -357,23 +397,105 @@ class GarminExtractor:
         click.echo(f"Saved {data_type.emoji} {data_type.name}: {filename}.")
         return [filepath]
 
+    def _extract_activity_content(
+        self, activity_id: int, raw_data: bytes
+    ) -> Optional[tuple[str, bytes]]:
+        """
+        Extract and identify the content of a downloaded activity file.
+
+        Garmin's ORIGINAL download format returns a ZIP archive whose inner
+        file may be FIT, TCX, GPX, or another format depending on how the
+        activity was originally recorded or uploaded. This method extracts
+        the content and identifies the format using magic bytes, so the saved
+        filename carries the correct extension regardless of what Garmin puts
+        inside the ZIP.
+
+        Fallback chain when magic bytes are inconclusive:
+        1. Inner filename extension (if it is a known activity extension).
+        2. ``'.bin'`` — file is preserved on disk but will not be processed.
+
+        :param activity_id: Garmin activity ID (used in log messages).
+        :param raw_data: Raw bytes returned by the download API.
+        :return: Tuple of ``(file_extension, content_bytes)``, or ``None``
+            if the archive is empty.
+        """
+        inner_name = ""
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_data), "r") as zip_ref:
+                zip_files = zip_ref.namelist()
+                if not zip_files:
+                    click.secho(
+                        f"⚠️  Empty ZIP archive for activity {activity_id}.",
+                        fg="yellow",
+                    )
+                    return None
+
+                if len(zip_files) > 1:
+                    click.secho(
+                        f"⚠️  ZIP for activity {activity_id} contains "
+                        f"{len(zip_files)} files: {zip_files}. "
+                        f"Using first: {zip_files[0]!r}.",
+                        fg="yellow",
+                    )
+
+                inner_name = zip_files[0]
+                content = zip_ref.read(inner_name)
+
+        except zipfile.BadZipFile:
+            # Not a ZIP — probe the raw bytes directly.
+            content = raw_data
+
+        file_ext = _detect_format_from_magic(content)
+
+        if file_ext is not None:
+            if file_ext != "fit":
+                # Non-FIT format: log so we can learn Garmin's conventions.
+                click.secho(
+                    f"⚠️  Activity {activity_id}: detected '{file_ext}' format "
+                    f"(inner file: {inner_name!r}). "
+                    f"File will be saved but not processed.",
+                    fg="yellow",
+                )
+            return file_ext, content
+
+        # Magic bytes inconclusive — try the inner filename extension.
+        inner_ext = Path(inner_name).suffix.lower().lstrip(".")
+        if inner_ext in _KNOWN_ACTIVITY_EXTENSIONS:
+            click.secho(
+                f"⚠️  Activity {activity_id}: magic bytes inconclusive; "
+                f"using inner filename extension '.{inner_ext}' "
+                f"from {inner_name!r}.",
+                fg="yellow",
+            )
+            return inner_ext, content
+
+        # Completely unrecognised — preserve the file without processing it.
+        click.secho(
+            f"⚠️  Activity {activity_id}: unrecognised file format "
+            f"(inner file: {inner_name!r}). Saving as '.bin' — "
+            f"file will not be processed.",
+            fg="yellow",
+        )
+        return "bin", content
+
     def extract_fit_activities(self) -> List[Path]:
         """
-        Extract FIT activity files from Garmin Connect.
+        Extract activity files from Garmin Connect.
 
-        This method always processes dates inclusively - both start_date and
+        This method always processes dates inclusively — both start_date and
         end_date are included in the extraction. The extract() function
         handles any exclusion logic before passing dates to the Extractor
-        class. Downloads binary FIT files with user ID, activity ID, and
-        activity start timestamp in filename.
+        class. Downloads activity files with user ID, activity ID, and
+        activity start timestamp in filename. The file extension reflects the
+        actual format detected from the downloaded content.
 
-        :return: List of saved FIT file paths.
+        :return: List of saved activity file paths.
         """
 
         click.echo(
-            f"Fetching activities and associated FIT data from Garmin "
-            f"Connect (start: {self.start_date}, end: {self.end_date} "
-            f"inclusive)..."
+            f"Fetching activities from Garmin Connect "
+            f"(start: {self.start_date}, end: {self.end_date} inclusive)..."
         )
 
         # Get list of activities, API is inclusive of both dates.
@@ -397,7 +519,7 @@ class GarminExtractor:
         for activity in activities:
             activity_id = activity["activityId"]
 
-            # Generate filename with local timezone date at noon for
+            # Generate timestamp with local timezone date at noon for
             # consistent batching with ACTIVITIES_LIST file. Uses same
             # midday timestamp approach as _save_garmin_data().
             activity_start = pendulum.parse(activity.get("startTimeLocal"))
@@ -406,38 +528,42 @@ class GarminExtractor:
                 hour=12, minute=0, second=0
             )
             timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
-            filename = f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.fit".replace(
-                ":", "-"
+
+            # Download activity file (ORIGINAL format = ZIP archive).
+            # A 404 means the activity exists in the list but has no
+            # downloadable file (manually entered activity, deleted upload,
+            # or a very old activity whose file is no longer retained by
+            # Garmin). Skip and continue rather than aborting the run.
+            try:
+                raw_data = self.garmin_client.download_activity(
+                    activity_id,
+                    dl_fmt=ActivityDownloadFormat.ORIGINAL,
+                )
+            except GarminConnectionError as e:
+                click.secho(
+                    f"⚠️  Skipping activity {activity_id}: {e}.",
+                    fg="yellow",
+                )
+                continue
+
+            # Detect actual file format and extract content.
+            result = self._extract_activity_content(activity_id, raw_data)
+            if result is None:
+                continue
+
+            file_ext, file_content = result
+
+            # Build filename using the detected extension.
+            filename = (
+                f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.{file_ext}".replace(
+                    ":", "-"
+                )
             )
             filepath = self.ingest_dir / filename
 
-            # Download FIT file.
-            fit_data = self.garmin_client.download_activity(
-                activity_id,
-                dl_fmt=ActivityDownloadFormat.ORIGINAL,
-            )
-
-            # Extract FIT file from ZIP archive.
-            try:
-                with zipfile.ZipFile(io.BytesIO(fit_data), "r") as zip_ref:
-                    # Get the first (and typically only) file from the ZIP.
-                    zip_files = zip_ref.namelist()
-                    if not zip_files:
-                        click.secho(
-                            f"Empty ZIP archive for activity {activity_id}.",
-                            fg="yellow",
-                        )
-                        continue
-
-                    # Extract the FIT file content.
-                    fit_file_content = zip_ref.read(zip_files[0])
-            except zipfile.BadZipFile:
-                # If it's not a ZIP file, use the data as-is (fallback).
-                fit_file_content = fit_data
-
             # Save to file.
             with open(filepath, "wb") as f:
-                f.write(fit_file_content)
+                f.write(file_content)
 
             file_size = filepath.stat().st_size / 1024  # KB.
             click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
@@ -460,7 +586,7 @@ class GarminExtractor:
             time.sleep(0.1)
 
         click.echo(
-            f"FIT activity extraction complete: {len(downloaded_files)} "
+            f"Activity file extraction complete: {len(downloaded_files)} "
             f"files saved to {self.ingest_dir}."
         )
         return downloaded_files

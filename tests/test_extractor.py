@@ -11,7 +11,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from garmin_health_data.extractor import GarminExtractor, extract
+from garmin_health_data.extractor import (
+    GarminExtractor,
+    _detect_format_from_magic,
+    extract,
+)
+
+# Minimal valid FIT file header (14 bytes).
+# Bytes 8–11 are the ANT+ FIT protocol magic: b'.FIT'.
+_FIT_MAGIC = b"\x0e\x10\x00\x00\x00\x00\x00\x00.FIT\x00\x00"
+
+_TCX_CONTENT = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b"<TrainingCenterDatabase/>"
+)
+_GPX_CONTENT = b'<?xml version="1.0"?><gpx version="1.1"/>'
+_KML_CONTENT = b'<?xml version="1.0"?><kml/>'
 
 
 class TestExtractExerciseSets:
@@ -190,7 +205,7 @@ class TestExtractExerciseSets:
         # Create mock ZIP file.
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-            zip_file.writestr("activity.fit", b"FIT_DATA")
+            zip_file.writestr("activity.fit", _FIT_MAGIC)
         zip_buffer.seek(0)
         mock_garmin_client.download_activity.return_value = zip_buffer.getvalue()
 
@@ -254,7 +269,7 @@ class TestExtractExerciseSets:
         # Create mock ZIP file.
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-            zip_file.writestr("activity.fit", b"FIT_DATA")
+            zip_file.writestr("activity.fit", _FIT_MAGIC)
         zip_buffer.seek(0)
         mock_garmin_client.download_activity.return_value = zip_buffer.getvalue()
 
@@ -451,3 +466,297 @@ class TestExtractMultiAccount:
         result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
 
         assert result == {"garmin_files": 0, "activity_files": 0}
+
+
+def _make_zip(inner_filename: str, content: bytes) -> bytes:
+    """
+    Build an in-memory ZIP containing one file.
+
+    :param inner_filename: Name to give the file inside the ZIP.
+    :param content: Raw bytes for the inner file.
+    :return: ZIP archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(inner_filename, content)
+    return buf.getvalue()
+
+
+class TestDetectFormatFromMagic:
+    """
+    Unit tests for ``_detect_format_from_magic``.
+    """
+
+    def test_fit_bytes_detected(self) -> None:
+        """
+        FIT magic at offset 8–11 returns 'fit'.
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(_FIT_MAGIC) == "fit"
+
+    def test_tcx_detected(self) -> None:
+        """
+        XML containing TrainingCenterDatabase root element returns 'tcx'.
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(_TCX_CONTENT) == "tcx"
+
+    def test_gpx_detected(self) -> None:
+        """
+        XML containing gpx root element returns 'gpx'.
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(_GPX_CONTENT) == "gpx"
+
+    def test_kml_detected(self) -> None:
+        """
+        XML containing kml root element returns 'kml'.
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(_KML_CONTENT) == "kml"
+
+    def test_unknown_returns_none(self) -> None:
+        """
+        Arbitrary bytes with no recognisable signature return None.
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(b"SOME_RANDOM_BYTES") is None
+
+    def test_empty_bytes_returns_none(self) -> None:
+        """
+        Empty byte string returns None (no magic to inspect).
+
+        :return: None.
+        """
+        assert _detect_format_from_magic(b"") is None
+
+    def test_fit_magic_at_wrong_offset_not_detected(self) -> None:
+        """
+        b'.FIT' at offset 0 (not 8) must not be mistaken for a FIT file.
+
+        :return: None.
+        """
+        content = b".FIT" + b"\x00" * 20
+        assert _detect_format_from_magic(content) is None
+
+    def test_content_shorter_than_12_bytes_not_fit(self) -> None:
+        """
+        Content shorter than 12 bytes cannot satisfy the FIT offset check.
+
+        :return: None.
+        """
+        short = b"\x00" * 8 + b".FI"  # 11 bytes — one short
+        assert _detect_format_from_magic(short) is None
+
+
+class TestExtractActivityContent:
+    """
+    Unit tests for ``GarminExtractor._extract_activity_content``.
+    """
+
+    @pytest.fixture()
+    def extractor(self, tmp_path: Path) -> GarminExtractor:
+        """
+        Return a GarminExtractor instance pointed at a temp directory.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: GarminExtractor instance.
+        """
+        return GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+        )
+
+    def test_fit_zip_returns_fit_extension(self, extractor: GarminExtractor) -> None:
+        """
+        ZIP containing a FIT file returns ('fit', content).
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        raw = _make_zip("12345_ACTIVITY.fit", _FIT_MAGIC)
+        result = extractor._extract_activity_content(12345, raw)
+        assert result is not None
+        ext, content = result
+        assert ext == "fit"
+        assert content == _FIT_MAGIC
+
+    def test_tcx_zip_returns_tcx_extension(self, extractor: GarminExtractor) -> None:
+        """
+        ZIP containing a TCX file returns ('tcx', content).
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        raw = _make_zip("12345.tcx", _TCX_CONTENT)
+        result = extractor._extract_activity_content(12345, raw)
+        assert result is not None
+        ext, content = result
+        assert ext == "tcx"
+        assert content == _TCX_CONTENT
+
+    def test_gpx_zip_returns_gpx_extension(self, extractor: GarminExtractor) -> None:
+        """
+        ZIP containing a GPX file returns ('gpx', content).
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        raw = _make_zip("12345.gpx", _GPX_CONTENT)
+        result = extractor._extract_activity_content(12345, raw)
+        assert result is not None
+        ext, content = result
+        assert ext == "gpx"
+
+    def test_empty_zip_returns_none(self, extractor: GarminExtractor) -> None:
+        """
+        Empty ZIP archive returns None (activity is skipped).
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w"):
+            pass
+        result = extractor._extract_activity_content(12345, buf.getvalue())
+        assert result is None
+
+    def test_non_zip_raw_fit_bytes(self, extractor: GarminExtractor) -> None:
+        """
+        Non-ZIP bytes that are a valid FIT file are returned as 'fit'.
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        result = extractor._extract_activity_content(12345, _FIT_MAGIC)
+        assert result is not None
+        ext, content = result
+        assert ext == "fit"
+        assert content == _FIT_MAGIC
+
+    def test_unknown_magic_falls_back_to_inner_filename_extension(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        When magic bytes are inconclusive, the inner filename extension is used.
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        unknown_content = b"UNKNOWN_FORMAT_BYTES"
+        raw = _make_zip("activity.tcx", unknown_content)
+        result = extractor._extract_activity_content(12345, raw)
+        assert result is not None
+        ext, content = result
+        assert ext == "tcx"
+        assert content == unknown_content
+
+    def test_unknown_magic_and_unknown_extension_returns_bin(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        Completely unrecognised format is saved as '.bin'.
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        unknown_content = b"MYSTERY_BYTES"
+        raw = _make_zip("activity.xyz", unknown_content)
+        result = extractor._extract_activity_content(12345, raw)
+        assert result is not None
+        ext, _ = result
+        assert ext == "bin"
+
+
+@patch("garmin_health_data.extractor.time.sleep")
+class TestExtractFitActivitiesFormat:
+    """
+    Integration tests verifying that extract_fit_activities saves files
+    with the correct extension based on detected content format.
+    """
+
+    @pytest.fixture()
+    def extractor(self, tmp_path: Path) -> GarminExtractor:
+        """
+        Return a GarminExtractor pointed at a temp directory.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: GarminExtractor instance.
+        """
+        inst = GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 1),
+            ingest_dir=tmp_path,
+        )
+        inst.user_id = "123456789"
+        return inst
+
+    def _activities(self, activity_id: str = "99999") -> list:
+        """
+        Return a minimal activity list fixture.
+
+        :param activity_id: Activity ID string.
+        :return: List with one activity dict.
+        """
+        return [
+            {
+                "activityId": activity_id,
+                "startTimeLocal": "2025-01-01T10:00:00.000",
+                "activityType": {"typeId": 1, "typeKey": "running"},
+            }
+        ]
+
+    def test_fit_content_saved_as_fit(
+        self, _mock_sleep, extractor: GarminExtractor, tmp_path: Path
+    ) -> None:
+        """
+        FIT content inside ZIP is saved with a .fit extension.
+
+        :param _mock_sleep: Patched sleep.
+        :param extractor: GarminExtractor fixture.
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: None.
+        """
+        mock_client = MagicMock()
+        mock_client.get_activities_by_date.return_value = self._activities()
+        mock_client.download_activity.return_value = _make_zip(
+            "99999_ACTIVITY.fit", _FIT_MAGIC
+        )
+        extractor.garmin_client = mock_client
+
+        paths = extractor.extract_fit_activities()
+
+        assert len(paths) == 1
+        assert paths[0].suffix == ".fit"
+        assert len(list(tmp_path.glob("*.fit"))) == 1
+
+    def test_tcx_content_saved_as_tcx(
+        self, _mock_sleep, extractor: GarminExtractor, tmp_path: Path
+    ) -> None:
+        """
+        TCX content inside ZIP is saved with a .tcx extension, not .fit.
+
+        :param _mock_sleep: Patched sleep.
+        :param extractor: GarminExtractor fixture.
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: None.
+        """
+        mock_client = MagicMock()
+        mock_client.get_activities_by_date.return_value = self._activities()
+        mock_client.download_activity.return_value = _make_zip(
+            "99999.tcx", _TCX_CONTENT
+        )
+        extractor.garmin_client = mock_client
+
+        paths = extractor.extract_fit_activities()
+
+        assert len(paths) == 1
+        assert paths[0].suffix == ".tcx"
+        assert len(list(tmp_path.glob("*.fit"))) == 0
+        assert len(list(tmp_path.glob("*.tcx"))) == 1
