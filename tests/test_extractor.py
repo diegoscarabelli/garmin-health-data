@@ -802,3 +802,36 @@ def test_extract_day_by_day_isolates_per_date_failures(tmp_path):
     assert any(
         "2025-01-02" in f.error or f.date == "2025-01-02" for f in extractor.failures
     )
+
+
+def test_extract_garmin_data_isolates_per_data_type_failures(tmp_path):
+    """
+    A failure inside _extract_data_by_type for one type does not abort the others.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP", "HEART_RATE"),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    fake_path = tmp_path / "fake.json"
+    fake_path.write_text("{}")
+
+    def fake_extract(data_type, *_):
+        if data_type.name == "SLEEP":
+            raise RuntimeError("SLEEP endpoint went away")
+        return [fake_path]
+
+    with patch.object(extractor, "_extract_data_by_type", side_effect=fake_extract):
+        saved = extractor.extract_garmin_data()
+
+    assert len(saved) == 1  # HEART_RATE succeeded
+    assert any(f.data_type == "SLEEP" for f in extractor.failures)

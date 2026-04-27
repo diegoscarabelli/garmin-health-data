@@ -273,13 +273,31 @@ class GarminExtractor:
             )
 
         # Extract Garmin data by iterating over selected data types.
+        # Per-data-type try/except so one bad type (e.g. NO_DATE call that
+        # raises, or a structural error escaping the inner per-date layer)
+        # doesn't abort the rest of the account's extraction.
         saved_files = []
 
         for data_type in data_types_to_extract:
-            files = self._extract_data_by_type(
-                data_type, self.start_date, self.end_date
-            )
-            saved_files.extend(files)
+            try:
+                files = self._extract_data_by_type(
+                    data_type, self.start_date, self.end_date
+                )
+                saved_files.extend(files)
+            except Exception as e:
+                click.secho(
+                    f"⚠️  {data_type.name} extraction failed entirely: "
+                    f"{type(e).__name__}: {e}. Continuing with next data type.",
+                    fg="red",
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type=data_type.name,
+                        date="",
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
 
         return saved_files
 
