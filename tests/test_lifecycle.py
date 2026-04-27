@@ -2,6 +2,8 @@
 Tests for filesystem lifecycle helpers (ingest/process/storage/quarantine).
 """
 
+import sys
+
 import pytest
 
 from garmin_health_data.lifecycle import (
@@ -13,6 +15,12 @@ from garmin_health_data.lifecycle import (
     move_ingest_to_process,
     recover_stale_process,
     setup_lifecycle_dirs,
+)
+
+# fcntl-based concurrency tests require POSIX; the lock is a no-op on Windows.
+_no_lock_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fcntl-based lock is a no-op on Windows; concurrency tests do not apply.",
 )
 
 
@@ -170,6 +178,7 @@ def test_move_ingest_to_process_overwrites_process_file(tmp_path):
     assert not (base / "ingest" / "dup.json").exists()
 
 
+@_no_lock_on_windows
 def test_acquire_lock_succeeds_when_unheld(tmp_path):
     """
     First lock acquisition succeeds and creates the .lock file.
@@ -180,6 +189,7 @@ def test_acquire_lock_succeeds_when_unheld(tmp_path):
         assert (base / ".lock").exists()
 
 
+@_no_lock_on_windows
 def test_acquire_lock_raises_when_held_by_another_process(tmp_path):
     """
     A second concurrent acquisition raises LockHeldError.
@@ -192,6 +202,7 @@ def test_acquire_lock_raises_when_held_by_another_process(tmp_path):
                 pass
 
 
+@_no_lock_on_windows
 def test_acquire_lock_releases_after_context_exit(tmp_path):
     """
     Lock is released when context exits, allowing re-acquisition.
@@ -204,6 +215,7 @@ def test_acquire_lock_releases_after_context_exit(tmp_path):
         pass
 
 
+@_no_lock_on_windows
 def test_acquire_lock_releases_on_exception(tmp_path):
     """
     Lock is released even if the with-block raises.

@@ -157,7 +157,7 @@ This mirrors the openetl pipeline pattern. State transitions are filesystem move
 
 **Crash recovery:** if a run crashes, files left in `process/` are automatically moved back to `ingest/` at the start of the next run, so no work is lost.
 
-**Concurrency:** an advisory lock (`garmin_files/.lock`, via `fcntl.flock`) prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message until the first finishes. If a run crashes hard the lock is released automatically by the OS (no stale-lock cleanup needed).
+**Concurrency (macOS / Linux):** an advisory lock (`garmin_files/.lock`, via `fcntl.flock`) prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message until the first finishes. If a run crashes hard the lock is released automatically by the OS (no stale-lock cleanup needed). On Windows `fcntl` is unavailable, so the lock degrades to a no-op and a one-line warning is printed; serialise concurrent invocations manually.
 
 **Inspecting quarantine:** look in `garmin_files/quarantine/` to see which files failed processing, fix the underlying issue (parser bug, malformed payload, etc.), then move the files back to `garmin_files/ingest/` and run `garmin extract --process-only`.
 

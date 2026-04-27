@@ -2,6 +2,7 @@
 Tests for CLI commands.
 """
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -357,6 +358,10 @@ def test_extract_only_and_process_only_are_mutually_exclusive(tmp_path):
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fcntl-based lock is a no-op on Windows; concurrency test does not apply.",
+)
 def test_extract_aborts_when_lock_held(tmp_path):
     """
     A second concurrent extract aborts immediately with a clear message when the

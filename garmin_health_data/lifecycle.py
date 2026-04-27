@@ -14,11 +14,19 @@ moves; a crashed run leaves files in process/, which the next run recovers
 back to ingest/ before continuing.
 """
 
-import fcntl
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, List
+
+# fcntl is POSIX-only. On Windows the lock degrades to a no-op (a one-time
+# warning is emitted on first use). Windows users who need concurrency
+# protection can run extracts sequentially, since accidental double-runs are
+# unlikely in CLI usage.
+try:
+    import fcntl as _fcntl  # type: ignore[import]
+except ImportError:  # pragma: no cover - Windows-only branch
+    _fcntl = None
 
 LIFECYCLE_DIRS = ("ingest", "process", "storage", "quarantine")
 
@@ -34,19 +42,30 @@ def acquire_lock(base_dir: Path) -> Iterator[None]:
     """
     Acquire an exclusive advisory lock on `<base_dir>/.lock`.
 
-    Uses ``fcntl.flock`` with ``LOCK_EX | LOCK_NB`` so a held lock fails
-    fast with :class:`LockHeldError` rather than blocking. The lock is
-    released automatically when the context exits or the process dies.
+    Uses ``fcntl.flock`` with ``LOCK_EX | LOCK_NB`` on POSIX systems so a
+    held lock fails fast with :class:`LockHeldError` rather than blocking.
+    The lock is released automatically when the context exits or the
+    process dies.
+
+    On Windows (where ``fcntl`` is not available) this becomes a no-op:
+    the context manager yields without acquiring any OS-level lock and
+    emits a one-line stderr warning on first use. Concurrent runs on
+    Windows are not protected; users should serialise their invocations.
 
     :param base_dir: Lifecycle parent directory (must already exist).
-    :raises LockHeldError: If another process holds the lock.
+    :raises LockHeldError: If another process holds the lock (POSIX only).
     """
+    if _fcntl is None:  # pragma: no cover - Windows-only branch
+        _warn_no_lock_once()
+        yield
+        return
+
     lock_path = base_dir / ".lock"
     lock_path.touch(exist_ok=True)
     f = open(lock_path, "r+")
     try:
         try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         except (BlockingIOError, OSError) as e:
             raise LockHeldError(
                 f"Another garmin extract run is in progress (lock held on "
@@ -56,9 +75,30 @@ def acquire_lock(base_dir: Path) -> Iterator[None]:
         try:
             yield
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
     finally:
         f.close()
+
+
+_warned_no_lock = False
+
+
+def _warn_no_lock_once() -> None:  # pragma: no cover - Windows-only branch
+    """
+    Emit a single warning per process when the lock degrades to a no-op.
+    """
+    global _warned_no_lock
+    if _warned_no_lock:
+        return
+    _warned_no_lock = True
+    import sys
+
+    print(
+        "⚠️  Concurrency lock unavailable on this platform (fcntl missing). "
+        "Two simultaneous 'garmin extract' runs may corrupt the lifecycle "
+        "directories; serialise your invocations.",
+        file=sys.stderr,
+    )
 
 
 def setup_lifecycle_dirs(base_dir: Path) -> None:
