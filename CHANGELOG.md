@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`UNIQUE constraint failed: activity_ts_metric` on FIT files with sub-second sampling** ([#36](https://github.com/diegoscarabelli/garmin-health-data/issues/36)): the FIT record-frame parser now reads the optional `fractional_timestamp` field paired with `timestamp` and combines them, so high-frequency devices (e.g. Fenix 7 at 2Hz smart-recording) get distinct rows per sub-second sample instead of colliding on the `(activity_id, timestamp, name)` unique key. Belt-and-suspenders: if duplicates remain (FIT files without `fractional_timestamp` that emit multiple frames within the same whole second), they are coalesced in Python before bulk insert with the last value winning, instead of aborting the activity.
 - **Makefile `format` target accepts docformatter exit code 3**: `docformatter --in-place` exits 3 to signal "files modified", which the previous handler treated as fatal. The pre-commit hook now passes on the first run after editing any docstring.
 
 ## [2.6.1] - 2026-04-17

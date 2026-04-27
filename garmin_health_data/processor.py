@@ -2562,12 +2562,27 @@ class GarminProcessor(Processor):
                         # Two-pass approach: first find timestamp, then process
                         # all fields.
                         timestamp = None
+                        fractional = 0.0
 
-                        # First pass: find timestamp.
+                        # First pass: find timestamp + optional sub-second
+                        # offset. FIT's `record.timestamp` is a uint32 second-
+                        # resolution field; high-frequency devices (e.g. Fenix
+                        # at 2Hz smart-recording) emit a paired
+                        # `fractional_timestamp` (uint16 scaled to seconds,
+                        # range [0, 1)) so we can recover sub-second precision
+                        # and avoid UNIQUE-constraint collisions on
+                        # (activity_id, timestamp, name).
                         for field in frame.fields:
                             if field.name == "timestamp" and field.value:
                                 timestamp = field.value.replace(tzinfo=timezone.utc)
-                                break
+                            elif (
+                                field.name == "fractional_timestamp"
+                                and field.value is not None
+                            ):
+                                fractional = float(field.value)
+
+                        if timestamp is not None and fractional:
+                            timestamp = timestamp + timedelta(seconds=fractional)
 
                         # Second pass: process all fields if timestamp was found.
                         if timestamp is not None:
@@ -2756,6 +2771,24 @@ class GarminProcessor(Processor):
         ]
 
         if ts_metrics:
+            # Belt-and-suspenders: even after fractional_timestamp parsing,
+            # some FIT files may emit two record frames with identical
+            # (timestamp, name) (devices without fractional_timestamp,
+            # corrupted writes, etc.). Coalesce by (timestamp, name) keeping
+            # the last seen value so the unique constraint
+            # (activity_id, timestamp, name) is never violated.
+            ts_metrics_by_key: Dict = {}
+            for m in ts_metrics:
+                ts_metrics_by_key[(m.timestamp, m.name)] = m
+            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
+            if deduped_count > 0:
+                click.secho(
+                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
+                    f"row(s) (same timestamp + metric name).",
+                    fg="yellow",
+                )
+            ts_metrics = list(ts_metrics_by_key.values())
+
             session.execute(
                 insert(ActivityTsMetric),
                 [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],

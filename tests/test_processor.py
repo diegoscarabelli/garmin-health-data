@@ -1453,3 +1453,115 @@ class TestStrengthRouting:
 
         # Assert.
         mock_strength.assert_called_once()
+
+
+# --------------------------------------------------------------------------------------
+# Sub-second timestamp precision and dedup tests for _process_fit_file
+# --------------------------------------------------------------------------------------
+
+
+class TestProcessFitSubSecond:
+    """
+    Cover the FIT record-frame timestamp precision and duplicate-coalescing fixes.
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        """
+        Build a minimal processor instance bound to FIT_FILENAME.
+        """
+        file_set = MagicMock(spec=FileSet)
+        return GarminProcessor(file_set=file_set, session=MagicMock())
+
+    def test_fractional_timestamp_preserves_subsecond_precision(
+        self, db_session: Session
+    ):
+        """
+        Two record frames with the same `timestamp` but distinct `fractional_timestamp`
+        values produce two distinct rows with sub-second precision (no UNIQUE constraint
+        collision).
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        frame_a = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("fractional_timestamp", 0.0, "s"),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+        frame_b = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("fractional_timestamp", 0.5, "s"),
+                _make_field("heart_rate", 152, "bpm"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([frame_a, frame_b])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = (
+            db_session.execute(
+                select(ActivityTsMetric).where(ActivityTsMetric.name == "heart_rate")
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+        timestamps = sorted(r.timestamp for r in rows)
+        # 500 ms apart, both stored with microsecond precision.
+        assert (timestamps[1] - timestamps[0]).total_seconds() == pytest.approx(0.5)
+
+    def test_duplicate_records_coalesced_by_timestamp_and_name(
+        self, db_session: Session
+    ):
+        """
+        Two record frames at the same effective timestamp (no fractional_timestamp
+        present) collapse into a single row whose value is the last-seen one.
+
+        Prevents UNIQUE constraint failure (issue #36).
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        frame_a = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+        frame_b = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("heart_rate", 152, "bpm"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([frame_a, frame_b])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = (
+            db_session.execute(
+                select(ActivityTsMetric).where(ActivityTsMetric.name == "heart_rate")
+            )
+            .scalars()
+            .all()
+        )
+        # Coalesced to one row; last value wins.
+        assert len(rows) == 1
+        assert rows[0].value == 152.0
