@@ -42,6 +42,7 @@ from garmin_health_data.lifecycle import (
 from garmin_health_data.processor import GarminProcessor
 from garmin_health_data.processor_helpers import FileSet
 from garmin_health_data.utils import format_count, format_date, format_file_size
+from garmin_health_data.version_check import check_for_newer_version
 
 # Filename timestamp pattern shared by all extracted JSON / FIT / TCX / GPX
 # / KML files. Used to group files into per-(user_id, timestamp) FileSets.
@@ -71,6 +72,11 @@ def cli():
         _log.addHandler(_handler)
     _log.setLevel(logging.INFO)
     _log.propagate = False
+
+    # Hint when a newer version is available on PyPI. Cached for 24h, opt-out
+    # via GARMIN_NO_VERSION_CHECK=1, never blocks more than ~2s, never aborts
+    # the user's command.
+    check_for_newer_version()
 
 
 @cli.command()

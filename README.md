@@ -13,6 +13,7 @@ Extract your complete Garmin Connect health and activity data to a local SQLite 
 - 🔄 **Auto-Resume & Crash Recovery**: Automatically detects last update and syncs new data; files left mid-process from a crashed previous run are auto-recovered on the next invocation.
 - 📁 **File Lifecycle**: Every extracted file is preserved on disk in a four-folder pipeline (`ingest/process/storage/quarantine`) for offline backup and post-mortem inspection.
 - 🛡️ **Failure Isolation**: Per-date, per-data-type, per-activity, and per-FileSet error handling means a single transient failure no longer aborts an entire run.
+- 🔔 **Update Hint**: every `garmin` command checks PyPI (cached for 24h) and prints a one-line hint when a newer version is available. Disable with `GARMIN_NO_VERSION_CHECK=1`.
 
 ## Requirements
 

@@ -36,6 +36,7 @@ dependencies = [
     "fitdecode>=0.10.0",
     "pendulum>=2.1.0",
     "colorama>=0.4.6",
+    "packaging>=21.0",
 ]
 
 [project.optional-dependencies]

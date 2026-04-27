@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--extract-only` flag**: download files into `ingest/` and stop, without loading them into the database. Useful for backup-only workflows or for manual inspection.
 - **`--process-only` flag**: skip the API entirely and process whatever is currently in `ingest/`. Useful for retrying after a parsing fix, or for processing files that arrived from elsewhere. Does not require Garmin authentication.
 - **End-of-run summary**: every per-data-type / per-date / per-activity extraction failure is listed at the end of the run, grouped for readability, so users always know what was skipped.
+- **PyPI version-update hint**: every `garmin` command checks the latest version on PyPI (cached for 24h in `~/.cache/garmin-health-data/version-check.json`, opt-out with `GARMIN_NO_VERSION_CHECK=1`) and prints a one-line upgrade hint when a newer release is available. Network failures, malformed responses, and missing cache files are silently swallowed so the check never aborts a command.
 
 ### Changed
 
