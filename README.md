@@ -10,10 +10,9 @@ Extract your complete Garmin Connect health and activity data to a local SQLite 
 - 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics.
 - 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data.
 - 👥 **Multi-Account**: Extract data from multiple Garmin Connect accounts (e.g., family members) into a single database. Run `garmin auth` once per account — accounts are discovered and extracted automatically.
-- 🔄 **Auto-Resume & Crash Recovery**: Automatically detects last update and syncs new data; files left mid-process from a crashed previous run are auto-recovered on the next invocation.
+- 🔄 **Auto-Resume & Crash Recovery**: Automatically detects the last update and syncs new data; files left mid-process from a crashed run are auto-recovered on the next invocation.
 - 📁 **File Lifecycle**: Every extracted file is preserved on disk in a four-folder pipeline (`ingest/process/storage/quarantine`) for offline backup and post-mortem inspection.
-- 🛡️ **Failure Isolation**: Per-date, per-data-type, per-activity, and per-FileSet error handling means a single transient failure no longer aborts an entire run.
-- 🔔 **Update Hint**: every `garmin` command checks PyPI (cached for 24h) and prints a one-line hint when a newer version is available. Disable with `GARMIN_NO_VERSION_CHECK=1`.
+- 🛡️ **Failure Isolation**: Per-date, per-data-type, per-activity, and per-FileSet error handling — a single transient failure is logged and skipped while the rest of the run continues.
 
 ## Requirements
 
