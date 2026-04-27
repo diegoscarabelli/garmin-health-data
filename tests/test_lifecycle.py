@@ -2,8 +2,12 @@
 Tests for filesystem lifecycle helpers (ingest/process/storage/quarantine).
 """
 
+import pytest
+
 from garmin_health_data.lifecycle import (
     LIFECYCLE_DIRS,
+    LockHeldError,
+    acquire_lock,
     move_files_to_quarantine,
     move_files_to_storage,
     move_ingest_to_process,
@@ -123,3 +127,50 @@ def test_move_overwrites_existing_destination(tmp_path):
     move_files_to_storage([src], base)
 
     assert (base / "storage" / "dup.json").read_text() == "new"
+
+
+def test_acquire_lock_succeeds_when_unheld(tmp_path):
+    """
+    First lock acquisition succeeds and creates the .lock file.
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    with acquire_lock(base):
+        assert (base / ".lock").exists()
+
+
+def test_acquire_lock_raises_when_held_by_another_process(tmp_path):
+    """
+    A second concurrent acquisition raises LockHeldError.
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    with acquire_lock(base):
+        with pytest.raises(LockHeldError):
+            with acquire_lock(base):
+                pass
+
+
+def test_acquire_lock_releases_after_context_exit(tmp_path):
+    """
+    Lock is released when context exits, allowing re-acquisition.
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    with acquire_lock(base):
+        pass
+    with acquire_lock(base):
+        pass
+
+
+def test_acquire_lock_releases_on_exception(tmp_path):
+    """
+    Lock is released even if the with-block raises.
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    with pytest.raises(RuntimeError):
+        with acquire_lock(base):
+            raise RuntimeError("boom")
+    with acquire_lock(base):
+        pass

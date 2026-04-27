@@ -14,11 +14,51 @@ moves; a crashed run leaves files in process/, which the next run recovers
 back to ingest/ before continuing.
 """
 
+import fcntl
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, Iterator, List
 
 LIFECYCLE_DIRS = ("ingest", "process", "storage", "quarantine")
+
+
+class LockHeldError(RuntimeError):
+    """
+    Raised when the lifecycle lock is held by another process.
+    """
+
+
+@contextmanager
+def acquire_lock(base_dir: Path) -> Iterator[None]:
+    """
+    Acquire an exclusive advisory lock on `<base_dir>/.lock`.
+
+    Uses ``fcntl.flock`` with ``LOCK_EX | LOCK_NB`` so a held lock fails
+    fast with :class:`LockHeldError` rather than blocking. The lock is
+    released automatically when the context exits or the process dies.
+
+    :param base_dir: Lifecycle parent directory (must already exist).
+    :raises LockHeldError: If another process holds the lock.
+    """
+    lock_path = base_dir / ".lock"
+    lock_path.touch(exist_ok=True)
+    f = open(lock_path, "r+")
+    try:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError) as e:
+            raise LockHeldError(
+                f"Another garmin extract run is in progress (lock held on "
+                f"{lock_path}). Wait for it to finish or remove the lock "
+                f"file if no process is running."
+            ) from e
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    finally:
+        f.close()
 
 
 def setup_lifecycle_dirs(base_dir: Path) -> None:
