@@ -253,181 +253,180 @@ def extract(
     process_dir = files_root / "process"
     click.echo(f"💾 Files directory: {files_root}")
 
-    # Acquire the lifecycle lock so a second concurrent run aborts cleanly
-    # rather than racing on file moves.
+    # Acquire the lifecycle lock so a second concurrent run aborts cleanly.
+    # The entire run lives inside the 'with' block so the lock is
+    # released even if the body raises (no manual __enter__/__exit__).
     try:
-        lock_ctx = acquire_lock(files_root)
-        lock_ctx.__enter__()
-    except LockHeldError as e:
-        click.secho(f"❌ {e}", fg="red")
-        raise click.Abort()
+        with acquire_lock(files_root):
+            # Recover any files left in process/ from a previously crashed run.
+            recovered = recover_stale_process(files_root)
+            if recovered:
+                click.secho(
+                    f"♻️  Recovered {recovered} file(s) from a previous run "
+                    f"(process/ → ingest/).",
+                    fg="cyan",
+                )
 
-    try:
-        # Recover any files left in process/ from a previously crashed run.
-        recovered = recover_stale_process(files_root)
-        if recovered:
-            click.secho(
-                f"♻️  Recovered {recovered} file(s) from a previous run "
-                f"(process/ → ingest/).",
-                fg="cyan",
-            )
+            # ---------------------------------------------------------------- Step 1: Extract.
+            result = {
+                "garmin_files": 0,
+                "activity_files": 0,
+                "failures": [],
+                "failed_accounts": [],
+            }
+            if not process_only:
+                click.echo(
+                    click.style(
+                        "🔄 Step 1/3: Extracting data from Garmin Connect...",
+                        fg="cyan",
+                        bold=True,
+                    )
+                )
+                click.echo()
 
-        # ---------------------------------------------------------------- Step 1: Extract.
-        result = {
-            "garmin_files": 0,
-            "activity_files": 0,
-            "failures": [],
-            "failed_accounts": [],
-        }
-        if not process_only:
+                result = extract_data(
+                    ingest_dir=ingest_dir,
+                    data_interval_start=format_date(start_date.date()),
+                    data_interval_end=format_date(end_date.date()),
+                    data_types=data_types_list,
+                    accounts=accounts_list,
+                )
+
+                garmin_files = result.get("garmin_files", 0)
+                activity_files = result.get("activity_files", 0)
+                total_files = garmin_files + activity_files
+
+                click.echo()
+                click.secho(
+                    f"✅ Extracted {format_count(total_files)} files", fg="green"
+                )
+                click.echo(f"   • Garmin data files: {format_count(garmin_files)}")
+                click.echo(f"   • Activity files: {format_count(activity_files)}")
+                click.echo()
+
+            if extract_only:
+                _print_extraction_failures(result.get("failures", []))
+                click.echo()
+                click.secho(
+                    "✅ Extraction-only mode: files left in ingest/. "
+                    "Run 'garmin extract --process-only' to load them into "
+                    "the database.",
+                    fg="green",
+                )
+                return
+
+            # ---------------------------------------------------------------- Step 2: Process.
             click.echo(
                 click.style(
-                    "🔄 Step 1/3: Extracting data from Garmin Connect...",
+                    "🔄 Step 2/3: Processing data and loading into database...",
                     fg="cyan",
                     bold=True,
                 )
             )
             click.echo()
 
-            result = extract_data(
-                ingest_dir=ingest_dir,
-                data_interval_start=format_date(start_date.date()),
-                data_interval_end=format_date(end_date.date()),
-                data_types=data_types_list,
-                accounts=accounts_list,
-            )
+            # Move every file from ingest/ to process/ before parsing.
+            moved = move_ingest_to_process(files_root)
+            click.echo(f"📦 Moved {format_count(moved)} file(s) ingest/ → process/.")
 
-            garmin_files = result.get("garmin_files", 0)
-            activity_files = result.get("activity_files", 0)
-            total_files = garmin_files + activity_files
+            # Discover files now in process/.
+            file_paths = [p for p in process_dir.iterdir() if p.is_file()]
+
+            total_processed = 0
+            total_quarantined = 0
+            if file_paths:
+                files_by_key = _group_files_by_user_and_timestamp(file_paths)
+
+                num_filesets = len(files_by_key)
+                click.echo()
+                plural = "s" if num_filesets != 1 else ""
+                click.secho(
+                    f"📦 Processing {format_count(num_filesets)} file set{plural} "
+                    f"(grouped by account and timestamp)",
+                    fg="cyan",
+                    bold=True,
+                )
+                click.echo()
+
+                # Per-FileSet: own session, try/except, route to storage/quarantine.
+                for (uid, timestamp_str), timestamp_files in files_by_key.items():
+                    files_by_type = _classify_files_by_type(timestamp_files)
+
+                    # Skip groups with no recognised types (e.g. TCX/GPX-only).
+                    if not files_by_type:
+                        continue
+
+                    matched_paths = [
+                        p for paths in files_by_type.values() for p in paths
+                    ]
+                    file_set = FileSet(file_paths=matched_paths, files=files_by_type)
+
+                    with get_session(db_path) as session:
+                        try:
+                            processor = GarminProcessor(file_set, session)
+                            processor.process_file_set(file_set, session)
+                            session.commit()
+                            move_files_to_storage(matched_paths, files_root)
+                            total_processed += len(matched_paths)
+                        except Exception as e:
+                            session.rollback()
+                            click.secho(
+                                f"❌ FileSet {uid}/{timestamp_str} failed: "
+                                f"{type(e).__name__}: {e}. Moving to quarantine.",
+                                fg="red",
+                            )
+                            move_files_to_quarantine(matched_paths, files_root)
+                            total_quarantined += len(matched_paths)
+
+                click.echo()
+                click.secho(
+                    f"✅ Processed {format_count(total_processed)} file(s); "
+                    f"❌ quarantined {format_count(total_quarantined)} file(s).",
+                    fg="green" if total_quarantined == 0 else "yellow",
+                )
+            else:
+                click.secho("⚠️  No files to process", fg="yellow")
 
             click.echo()
-            click.secho(f"✅ Extracted {format_count(total_files)} files", fg="green")
-            click.echo(f"   • Garmin data files: {format_count(garmin_files)}")
-            click.echo(f"   • Activity files: {format_count(activity_files)}")
+
+            # ---------------------------------------------------------------- Step 3: Summary.
+            click.echo(click.style("📊 Step 3/3: Summary", fg="cyan", bold=True))
             click.echo()
 
-        if extract_only:
             _print_extraction_failures(result.get("failures", []))
-            click.echo()
-            click.secho(
-                "✅ Extraction-only mode: files left in ingest/. "
-                "Run 'garmin extract --process-only' to load them into "
-                "the database.",
-                fg="green",
+
+            counts = get_record_counts(db_path)
+            db_size = get_database_size(db_path)
+
+            click.echo("Database statistics:")
+            click.echo(f"   • Database size: {format_file_size(db_size)}")
+            click.echo(f"   • Activities: {format_count(counts.get('activities', 0))}")
+            click.echo(
+                f"   • Sleep sessions: {format_count(counts.get('sleep_sessions', 0))}"
             )
-            return
-
-        # ---------------------------------------------------------------- Step 2: Process.
-        click.echo(
-            click.style(
-                "🔄 Step 2/3: Processing data and loading into database...",
-                fg="cyan",
-                bold=True,
-            )
-        )
-        click.echo()
-
-        # Move every file from ingest/ to process/ before parsing.
-        moved = move_ingest_to_process(files_root)
-        click.echo(f"📦 Moved {format_count(moved)} file(s) ingest/ → process/.")
-
-        # Discover files now in process/.
-        file_paths = [p for p in process_dir.iterdir() if p.is_file()]
-
-        total_processed = 0
-        total_quarantined = 0
-        if file_paths:
-            files_by_key = _group_files_by_user_and_timestamp(file_paths)
-
-            num_filesets = len(files_by_key)
-            click.echo()
-            plural = "s" if num_filesets != 1 else ""
-            click.secho(
-                f"📦 Processing {format_count(num_filesets)} file set{plural} "
-                f"(grouped by account and timestamp)",
-                fg="cyan",
-                bold=True,
+            hr_count = format_count(counts.get("heart_rate_readings", 0))
+            click.echo(f"   • Heart rate readings: {hr_count}")
+            click.echo(
+                f"   • Stress readings: {format_count(counts.get('stress_readings', 0))}"
             )
             click.echo()
 
-            # Per-FileSet: own session, try/except, route to storage/quarantine.
-            for (uid, timestamp_str), timestamp_files in files_by_key.items():
-                files_by_type = _classify_files_by_type(timestamp_files)
-
-                # Skip groups with no recognised types (e.g. TCX/GPX-only).
-                if not files_by_type:
-                    continue
-
-                matched_paths = [p for paths in files_by_type.values() for p in paths]
-                file_set = FileSet(file_paths=matched_paths, files=files_by_type)
-
-                with get_session(db_path) as session:
-                    try:
-                        processor = GarminProcessor(file_set, session)
-                        processor.process_file_set(file_set, session)
-                        session.commit()
-                        move_files_to_storage(matched_paths, files_root)
-                        total_processed += len(matched_paths)
-                    except Exception as e:
-                        session.rollback()
-                        click.secho(
-                            f"❌ FileSet {uid}/{timestamp_str} failed: "
-                            f"{type(e).__name__}: {e}. Moving to quarantine.",
-                            fg="red",
-                        )
-                        move_files_to_quarantine(matched_paths, files_root)
-                        total_quarantined += len(matched_paths)
-
+            click.secho("🎉 Extraction complete!", fg="green", bold=True)
+            click.echo(f"   Your data has been saved to: {db_path}")
+            click.echo(f"   Original files preserved at: {files_root}")
             click.echo()
-            click.secho(
-                f"✅ Processed {format_count(total_processed)} file(s); "
-                f"❌ quarantined {format_count(total_quarantined)} file(s).",
-                fg="green" if total_quarantined == 0 else "yellow",
+            click.echo("💡 Next steps:")
+            click.echo("   • Run 'garmin info' to see detailed statistics")
+            click.echo("   • Query the database with your favorite SQLite tool")
+            click.echo("   • Run 'garmin extract' again later to update with new data")
+            click.echo(
+                "   • Inspect 'garmin_files/quarantine/' for any files that failed "
+                "to process"
             )
-        else:
-            click.secho("⚠️  No files to process", fg="yellow")
 
-        click.echo()
-
-        # ---------------------------------------------------------------- Step 3: Summary.
-        click.echo(click.style("📊 Step 3/3: Summary", fg="cyan", bold=True))
-        click.echo()
-
-        _print_extraction_failures(result.get("failures", []))
-
-        counts = get_record_counts(db_path)
-        db_size = get_database_size(db_path)
-
-        click.echo("Database statistics:")
-        click.echo(f"   • Database size: {format_file_size(db_size)}")
-        click.echo(f"   • Activities: {format_count(counts.get('activities', 0))}")
-        click.echo(
-            f"   • Sleep sessions: {format_count(counts.get('sleep_sessions', 0))}"
-        )
-        hr_count = format_count(counts.get("heart_rate_readings", 0))
-        click.echo(f"   • Heart rate readings: {hr_count}")
-        click.echo(
-            f"   • Stress readings: {format_count(counts.get('stress_readings', 0))}"
-        )
-        click.echo()
-
-        click.secho("🎉 Extraction complete!", fg="green", bold=True)
-        click.echo(f"   Your data has been saved to: {db_path}")
-        click.echo(f"   Original files preserved at: {files_root}")
-        click.echo()
-        click.echo("💡 Next steps:")
-        click.echo("   • Run 'garmin info' to see detailed statistics")
-        click.echo("   • Query the database with your favorite SQLite tool")
-        click.echo("   • Run 'garmin extract' again later to update with new data")
-        click.echo(
-            "   • Inspect 'garmin_files/quarantine/' for any files that failed "
-            "to process"
-        )
-
-    finally:
-        # Always release the lifecycle lock.
-        lock_ctx.__exit__(None, None, None)
+    except LockHeldError as e:
+        click.secho(f"❌ {e}", fg="red")
+        raise click.Abort()
 
 
 def _group_files_by_user_and_timestamp(

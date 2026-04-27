@@ -6,7 +6,7 @@
 
 **Architecture:** Files now move through `<db_dir>/garmin_files/{ingest,process,storage,quarantine}/`. Extract writes to `ingest/`. A bulk move stages `ingest/` → `process/`. Each `(user_id, timestamp)` FileSet is processed in its own SQLAlchemy session inside a try/except. Successful FileSets' files move to `storage/`; failed ones move to `quarantine/`. The extractor itself gains per-date and per-data-type try/except so a single transient API failure no longer aborts an entire account run. End-of-run summary surfaces every gap.
 
-**Tech Stack:** Python 3.9+, Click, SQLAlchemy 2.x, pytest, garminconnect SDK.
+**Tech Stack:** Python 3.10+, Click, SQLAlchemy 2.x, pytest, garminconnect SDK.
 
 **Issue:** Closes #35 (expanded scope from "save activity files" to full lifecycle).
 

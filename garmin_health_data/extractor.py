@@ -15,7 +15,7 @@ import io
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import click
 import pendulum
@@ -80,7 +80,15 @@ def _with_retries(fn: Callable, *args, **kwargs):
                     fg="yellow",
                 )
                 time.sleep(backoff)
-    # All attempts exhausted; re-raise the last transient exception.
+    # All attempts exhausted; re-raise the last transient exception. The
+    # explicit guard satisfies type checkers (last_exc is Optional in the
+    # type system but is always set here because we only reach this line
+    # after at least one except branch ran).
+    if last_exc is None:
+        raise RuntimeError(
+            "_with_retries exhausted attempts without capturing an exception "
+            "(should be unreachable)"
+        )
     raise last_exc
 
 
@@ -820,7 +828,7 @@ def extract(
     data_types: Optional[List[str]] = None,
     accounts: Optional[List[str]] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """
     Download data from Garmin Connect for the specified date range.
 
@@ -836,8 +844,15 @@ def extract(
     :param accounts: Optional list of user_id strings to filter which accounts to
         extract. If None, extracts all discovered accounts.
     :param progress_callback: Optional callback function for progress updates.
-    :return: Dictionary with counts of extracted files {'garmin_files': int,
-        'activity_files': int}.
+    :return: Dictionary with the following keys:
+
+        - ``garmin_files`` (``int``): count of saved JSON data files.
+        - ``activity_files`` (``int``): count of saved activity files (FIT/TCX/GPX/KML).
+        - ``failures`` (``List[ExtractionFailure]``): per-date / per-data-type /
+          per-activity failures recorded by any per-account extractor.
+        - ``failed_accounts`` (``List[str]``): user IDs whose entire run raised
+          an unhandled exception (rare; see logs).
+
     :raises ValueError: If any requested data type names are not found in registry, or
         if accounts filter is not a list.
     """
