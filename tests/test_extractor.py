@@ -835,3 +835,77 @@ def test_extract_garmin_data_isolates_per_data_type_failures(tmp_path):
 
     assert len(saved) == 1  # HEART_RATE succeeded
     assert any(f.data_type == "SLEEP" for f in extractor.failures)
+
+
+def test_extract_fit_activities_handles_list_call_failure(tmp_path):
+    """
+    If activity-list API call fails, returns empty and records ACTIVITIES_LIST failure.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.side_effect = RuntimeError(
+        "list endpoint 500"
+    )
+
+    result = extractor.extract_fit_activities()
+
+    assert result == []
+    assert any(f.data_type == "ACTIVITIES_LIST" for f in extractor.failures)
+    extractor.garmin_client.download_activity.assert_not_called()
+
+
+def test_extract_fit_activities_isolates_per_activity_failures(tmp_path):
+    """
+    A non-connection exception during one download does not abort the loop.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.return_value = [
+        {
+            "activityId": 1,
+            "startTimeLocal": "2025-01-01 10:00:00",
+            "activityType": {"typeKey": "running"},
+        },
+        {
+            "activityId": 2,
+            "startTimeLocal": "2025-01-01 12:00:00",
+            "activityType": {"typeKey": "running"},
+        },
+    ]
+    # First raises non-connection; second returns content that fails magic
+    # detection -> _extract_activity_content returns None -> continues.
+    extractor.garmin_client.download_activity.side_effect = [
+        ValueError("boom"),
+        b"not-a-fit-or-anything",
+    ]
+
+    extractor.extract_fit_activities()
+
+    # Both attempts processed; first recorded as failure.
+    assert any(
+        f.activity_id == "1" and f.data_type == "ACTIVITY" for f in extractor.failures
+    )
+    # Loop did not abort: second download_activity call was attempted.
+    assert extractor.garmin_client.download_activity.call_count == 2

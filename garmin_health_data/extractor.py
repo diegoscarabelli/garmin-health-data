@@ -19,7 +19,6 @@ from typing import List, Optional, Union, Callable, Dict
 import click
 import pendulum
 from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
-from garmin_health_data.garmin_client.exceptions import GarminConnectionError
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
@@ -557,7 +556,26 @@ class GarminExtractor:
         # not specific time ranges within days.
         start_str = self.start_date.strftime("%Y-%m-%d")
         end_str = self.end_date.strftime("%Y-%m-%d")
-        activities = self.garmin_client.get_activities_by_date(start_str, end_str)
+        # Wrap the list-fetch in try/except: it is the upstream dependency
+        # for every per-activity download, so a failure here would otherwise
+        # silently skip ALL activities for the account.
+        try:
+            activities = self.garmin_client.get_activities_by_date(start_str, end_str)
+        except Exception as e:
+            click.secho(
+                f"⚠️  Activity list fetch failed: {type(e).__name__}: {e}. "
+                f"No activity files will be downloaded for this account.",
+                fg="red",
+            )
+            self.failures.append(
+                ExtractionFailure(
+                    data_type="ACTIVITIES_LIST",
+                    date=f"{start_str}..{end_str}",
+                    activity_id="",
+                    error=f"{type(e).__name__}: {e}",
+                )
+            )
+            return []
 
         if not activities:
             click.secho(
@@ -593,10 +611,21 @@ class GarminExtractor:
                     activity_id,
                     dl_fmt=ActivityDownloadFormat.ORIGINAL,
                 )
-            except GarminConnectionError as e:
+            except Exception as e:
+                # Broaden from GarminConnectionError to Exception so unexpected
+                # errors (parse failures, transient SDK bugs) on one activity
+                # don't abort the loop. Record the failure for the summary.
                 click.secho(
-                    f"⚠️  Skipping activity {activity_id}: {e}.",
+                    f"⚠️  Skipping activity {activity_id}: " f"{type(e).__name__}: {e}.",
                     fg="yellow",
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type="ACTIVITY",
+                        date="",
+                        activity_id=str(activity_id),
+                        error=f"{type(e).__name__}: {e}",
+                    )
                 )
                 continue
 
