@@ -757,3 +757,48 @@ class TestExtractFitActivitiesFormat:
         assert paths[0].suffix == ".tcx"
         assert len(list(tmp_path.glob("*.fit"))) == 0
         assert len(list(tmp_path.glob("*.tcx"))) == 1
+
+
+# --------------------------------------------------------------------------------------
+# Failure isolation tests
+# --------------------------------------------------------------------------------------
+
+
+def test_extract_day_by_day_isolates_per_date_failures(tmp_path):
+    """
+    A transient API failure on one date does not abort extraction of subsequent dates.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 3),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP",),
+    )
+    extractor.user_id = "test-user"
+
+    sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+    mock_api = MagicMock(
+        side_effect=[
+            {"value": "ok-day-1"},
+            RuntimeError("transient API hiccup"),
+            {"value": "ok-day-3"},
+        ]
+    )
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, sleep_type.api_method, mock_api)
+
+    saved = extractor._extract_day_by_day(
+        sleep_type, date(2025, 1, 1), date(2025, 1, 3)
+    )
+
+    assert len(saved) == 2  # two successes, one failure skipped
+    assert mock_api.call_count == 3
+    assert any(
+        "2025-01-02" in f.error or f.date == "2025-01-02" for f in extractor.failures
+    )

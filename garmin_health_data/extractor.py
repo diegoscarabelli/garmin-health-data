@@ -11,6 +11,7 @@ import time
 import zipfile
 import io
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import List, Optional, Union, Callable, Dict
@@ -25,6 +26,27 @@ from garmin_health_data.constants import (
     GarminDataType,
     GARMIN_DATA_REGISTRY,
 )
+
+
+@dataclass
+class ExtractionFailure:
+    """
+    A single extraction failure recorded by the extractor for end-of-run reporting.
+
+    :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
+    :ivar date: ISO date string for per-date failures, or ``""`` when the
+        failure is not date-scoped (per-data-type or per-activity contexts).
+    :ivar activity_id: Activity ID as a string for per-activity failures, or
+        ``""`` otherwise.
+    :ivar error: Human-readable error description (typically
+        ``"<ExceptionType>: <message>"``).
+    """
+
+    data_type: str
+    date: str
+    activity_id: str
+    error: str
+
 
 # File extensions that the downstream processor knows how to route.
 # Used as a fallback when magic-byte detection is inconclusive.
@@ -107,6 +129,7 @@ class GarminExtractor:
         self.data_types = data_types
         self.garmin_client = None
         self.user_id = None
+        self.failures: List[ExtractionFailure] = []
 
     def authenticate(self, token_store_dir: str = "~/.garminconnect") -> None:
         """
@@ -260,14 +283,16 @@ class GarminExtractor:
 
         return saved_files
 
-    def _process_day_by_day(
+    def _extract_day_by_day(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
         """
-        Extract Garmin data type one day at a time with common loop logic.
+        Extract a Garmin data type one day at a time with per-date error isolation.
 
-        Handles both DAILY and RANGE API time parameter patterns by processing each day
-        individually and calling the appropriate API method with the correct parameters.
+        Handles both DAILY and RANGE API time parameter patterns. A failure on
+        one date is logged and recorded in :attr:`failures`; extraction
+        continues with the next date so transient API hiccups never abort the
+        full date range.
 
         :param data_type: GarminDataType defining the extraction parameters.
         :param start_date: Start date for data extraction (inclusive).
@@ -282,27 +307,39 @@ class GarminExtractor:
                 f"Fetching {data_type.emoji} {data_type.name} data for "
                 f"{current_date}."
             )
-
-            # Get API method dynamically.
-            api_method = getattr(self.garmin_client, data_type.api_method)
             date_str = current_date.strftime("%Y-%m-%d")
 
-            # Call API method with appropriate parameters based on type.
-            if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-                data = api_method(date_str)
-            else:
-                # Pass the same date to both date params for RANGE methods.
-                data = api_method(date_str, date_str)
+            try:
+                api_method = getattr(self.garmin_client, data_type.api_method)
+                if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
+                    data = api_method(date_str)
+                else:
+                    # Pass the same date to both params for RANGE methods.
+                    data = api_method(date_str, date_str)
 
-            if data:
-                saved_files.extend(
-                    self._save_garmin_data(data, data_type, current_date)
-                )
-            else:
+                if data:
+                    saved_files.extend(
+                        self._save_garmin_data(data, data_type, current_date)
+                    )
+                else:
+                    click.secho(
+                        f"{data_type.emoji} {data_type.name}: No data for "
+                        f"{current_date}.",
+                        fg="yellow",
+                    )
+            except Exception as e:
                 click.secho(
-                    f"{data_type.emoji} {data_type.name}: No data for "
-                    f"{current_date}.",
-                    fg="yellow",
+                    f"⚠️  {data_type.name} {date_str} failed: "
+                    f"{type(e).__name__}: {e}. Continuing.",
+                    fg="red",
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type=data_type.name,
+                        date=date_str,
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
                 )
 
             current_date += timedelta(days=1)
@@ -340,7 +377,7 @@ class GarminExtractor:
             APIMethodTimeParam.RANGE,
         ]:
             # Process each day individually using common helper method.
-            return self._process_day_by_day(data_type, start_date, end_date)
+            return self._extract_day_by_day(data_type, start_date, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.NO_DATE:
             # Process no-date data.
