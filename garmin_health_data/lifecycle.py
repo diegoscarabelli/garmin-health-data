@@ -78,7 +78,8 @@ def recover_stale_process(base_dir: Path) -> int:
     """
     Move every file in process/ back to ingest/.
 
-    Called at the start of each run to recover from a previously-crashed run.
+    Called at the start of each run to recover from a previously-crashed run. Existing
+    files in ingest/ with the same name are overwritten.
 
     :param base_dir: Lifecycle parent directory.
     :return: Count of files recovered.
@@ -100,7 +101,8 @@ def move_ingest_to_process(base_dir: Path) -> int:
     """
     Move every file from ingest/ to process/ in bulk.
 
-    Called after extraction completes and before processing begins.
+    Called after extraction completes and before processing begins. Existing files in
+    process/ with the same name are overwritten.
 
     :param base_dir: Lifecycle parent directory.
     :return: Count of files moved.
@@ -145,6 +147,9 @@ def move_files_to_quarantine(file_paths: Iterable[Path], base_dir: Path) -> List
 def _move_into(file_paths: Iterable[Path], dest_dir: Path) -> List[Path]:
     """
     Move every file into dest_dir, returning the new paths.
+
+    Existing destination files with the same name are overwritten so re-runs are
+    idempotent.
 
     :param file_paths: Source file paths.
     :param dest_dir: Destination directory (must already exist).

@@ -129,6 +129,47 @@ def test_move_overwrites_existing_destination(tmp_path):
     assert (base / "storage" / "dup.json").read_text() == "new"
 
 
+def test_recover_stale_process_overwrites_ingest_file(tmp_path):
+    """
+    recover_stale_process overwrites an ingest/ file with the same name.
+
+    This can happen if a previous run crashed mid-process and the next run tries to
+    recover, but a fresh extraction in between created a new copy in ingest/. The
+    crashed-in-process copy is preferred because it was the most recently extracted
+    version, and re-extraction is idempotent anyway.
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    (base / "process" / "dup.json").write_text("from-crashed-run")
+    (base / "ingest" / "dup.json").write_text("from-fresh-extract")
+
+    moved = recover_stale_process(base)
+
+    assert moved == 1
+    assert (base / "ingest" / "dup.json").read_text() == "from-crashed-run"
+    assert not (base / "process" / "dup.json").exists()
+
+
+def test_move_ingest_to_process_overwrites_process_file(tmp_path):
+    """
+    move_ingest_to_process overwrites a process/ file with the same name.
+
+    This can happen after recover_stale_process moved a file back to ingest/ that
+    already had a same-named copy in process/ from a different timeline. The bulk move
+    favours the ingest/ version (most recent).
+    """
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    (base / "ingest" / "dup.json").write_text("from-ingest")
+    (base / "process" / "dup.json").write_text("stale")
+
+    moved = move_ingest_to_process(base)
+
+    assert moved == 1
+    assert (base / "process" / "dup.json").read_text() == "from-ingest"
+    assert not (base / "ingest" / "dup.json").exists()
+
+
 def test_acquire_lock_succeeds_when_unheld(tmp_path):
     """
     First lock acquisition succeeds and creates the .lock file.
