@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **File lifecycle**: every extracted file is preserved on disk in a four-folder pipeline (`garmin_files/{ingest,process,storage,quarantine}/`) next to the database, mirroring the openetl pattern. State transitions are filesystem moves: extract writes to `ingest/`, the CLI bulk-moves to `process/` before parsing, then per-FileSet routes successful files to `storage/` and failed files to `quarantine/` ([#35](https://github.com/diegoscarabelli/garmin-health-data/issues/35)).
+- **Crash recovery**: files left in `process/` from a previously-crashed run are auto-moved back to `ingest/` at the start of the next run, so no extracted work is lost.
+- **Concurrent-run protection**: `fcntl.flock` advisory lock on `garmin_files/.lock` prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message; the lock is released automatically by the OS on process death.
+- **`--extract-only` flag**: download files into `ingest/` and stop, without loading them into the database. Useful for backup-only workflows or for manual inspection.
+- **`--process-only` flag**: skip the API entirely and process whatever is currently in `ingest/`. Useful for retrying after a parsing fix, or for processing files that arrived from elsewhere. Does not require Garmin authentication.
+- **End-of-run summary**: every per-data-type / per-date / per-activity extraction failure is listed at the end of the run, grouped for readability, so users always know what was skipped.
+
+### Changed
+
+- **Per-date extraction isolation**: a transient API failure on one date no longer aborts extraction of the rest of the date range. The failure is logged and recorded; the loop continues.
+- **Per-data-type extraction isolation**: a structural failure for one data type no longer aborts the rest of the account's extraction.
+- **Per-activity extraction isolation**: broadened from `GarminConnectionError` to `Exception`. A parse error on one activity no longer aborts the loop. The activity-list (`get_activities_by_date`) call is also wrapped to record an `ACTIVITIES_LIST` failure cleanly instead of silently skipping all activities.
+- **Per-FileSet processing isolation**: each FileSet now runs in its own SQLAlchemy session inside try/except (mirrors openetl's `_try_process_file_set`). A bad FileSet is rolled back and moved to `quarantine/`; subsequent FileSets are unaffected.
+- **`extract_fit_activities` reads `ACTIVITIES_LIST` from disk**: previously the same `get_activities_by_date` endpoint was called twice per run (once by the registry loop, once by `extract_fit_activities`). The latter now reads the saved JSON instead. Falls back to a live API call if the file is missing.
+- **Renamed `_process_day_by_day` → `_extract_day_by_day`**: the function does extraction (API call + write JSON), not processing. Misleading name was inherited from openetl.
+
+### Fixed
+
+- **Makefile `format` target accepts docformatter exit code 3**: `docformatter --in-place` exits 3 to signal "files modified", which the previous handler treated as fatal. The pre-commit hook now passes on the first run after editing any docstring.
+
 ## [2.6.1] - 2026-04-17
 
 ### Fixed
