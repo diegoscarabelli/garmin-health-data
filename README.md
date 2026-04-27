@@ -107,6 +107,18 @@ Accounts are discovered automatically by scanning for numeric subdirectories. Al
 
 ### Data Extraction
 
+#### Extract command flags
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--start-date YYYY-MM-DD` | Inclusive | Auto-detected from the database if omitted (day after the latest stored data, or 30 days ago for an empty DB). |
+| `--end-date YYYY-MM-DD` | Exclusive (except same-day = inclusive) | Defaults to today. |
+| `--data-types NAME` | Repeatable, e.g. `--data-types SLEEP --data-types HEART_RATE` | Filter to specific [data types](#data-types). All types extracted if omitted. |
+| `--accounts ID` | Repeatable or comma-separated | Filter to specific Garmin user IDs (`--accounts 12345 --accounts 67890` or `--accounts 12345,67890`). All discovered accounts extracted if omitted. |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+| `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
+| `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
+
 ```bash
 # Auto-detect date range (extracts from last update to today)
 garmin extract
@@ -146,11 +158,20 @@ This mirrors the openetl pipeline pattern. State transitions are filesystem move
 
 **Concurrency:** an advisory lock (`garmin_files/.lock`, via `fcntl.flock`) prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message until the first finishes. If a run crashes hard the lock is released automatically by the OS (no stale-lock cleanup needed).
 
-**Failure isolation:** transient API failures during extraction (a single bad date or activity) are logged and skipped rather than aborting the run; an end-of-run summary lists every gap. Processing failures are quarantined per FileSet so one bad day's data doesn't block the others.
-
-**Retries with backoff:** every Garmin API call is wrapped in a 4-attempt retry loop (2s → 8s → 30s exponential backoff) for transient network errors (`GarminConnectionError`, `requests.exceptions.ConnectionError`, `requests.exceptions.Timeout`, `socket.gaierror`). Most DNS hiccups and brief outages absorb silently; only persistent failures land in the end-of-run failure summary. Application errors (parse failures, `ValueError`, etc.) are not retried — they propagate immediately.
-
 **Inspecting quarantine:** look in `garmin_files/quarantine/` to see which files failed processing, fix the underlying issue (parser bug, malformed payload, etc.), then move the files back to `garmin_files/ingest/` and run `garmin extract --process-only`.
+
+#### Failure Handling
+
+A single transient failure does not abort the run. Failures are isolated and reported at four levels:
+
+- **Per-date in extraction**: if the API fails for one day (e.g. SLEEP for 2024-03-15), the loop logs the failure and continues with the next day.
+- **Per-data-type in extraction**: if a whole data type fails (e.g. a missing endpoint), other data types for the same account still run.
+- **Per-activity in extraction**: a parse error or download failure on one activity does not abort the activity download loop.
+- **Per-FileSet in processing**: each `(account, day)` group of files is loaded in its own database transaction. A failed group's files move to `quarantine/`; remaining groups load normally.
+
+**Retries with backoff**: every Garmin API call is wrapped in a 4-attempt retry loop (2s → 8s → 30s exponential backoff) for transient network errors (`GarminConnectionError`, `requests.exceptions.ConnectionError`, `requests.exceptions.Timeout`, `socket.gaierror`). Most DNS hiccups and brief outages absorb silently before the per-date isolation layer ever sees them. Application errors (parse failures, `ValueError`, etc.) are not retried — they propagate immediately to the appropriate isolation layer.
+
+**End-of-run summary**: every recorded failure is listed at the end of the run, grouped by data type, so you always know exactly what was skipped and can target a re-run with explicit `--start-date` / `--end-date`.
 
 #### Pipeline Stages
 
