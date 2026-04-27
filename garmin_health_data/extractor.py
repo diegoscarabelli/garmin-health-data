@@ -533,6 +533,33 @@ class GarminExtractor:
         )
         return "bin", content
 
+    def _load_activities_list_from_disk(self) -> Optional[list]:
+        """
+        Read the saved ACTIVITIES_LIST JSON file from ``ingest_dir`` if present.
+
+        The registry-driven extract loop writes a file named
+        ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` for each run. Reading
+        it here lets ``extract_fit_activities`` skip a duplicate API call.
+
+        :return: Parsed activities list, or ``None`` if no file exists or it
+            cannot be parsed (caller should fall back to the API).
+        """
+        pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
+        matches = sorted(self.ingest_dir.glob(pattern))
+        if not matches:
+            return None
+        # Use the newest file in case multiple runs left files behind.
+        try:
+            with open(matches[-1], "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            click.secho(
+                f"⚠️  Could not read {matches[-1].name}: {e}. "
+                f"Falling back to API call.",
+                fg="yellow",
+            )
+            return None
+
     def extract_fit_activities(self) -> List[Path]:
         """
         Extract activity files from Garmin Connect.
@@ -551,31 +578,37 @@ class GarminExtractor:
             f"(start: {self.start_date}, end: {self.end_date} inclusive)..."
         )
 
-        # Get list of activities, API is inclusive of both dates.
-        # The API is designed to retrieve activities for entire days,
-        # not specific time ranges within days.
+        # Get list of activities. The registry-driven extract loop has
+        # already fetched and saved this same data as ACTIVITIES_LIST JSON
+        # in ingest_dir (the API is RANGE-typed and called with the same
+        # date window). Read it from disk to avoid a duplicate API call.
+        # Fall back to a live API call if the file is missing (e.g.
+        # ACTIVITIES_LIST extraction failed or this method is invoked
+        # outside the normal pipeline).
         start_str = self.start_date.strftime("%Y-%m-%d")
         end_str = self.end_date.strftime("%Y-%m-%d")
-        # Wrap the list-fetch in try/except: it is the upstream dependency
-        # for every per-activity download, so a failure here would otherwise
-        # silently skip ALL activities for the account.
-        try:
-            activities = self.garmin_client.get_activities_by_date(start_str, end_str)
-        except Exception as e:
-            click.secho(
-                f"⚠️  Activity list fetch failed: {type(e).__name__}: {e}. "
-                f"No activity files will be downloaded for this account.",
-                fg="red",
-            )
-            self.failures.append(
-                ExtractionFailure(
-                    data_type="ACTIVITIES_LIST",
-                    date=f"{start_str}..{end_str}",
-                    activity_id="",
-                    error=f"{type(e).__name__}: {e}",
+
+        activities = self._load_activities_list_from_disk()
+        if activities is None:
+            try:
+                activities = self.garmin_client.get_activities_by_date(
+                    start_str, end_str
                 )
-            )
-            return []
+            except Exception as e:
+                click.secho(
+                    f"⚠️  Activity list fetch failed: {type(e).__name__}: {e}. "
+                    f"No activity files will be downloaded for this account.",
+                    fg="red",
+                )
+                self.failures.append(
+                    ExtractionFailure(
+                        data_type="ACTIVITIES_LIST",
+                        date=f"{start_str}..{end_str}",
+                        activity_id="",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                )
+                return []
 
         if not activities:
             click.secho(

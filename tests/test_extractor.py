@@ -909,3 +909,54 @@ def test_extract_fit_activities_isolates_per_activity_failures(tmp_path):
     )
     # Loop did not abort: second download_activity call was attempted.
     assert extractor.garmin_client.download_activity.call_count == 2
+
+
+def test_extract_fit_activities_reads_activities_list_from_disk(tmp_path):
+    """
+    When an ACTIVITIES_LIST JSON file exists in ingest_dir, the API is NOT called.
+    """
+    import json
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    list_file = tmp_path / ("test-user_ACTIVITIES_LIST_2025-01-01T12-00-00+00-00.json")
+    list_file.write_text(json.dumps([]))
+
+    extractor.extract_fit_activities()
+
+    extractor.garmin_client.get_activities_by_date.assert_not_called()
+
+
+def test_extract_fit_activities_falls_back_to_api_when_file_missing(tmp_path):
+    """
+    When no ACTIVITIES_LIST file is in ingest_dir, the API call is used.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.return_value = []
+
+    extractor.extract_fit_activities()
+
+    extractor.garmin_client.get_activities_by_date.assert_called_once()
