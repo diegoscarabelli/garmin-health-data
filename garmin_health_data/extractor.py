@@ -7,6 +7,7 @@ dependencies.
 """
 
 import json
+import socket
 import time
 import zipfile
 import io
@@ -14,17 +15,73 @@ import io
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import List, Optional, Union, Callable, Dict
+from typing import Callable, Dict, List, Optional, Union
 
 import click
 import pendulum
+import requests
 from garmin_health_data.garmin_client import ActivityDownloadFormat, GarminClient
+from garmin_health_data.garmin_client.exceptions import GarminConnectionError
 
 from garmin_health_data.constants import (
     APIMethodTimeParam,
     GarminDataType,
     GARMIN_DATA_REGISTRY,
 )
+
+# Exception classes considered transient (worth retrying with backoff). All
+# represent network or transport-level failures that typically self-heal in
+# seconds. Application-level errors (parse failures, ValueError, etc.) are
+# excluded because retries won't help.
+_TRANSIENT_API_EXCEPTIONS: tuple = (
+    GarminConnectionError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    socket.gaierror,
+)
+
+# Backoff schedule applied before each retry attempt. With three entries the
+# call gets a total of four chances (1 initial + 3 retries) over ~40s in the
+# worst case, comfortably absorbing typical DNS hiccups and brief outages.
+_RETRY_BACKOFFS: tuple = (2.0, 8.0, 30.0)
+
+
+def _with_retries(fn: Callable, *args, **kwargs):
+    """
+    Call ``fn(*args, **kwargs)`` with exponential-backoff retries on transient network
+    errors.
+
+    Retries only on the connection / DNS / timeout exception classes listed in
+    ``_TRANSIENT_API_EXCEPTIONS``. Other exceptions propagate immediately so
+    the caller's broader try/except (e.g. per-date isolation in
+    :meth:`GarminExtractor._extract_day_by_day`) can record the failure once
+    and move on.
+
+    :param fn: Callable to invoke.
+    :param args: Positional arguments forwarded to ``fn``.
+    :param kwargs: Keyword arguments forwarded to ``fn``.
+    :return: Whatever ``fn`` returns on success.
+    :raises Exception: The last transient exception if all retries are
+        exhausted, or any non-transient exception immediately.
+    """
+    total_attempts = 1 + len(_RETRY_BACKOFFS)
+    last_exc: Optional[BaseException] = None
+    for attempt in range(total_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except _TRANSIENT_API_EXCEPTIONS as e:
+            last_exc = e
+            if attempt < len(_RETRY_BACKOFFS):
+                backoff = _RETRY_BACKOFFS[attempt]
+                click.secho(
+                    f"⏳ Transient error ({type(e).__name__}: {e}); "
+                    f"retrying in {backoff:.0f}s "
+                    f"(attempt {attempt + 2}/{total_attempts})...",
+                    fg="yellow",
+                )
+                time.sleep(backoff)
+    # All attempts exhausted; re-raise the last transient exception.
+    raise last_exc
 
 
 @dataclass
@@ -328,11 +385,14 @@ class GarminExtractor:
 
             try:
                 api_method = getattr(self.garmin_client, data_type.api_method)
+                # Wrap the API call in retries-with-backoff so a transient
+                # network blip absorbs silently and only persistent failures
+                # land in self.failures.
                 if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-                    data = api_method(date_str)
+                    data = _with_retries(api_method, date_str)
                 else:
                     # Pass the same date to both params for RANGE methods.
-                    data = api_method(date_str, date_str)
+                    data = _with_retries(api_method, date_str, date_str)
 
                 if data:
                     saved_files.extend(
@@ -591,8 +651,10 @@ class GarminExtractor:
         activities = self._load_activities_list_from_disk()
         if activities is None:
             try:
-                activities = self.garmin_client.get_activities_by_date(
-                    start_str, end_str
+                activities = _with_retries(
+                    self.garmin_client.get_activities_by_date,
+                    start_str,
+                    end_str,
                 )
             except Exception as e:
                 click.secho(
@@ -640,7 +702,8 @@ class GarminExtractor:
             # or a very old activity whose file is no longer retained by
             # Garmin). Skip and continue rather than aborting the run.
             try:
-                raw_data = self.garmin_client.download_activity(
+                raw_data = _with_retries(
+                    self.garmin_client.download_activity,
                     activity_id,
                     dl_fmt=ActivityDownloadFormat.ORIGINAL,
                 )
@@ -721,7 +784,9 @@ class GarminExtractor:
         :return: Path to saved JSON file, or None if no data.
         """
         try:
-            data = self.garmin_client.get_activity_exercise_sets(activity_id)
+            data = _with_retries(
+                self.garmin_client.get_activity_exercise_sets, activity_id
+            )
         except Exception as e:
             click.secho(
                 f"Warning: Failed to fetch exercise sets for "

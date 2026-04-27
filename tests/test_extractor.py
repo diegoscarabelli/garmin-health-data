@@ -1013,3 +1013,118 @@ def test_extract_returns_summary_with_failures(tmp_path):
     assert len(result["failures"]) == 1
     assert result["failures"][0].data_type == "SLEEP"
     assert result["failed_accounts"] == []
+
+
+# --------------------------------------------------------------------------------------
+# Retry-with-backoff tests
+# --------------------------------------------------------------------------------------
+
+
+def test_with_retries_succeeds_after_transient_failures(monkeypatch):
+    """
+    The helper retries on transient errors and returns the eventual success.
+    """
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    # Skip the actual sleep so the test runs instantly.
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(
+        side_effect=[
+            GarminConnectionError("DNS hiccup 1"),
+            GarminConnectionError("DNS hiccup 2"),
+            {"ok": True},
+        ]
+    )
+
+    result = extractor._with_retries(fn, "arg1", kwarg="value")
+
+    assert result == {"ok": True}
+    assert fn.call_count == 3
+    fn.assert_called_with("arg1", kwarg="value")
+
+
+def test_with_retries_exhausts_and_reraises(monkeypatch):
+    """
+    After exhausting all retries the last transient exception is re-raised.
+    """
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from garmin_health_data import extractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(side_effect=GarminConnectionError("persistent failure"))
+
+    with pytest.raises(GarminConnectionError, match="persistent failure"):
+        extractor._with_retries(fn)
+
+    # 1 initial + 3 retries = 4 total attempts.
+    assert fn.call_count == 4
+
+
+def test_with_retries_does_not_retry_non_transient(monkeypatch):
+    """
+    Non-transient exceptions (e.g. ValueError) propagate immediately.
+    """
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from garmin_health_data import extractor
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(side_effect=ValueError("bad input"))
+
+    with pytest.raises(ValueError, match="bad input"):
+        extractor._with_retries(fn)
+
+    # Only one attempt - no retries for non-transient exceptions.
+    assert fn.call_count == 1
+
+
+def test_extract_day_by_day_uses_retries_for_per_day_calls(tmp_path, monkeypatch):
+    """
+    A transient failure on one day is silently retried and absorbed.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    instance = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP",),
+    )
+    instance.user_id = "test-user"
+
+    sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+    mock_api = MagicMock(
+        side_effect=[
+            GarminConnectionError("transient"),
+            GarminConnectionError("still flaky"),
+            {"value": "ok"},
+        ]
+    )
+    instance.garmin_client = MagicMock()
+    setattr(instance.garmin_client, sleep_type.api_method, mock_api)
+
+    saved = instance._extract_day_by_day(sleep_type, date(2025, 1, 1), date(2025, 1, 1))
+
+    assert len(saved) == 1
+    assert mock_api.call_count == 3  # two retries then success
+    assert instance.failures == []  # no recorded failure since retry won

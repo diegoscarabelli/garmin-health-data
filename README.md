@@ -148,6 +148,8 @@ This mirrors the openetl pipeline pattern. State transitions are filesystem move
 
 **Failure isolation:** transient API failures during extraction (a single bad date or activity) are logged and skipped rather than aborting the run; an end-of-run summary lists every gap. Processing failures are quarantined per FileSet so one bad day's data doesn't block the others.
 
+**Retries with backoff:** every Garmin API call is wrapped in a 4-attempt retry loop (2s → 8s → 30s exponential backoff) for transient network errors (`GarminConnectionError`, `requests.exceptions.ConnectionError`, `requests.exceptions.Timeout`, `socket.gaierror`). Most DNS hiccups and brief outages absorb silently; only persistent failures land in the end-of-run failure summary. Application errors (parse failures, `ValueError`, etc.) are not retried — they propagate immediately.
+
 **Inspecting quarantine:** look in `garmin_files/quarantine/` to see which files failed processing, fix the underlying issue (parser bug, malformed payload, etc.), then move the files back to `garmin_files/ingest/` and run `garmin extract --process-only`.
 
 #### Pipeline Stages
