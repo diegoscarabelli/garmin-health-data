@@ -180,60 +180,65 @@ def extract(
         # updated, existing tables are untouched.
         create_tables(db_path)
 
-    # Auto-detect start date if not provided.
-    if start_date is None:
-        latest = get_latest_date(db_path)
-        if latest:
-            # Start from day after last update.
-            start_date = datetime.combine(
-                latest + timedelta(days=1), datetime.min.time()
-            )
-            click.echo(
-                click.style(
-                    f"📅 Auto-detected start date: {format_date(start_date.date())} "
-                    f"(day after last update)",
-                    fg="cyan",
-                )
-            )
-        else:
-            # Default to 30 days ago for new database.
-            start_date = datetime.now() - timedelta(days=30)
-            click.echo(
-                click.style(
-                    f"📅 Using default start date: {format_date(start_date.date())} "
-                    f"(30 days ago)",
-                    fg="cyan",
-                )
-            )
-
-    # Default end date to today.
-    if end_date is None:
-        end_date = datetime.now()
-
-    # Convert data_types tuple to list (or None for all).
+    # Date auto-detection and extract-only logging are skipped when running
+    # in --process-only mode (no API calls, dates would be unused).
     data_types_list = list(data_types) if data_types else None
-    # Flatten comma-separated account IDs (e.g. --accounts 123,456).
     accounts_list = (
         [a.strip() for raw in accounts for a in raw.split(",") if a.strip()]
         if accounts
         else None
     )
 
-    if data_types_list:
-        click.echo(f"📊 Extracting data types: {', '.join(data_types_list)}")
-    else:
-        click.echo("📊 Extracting all available data types")
+    if not process_only:
+        # Auto-detect start date if not provided.
+        if start_date is None:
+            latest = get_latest_date(db_path)
+            if latest:
+                # Start from day after last update.
+                start_date = datetime.combine(
+                    latest + timedelta(days=1), datetime.min.time()
+                )
+                click.echo(
+                    click.style(
+                        f"📅 Auto-detected start date: "
+                        f"{format_date(start_date.date())} "
+                        f"(day after last update)",
+                        fg="cyan",
+                    )
+                )
+            else:
+                # Default to 30 days ago for new database.
+                start_date = datetime.now() - timedelta(days=30)
+                click.echo(
+                    click.style(
+                        f"📅 Using default start date: "
+                        f"{format_date(start_date.date())} (30 days ago)",
+                        fg="cyan",
+                    )
+                )
 
-    if accounts_list:
-        click.echo(f"👤 Filtering accounts: {', '.join(accounts_list)}")
-    else:
-        click.echo("👤 Extracting all discovered accounts")
+        # Default end date to today.
+        if end_date is None:
+            end_date = datetime.now()
 
-    click.echo(
-        f"📆 Date range: {format_date(start_date.date())} to "
-        f"{format_date(end_date.date())}"
-    )
-    click.echo()
+        if data_types_list:
+            click.echo(f"📊 Extracting data types: {', '.join(data_types_list)}")
+        else:
+            click.echo("📊 Extracting all available data types")
+
+        if accounts_list:
+            click.echo(f"👤 Filtering accounts: {', '.join(accounts_list)}")
+        else:
+            click.echo("👤 Extracting all discovered accounts")
+
+        click.echo(
+            f"📆 Date range: {format_date(start_date.date())} to "
+            f"{format_date(end_date.date())}"
+        )
+        click.echo()
+    else:
+        click.echo("📦 Process-only mode: loading existing files in ingest/.")
+        click.echo()
 
     # Set up the four-folder lifecycle next to the database.
     files_root = Path(db_path).expanduser().resolve().parent / "garmin_files"
