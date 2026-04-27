@@ -121,7 +121,16 @@ garmin extract --db-path ~/my-garmin-data.db
 # Extract only specific accounts (multi-account setup)
 garmin extract --accounts 12345678
 garmin extract --accounts 12345678,87654321
+
+# Keep all extracted files (JSON, FIT, GPX, etc.) on disk after processing
+garmin extract --keep-files
 ```
+
+#### Keeping Extracted Files
+
+By default, extracted files are written to a temporary directory and deleted after they are loaded into the database. Pass `--keep-files` to retain them in a `garmin_files/` directory next to the database file (e.g. `./garmin_files/` for the default `./garmin_data.db`).
+
+This is useful as an offline backup of original Garmin payloads (raw JSON for daily metrics and FIT/TCX/GPX/KML files for activities), which can be re-imported into other tools. Files with the same name from a previous run are overwritten on subsequent runs; the directory itself is preserved across runs.
 
 #### Date Range Behavior
 

@@ -111,12 +111,21 @@ def auth(email: Optional[str], password: Optional[str]):
     "Examples: --accounts 123,456 or --accounts 123 --accounts 456. "
     "Extracts all discovered accounts if not specified.",
 )
+@click.option(
+    "--keep-files",
+    is_flag=True,
+    default=False,
+    help="Keep all extracted files (JSON, FIT, GPX, etc.) on disk after "
+    "processing. Files are saved to 'garmin_files/' next to the database "
+    "file. Files with the same name are overwritten on subsequent runs.",
+)
 def extract(
     start_date: Optional[datetime],
     end_date: Optional[datetime],
     data_types: tuple,
     db_path: str,
     accounts: tuple,
+    keep_files: bool,
 ):
     """
     Extract Garmin Connect data and save to SQLite database.
@@ -190,9 +199,15 @@ def extract(
     )
     click.echo()
 
-    # Create temporary directory for extraction.
-    temp_dir = Path(tempfile.gettempdir()) / "garmin_extraction"
-    temp_dir.mkdir(exist_ok=True, parents=True)
+    # Determine extraction directory. When --keep-files is set, save files
+    # alongside the database for permanent retention; otherwise use a temp
+    # directory that gets cleaned up after processing.
+    if keep_files:
+        ingest_dir = Path(db_path).expanduser().resolve().parent / "garmin_files"
+        click.echo(f"💾 Keeping extracted files at: {ingest_dir}")
+    else:
+        ingest_dir = Path(tempfile.gettempdir()) / "garmin_extraction"
+    ingest_dir.mkdir(exist_ok=True, parents=True)
 
     try:
         # Step 1: Extract data from Garmin Connect.
@@ -206,7 +221,7 @@ def extract(
         click.echo()
 
         result = extract_data(
-            ingest_dir=temp_dir,
+            ingest_dir=ingest_dir,
             data_interval_start=format_date(start_date.date()),
             data_interval_end=format_date(end_date.date()),
             data_types=data_types_list,
@@ -243,8 +258,8 @@ def extract(
         )
         click.echo()
 
-        # Get all files from temp directory.
-        all_files = list(temp_dir.glob("**/*"))
+        # Get all files from extraction directory.
+        all_files = list(ingest_dir.glob("**/*"))
         file_paths = [f for f in all_files if f.is_file()]
 
         if file_paths:
@@ -375,9 +390,9 @@ def extract(
         click.echo("   • Run 'garmin extract' again later to update with new data")
 
     finally:
-        # Clean up temporary directory.
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        # Clean up temporary directory unless --keep-files was set.
+        if not keep_files and ingest_dir.exists():
+            shutil.rmtree(ingest_dir)
 
 
 @cli.command()
