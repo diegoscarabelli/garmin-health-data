@@ -787,7 +787,12 @@ def extract(
             "or specify data types to extract. Extraction will be skipped."
         )
         click.echo(error_msg)
-        return {"garmin_files": 0, "activity_files": 0}
+        return {
+            "garmin_files": 0,
+            "activity_files": 0,
+            "failures": [],
+            "failed_accounts": [],
+        }
 
     # Validate accounts filter.
     if accounts is not None and not isinstance(accounts, (list, tuple)):
@@ -825,7 +830,12 @@ def extract(
             "Run 'garmin auth' to set up your Garmin account(s).",
             fg="red",
         )
-        return {"garmin_files": 0, "activity_files": 0}
+        return {
+            "garmin_files": 0,
+            "activity_files": 0,
+            "failures": [],
+            "failed_accounts": [],
+        }
 
     # Apply account filter if provided.
     if accounts is not None:
@@ -836,13 +846,19 @@ def extract(
                 f"No matching accounts found for filter: {accounts}",
                 fg="yellow",
             )
-            return {"garmin_files": 0, "activity_files": 0}
+            return {
+                "garmin_files": 0,
+                "activity_files": 0,
+                "failures": [],
+                "failed_accounts": [],
+            }
 
     click.echo(f"Found {len(discovered)} account(s) to extract.")
 
     # Extract from each account with error isolation.
     all_garmin_files = []
     all_activity_files = []
+    all_failures: List[ExtractionFailure] = []
     failed_accounts = []
 
     for user_id, token_dir in discovered:
@@ -873,6 +889,7 @@ def extract(
 
             all_garmin_files.extend(garmin_files)
             all_activity_files.extend(activity_files)
+            all_failures.extend(extractor.failures)
 
         except Exception:
             logger.exception(
@@ -889,7 +906,12 @@ def extract(
         click.echo(
             "No Garmin Connect data found for extraction. Skipping downstream tasks."
         )
-        return {"garmin_files": 0, "activity_files": 0}
+        return {
+            "garmin_files": 0,
+            "activity_files": 0,
+            "failures": all_failures,
+            "failed_accounts": failed_accounts,
+        }
 
     # Summary.
     activity_summary = (
@@ -918,6 +940,8 @@ def extract(
     return {
         "garmin_files": len(all_garmin_files),
         "activity_files": len(all_activity_files),
+        "failures": all_failures,
+        "failed_accounts": failed_accounts,
     }
 
 

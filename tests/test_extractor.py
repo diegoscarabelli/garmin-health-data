@@ -405,7 +405,10 @@ class TestExtractMultiAccount:
         )
 
         mock_extractor_class.assert_not_called()
-        assert result == {"garmin_files": 0, "activity_files": 0}
+        assert result["garmin_files"] == 0
+        assert result["activity_files"] == 0
+        assert result["failures"] == []
+        assert result["failed_accounts"] == []
 
     def test_accounts_string_raises(self):
         """
@@ -462,7 +465,11 @@ class TestExtractMultiAccount:
 
         result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
 
-        assert result == {"garmin_files": 0, "activity_files": 0}
+        assert result["garmin_files"] == 0
+        assert result["activity_files"] == 0
+        assert result["failures"] == []
+        # Both accounts failed; both should be in failed_accounts.
+        assert len(result["failed_accounts"]) > 0
 
 
 def _make_zip(inner_filename: str, content: bytes) -> bytes:
@@ -960,3 +967,49 @@ def test_extract_fit_activities_falls_back_to_api_when_file_missing(tmp_path):
     extractor.extract_fit_activities()
 
     extractor.garmin_client.get_activities_by_date.assert_called_once()
+
+
+def test_extract_returns_summary_with_failures(tmp_path):
+    """
+    Module-level extract() returns failures and failed_accounts in the result dict.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import (
+        ExtractionFailure,
+        extract,
+    )
+
+    fake_extractor = MagicMock()
+    fake_extractor.extract_garmin_data.return_value = []
+    fake_extractor.extract_fit_activities.return_value = []
+    fake_extractor.failures = [
+        ExtractionFailure(
+            data_type="SLEEP",
+            date="2025-01-02",
+            activity_id="",
+            error="RuntimeError: hiccup",
+        )
+    ]
+
+    with (
+        patch(
+            "garmin_health_data.auth.discover_accounts",
+            return_value=[("user-1", tmp_path)],
+        ),
+        patch(
+            "garmin_health_data.extractor.GarminExtractor",
+            return_value=fake_extractor,
+        ),
+    ):
+        result = extract(
+            ingest_dir=tmp_path,
+            data_interval_start="2025-01-01",
+            data_interval_end="2025-01-03",
+        )
+
+    assert "failures" in result
+    assert "failed_accounts" in result
+    assert len(result["failures"]) == 1
+    assert result["failures"][0].data_type == "SLEEP"
+    assert result["failed_accounts"] == []
