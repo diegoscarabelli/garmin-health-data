@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-04-27
+
 ### Added
 
 - **File lifecycle**: every extracted file is preserved on disk in a four-folder pipeline (`garmin_files/{ingest,process,storage,quarantine}/`) next to the database, mirroring the openetl pattern. State transitions are filesystem moves: extract writes to `ingest/`, the CLI bulk-moves to `process/` before parsing, then per-FileSet routes successful files to `storage/` and failed files to `quarantine/` ([#35](https://github.com/diegoscarabelli/garmin-health-data/issues/35)).
