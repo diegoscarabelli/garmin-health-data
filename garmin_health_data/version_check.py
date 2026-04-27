@@ -84,7 +84,7 @@ def _read_cached() -> Optional[str]:
         age = time.time() - CACHE_PATH.stat().st_mtime
     except OSError:
         return None
-    if age > CACHE_TTL_SECONDS:
+    if age >= CACHE_TTL_SECONDS:
         return None
     try:
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
