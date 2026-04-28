@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-04-27
+
+### Added
+
+- **File lifecycle**: every extracted file is preserved on disk in a four-folder pipeline (`garmin_files/{ingest,process,storage,quarantine}/`) next to the database, mirroring the openetl pattern. State transitions are filesystem moves: extract writes to `ingest/`, the CLI bulk-moves to `process/` before parsing, then per-FileSet routes successful files to `storage/` and failed files to `quarantine/` ([#35](https://github.com/diegoscarabelli/garmin-health-data/issues/35)).
+- **Crash recovery**: files left in `process/` from a crashed run are auto-moved back to `ingest/` at the start of the next run, so no extracted work is lost.
+- **Concurrent-run protection**: `fcntl.flock` advisory lock on `garmin_files/.lock` prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message; the lock is released automatically by the OS on process death.
+- **API retries with exponential backoff**: every Garmin API call (per-day data, activity-list fetch, activity download, exercise-sets fetch) is wrapped in a 4-attempt retry loop (2s → 8s → 30s) for transient network errors (`GarminConnectionError`, `requests.exceptions.ConnectionError`, `requests.exceptions.Timeout`, `socket.gaierror`). Most DNS hiccups and brief outages absorb silently; only persistent failures reach the per-date / per-activity isolation layer ([#33](https://github.com/diegoscarabelli/garmin-health-data/issues/33)).
+- **`--extract-only` flag**: download files into `ingest/` and stop, without loading them into the database. Useful for backup-only workflows or for manual inspection.
+- **`--process-only` flag**: skip the API entirely and process whatever is currently in `ingest/`. Useful for retrying after a parsing fix, or for processing files that arrived from elsewhere. Does not require Garmin authentication.
+- **End-of-run summary**: every per-data-type / per-date / per-activity extraction failure is listed at the end of the run, grouped for readability, so users always know what was skipped.
+- **PyPI version-update hint**: every `garmin` command checks the latest version on PyPI (cached for 24h in `~/.cache/garmin-health-data/version-check.json`, opt-out with `GARMIN_NO_VERSION_CHECK=1`) and prints a one-line upgrade hint when a newer release is available. Network failures, malformed responses, and missing cache files are silently swallowed so the check never aborts a command.
+
+### Changed
+
+- **Per-date extraction isolation**: a transient API failure on one date is logged and recorded; extraction continues with the next date.
+- **Per-data-type extraction isolation**: a structural failure for one data type is logged and recorded; extraction continues with the next data type for the same account.
+- **Per-activity extraction isolation**: any exception during one activity download is logged with the activity ID; the activity-download loop continues. The activity-list (`get_activities_by_date`) call is wrapped so a list-fetch failure records an `ACTIVITIES_LIST` failure cleanly.
+- **Per-FileSet processing isolation**: each FileSet runs in its own SQLAlchemy session inside try/except (mirrors openetl's `_try_process_file_set`). A bad FileSet is rolled back and moved to `quarantine/`; subsequent FileSets continue normally.
+- **`extract_fit_activities` reads `ACTIVITIES_LIST` from disk**: the registry loop's saved JSON in `ingest/` is consumed directly, so the `get_activities_by_date` endpoint is hit at most once per run. Falls back to a live API call if the file is missing.
+- **Renamed `_process_day_by_day` → `_extract_day_by_day`**: the function does extraction (API call + write JSON), not processing.
+
+### Fixed
+
+- **`UNIQUE constraint failed: activity_ts_metric` on FIT files with sub-second sampling** ([#36](https://github.com/diegoscarabelli/garmin-health-data/issues/36)): the FIT record-frame parser now reads the optional `fractional_timestamp` field paired with `timestamp` and combines them, so high-frequency devices (e.g. Fenix 7 at 2Hz smart-recording) get distinct rows per sub-second sample instead of colliding on the `(activity_id, timestamp, name)` unique key. Belt-and-suspenders: if duplicates remain (FIT files without `fractional_timestamp` that emit multiple frames within the same whole second), they are coalesced in Python before bulk insert with the last value winning, instead of aborting the activity.
+- **Makefile `format` target accepts docformatter exit code 3**: `docformatter --in-place` exits 3 to signal "files modified"; the `format` target accepts both exit 1 and exit 3 as non-fatal. The pre-commit hook passes on the first run after editing any docstring.
+
 ## [2.6.1] - 2026-04-17
 
 ### Fixed

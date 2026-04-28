@@ -1,3 +1,8 @@
+[![PyPI version](https://img.shields.io/pypi/v/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
+[![Python versions](https://img.shields.io/pypi/pyversions/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
+[![CI](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 Extract your complete Garmin Connect health and activity data to a local SQLite database. Ships a self-contained Garmin Connect client (`garmin_health_data/garmin_client/`) that handles SSO authentication and API access. The well-structured and documented schema makes the database straightforward to analyze, and particularly effective as a data source for AI agents.
 
 **Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure.
@@ -10,7 +15,9 @@ Extract your complete Garmin Connect health and activity data to a local SQLite 
 - 🏥 **Comprehensive Health Data**: Sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics.
 - 🏃 **Activity Data**: FIT files with detailed time-series metrics, lap data, split data.
 - 👥 **Multi-Account**: Extract data from multiple Garmin Connect accounts (e.g., family members) into a single database. Run `garmin auth` once per account — accounts are discovered and extracted automatically.
-- 🔄 **Auto-Resume**: Automatically detects last update and syncs new data.
+- 🔄 **Auto-Resume & Crash Recovery**: Automatically detects the last update and syncs new data; files left mid-process from a crashed run are auto-recovered on the next invocation.
+- 📁 **File Lifecycle**: Every extracted file is preserved on disk in a four-folder pipeline (`ingest/process/storage/quarantine`) for offline backup and post-mortem inspection.
+- 🛡️ **Failure Isolation**: Per-date, per-data-type, per-activity, and per-FileSet error handling — a single transient failure is logged and skipped while the rest of the run continues.
 
 ## Requirements
 
@@ -105,6 +112,18 @@ Accounts are discovered automatically by scanning for numeric subdirectories. Al
 
 ### Data Extraction
 
+#### Extract command flags
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--start-date YYYY-MM-DD` | Inclusive | Auto-detected from the database if omitted (day after the latest stored data, or 30 days ago for an empty DB). |
+| `--end-date YYYY-MM-DD` | Exclusive (except same-day = inclusive) | Defaults to today. |
+| `--data-types NAME` | Repeatable, e.g. `--data-types SLEEP --data-types HEART_RATE` | Filter to specific [data types](#data-types). All types extracted if omitted. |
+| `--accounts ID` | Repeatable or comma-separated | Filter to specific Garmin user IDs (`--accounts 12345 --accounts 67890` or `--accounts 12345,67890`). All discovered accounts extracted if omitted. |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+| `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
+| `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
+
 ```bash
 # Auto-detect date range (extracts from last update to today)
 garmin extract
@@ -121,7 +140,52 @@ garmin extract --db-path ~/my-garmin-data.db
 # Extract only specific accounts (multi-account setup)
 garmin extract --accounts 12345678
 garmin extract --accounts 12345678,87654321
+
+# Extract files only, do not load into the database
+garmin extract --extract-only
+
+# Process files already in ingest/, do not call the Garmin API
+garmin extract --process-only
 ```
+
+#### File Lifecycle
+
+By default, every extracted file is preserved on disk in a four-folder lifecycle next to the SQLite database (e.g. `./garmin_files/` for the default `./garmin_data.db`):
+
+- `ingest/`: newly extracted files awaiting processing.
+- `process/`: files currently being loaded into the database (in-flight).
+- `storage/`: files successfully loaded into the database (kept as offline backup).
+- `quarantine/`: files that failed processing (kept for inspection or retry).
+
+This mirrors the openetl pipeline pattern. State transitions are filesystem moves: extract writes to `ingest/`, the CLI bulk-moves `ingest/` → `process/` before parsing, then per-FileSet routes successful files to `storage/` and failed ones to `quarantine/`.
+
+**Crash recovery:** if a run crashes, files left in `process/` are automatically moved back to `ingest/` at the start of the next run, so no work is lost.
+
+**Concurrency (macOS / Linux):** an advisory lock (`garmin_files/.lock`, via `fcntl.flock`) prevents two simultaneous `garmin extract` runs from racing on file moves. A second invocation aborts immediately with a clear message until the first finishes. If a run crashes hard the lock is released automatically by the OS (no stale-lock cleanup needed). On Windows `fcntl` is unavailable, so the lock degrades to a no-op and a one-line warning is printed; serialise concurrent invocations manually.
+
+**Inspecting quarantine:** look in `garmin_files/quarantine/` to see which files failed processing, fix the underlying issue (parser bug, malformed payload, etc.), then move the files back to `garmin_files/ingest/` and run `garmin extract --process-only`.
+
+#### Failure Handling
+
+A single transient failure does not abort the run. Failures are isolated and reported at four levels:
+
+- **Per-date in extraction**: if the API fails for one day (e.g. SLEEP for 2024-03-15), the loop logs the failure and continues with the next day.
+- **Per-data-type in extraction**: if a whole data type fails (e.g. a missing endpoint), other data types for the same account still run.
+- **Per-activity in extraction**: a parse error or download failure on one activity does not abort the activity download loop.
+- **Per-FileSet in processing**: each `(account, day)` group of files is loaded in its own database transaction. A failed group's files move to `quarantine/`; remaining groups load normally.
+
+**Retries with backoff**: every Garmin API call is wrapped in a 4-attempt retry loop (2s → 8s → 30s exponential backoff) for transient network errors (`GarminConnectionError`, `requests.exceptions.ConnectionError`, `requests.exceptions.Timeout`, `socket.gaierror`). Most DNS hiccups and brief outages absorb silently before the per-date isolation layer ever sees them. Application errors (parse failures, `ValueError`, etc.) are not retried — they propagate immediately to the appropriate isolation layer.
+
+**End-of-run summary**: every recorded failure is listed at the end of the run, grouped by data type, so you always know exactly what was skipped and can target a re-run with explicit `--start-date` / `--end-date`.
+
+#### Pipeline Stages
+
+The full pipeline (extract → process) runs by default. Two flags split the stages:
+
+- `--extract-only`: download files into `ingest/` and stop. Useful for backup-only workflows or for manual inspection before loading.
+- `--process-only`: skip the API entirely; process whatever is currently in `ingest/`. Useful for retrying after a parsing fix, or for processing files that arrived from elsewhere. Does not require Garmin authentication.
+
+Note: `--process-only` does not trigger auto-detect of dates (there are no dates to fetch). It just consumes whatever is in `ingest/`. The two flags are mutually exclusive.
 
 #### Date Range Behavior
 

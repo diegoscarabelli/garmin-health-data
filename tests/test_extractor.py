@@ -337,6 +337,7 @@ class TestExtractMultiAccount:
         """
         Two accounts are extracted sequentially, each with own token dir.
         """
+
         mock_discover.return_value = [
             ("11111111", Path("/tokens/11111111")),
             ("22222222", Path("/tokens/22222222")),
@@ -366,6 +367,7 @@ class TestExtractMultiAccount:
         """
         Only matching accounts are extracted when filter is provided.
         """
+
         mock_discover.return_value = [
             ("11111111", Path("/tokens/11111111")),
             ("22222222", Path("/tokens/22222222")),
@@ -393,6 +395,7 @@ class TestExtractMultiAccount:
         """
         Returns zero counts when account filter matches no discovered accounts.
         """
+
         mock_discover.return_value = [
             ("11111111", Path("/tokens/11111111")),
         ]
@@ -405,12 +408,16 @@ class TestExtractMultiAccount:
         )
 
         mock_extractor_class.assert_not_called()
-        assert result == {"garmin_files": 0, "activity_files": 0}
+        assert result["garmin_files"] == 0
+        assert result["activity_files"] == 0
+        assert result["failures"] == []
+        assert result["failed_accounts"] == []
 
     def test_accounts_string_raises(self):
         """
         Raises ValueError when accounts is a bare string instead of a list.
         """
+
         with pytest.raises(ValueError, match="must be a list or tuple"):
             extract(
                 Path("/tmp/test"),
@@ -425,6 +432,7 @@ class TestExtractMultiAccount:
         """
         One failing account does not block others.
         """
+
         mock_discover.return_value = [
             ("11111111", Path("/tokens/11111111")),
             ("22222222", Path("/tokens/22222222")),
@@ -452,6 +460,7 @@ class TestExtractMultiAccount:
         """
         Returns zero counts when all accounts fail.
         """
+
         mock_discover.return_value = [
             ("11111111", Path("/tokens/11111111")),
         ]
@@ -462,7 +471,11 @@ class TestExtractMultiAccount:
 
         result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
 
-        assert result == {"garmin_files": 0, "activity_files": 0}
+        assert result["garmin_files"] == 0
+        assert result["activity_files"] == 0
+        assert result["failures"] == []
+        # Both accounts failed; both should be in failed_accounts.
+        assert len(result["failed_accounts"]) > 0
 
 
 def _make_zip(inner_filename: str, content: bytes) -> bytes:
@@ -473,6 +486,7 @@ def _make_zip(inner_filename: str, content: bytes) -> bytes:
     :param content: Raw bytes for the inner file.
     :return: ZIP archive bytes.
     """
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr(inner_filename, content)
@@ -490,6 +504,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(_FIT_MAGIC) == "fit"
 
     def test_tcx_detected(self) -> None:
@@ -498,6 +513,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(_TCX_CONTENT) == "tcx"
 
     def test_gpx_detected(self) -> None:
@@ -506,6 +522,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(_GPX_CONTENT) == "gpx"
 
     def test_kml_detected(self) -> None:
@@ -514,6 +531,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(_KML_CONTENT) == "kml"
 
     def test_unknown_returns_none(self) -> None:
@@ -522,6 +540,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(b"SOME_RANDOM_BYTES") is None
 
     def test_empty_bytes_returns_none(self) -> None:
@@ -530,6 +549,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         assert _detect_format_from_magic(b"") is None
 
     def test_fit_magic_at_wrong_offset_not_detected(self) -> None:
@@ -538,6 +558,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         content = b".FIT" + b"\x00" * 20
         assert _detect_format_from_magic(content) is None
 
@@ -547,6 +568,7 @@ class TestDetectFormatFromMagic:
 
         :return: None.
         """
+
         short = b"\x00" * 8 + b".FI"  # 11 bytes — one short
         assert _detect_format_from_magic(short) is None
 
@@ -564,6 +586,7 @@ class TestExtractActivityContent:
         :param tmp_path: Pytest tmp_path fixture.
         :return: GarminExtractor instance.
         """
+
         return GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 1),
@@ -577,6 +600,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         raw = _make_zip("12345_ACTIVITY.fit", _FIT_MAGIC)
         result = extractor._extract_activity_content(12345, raw)
         assert result is not None
@@ -591,6 +615,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         raw = _make_zip("12345.tcx", _TCX_CONTENT)
         result = extractor._extract_activity_content(12345, raw)
         assert result is not None
@@ -605,6 +630,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         raw = _make_zip("12345.gpx", _GPX_CONTENT)
         result = extractor._extract_activity_content(12345, raw)
         assert result is not None
@@ -618,6 +644,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w"):
             pass
@@ -631,6 +658,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         result = extractor._extract_activity_content(12345, _FIT_MAGIC)
         assert result is not None
         ext, content = result
@@ -646,6 +674,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         unknown_content = b"UNKNOWN_FORMAT_BYTES"
         raw = _make_zip("activity.tcx", unknown_content)
         result = extractor._extract_activity_content(12345, raw)
@@ -663,6 +692,7 @@ class TestExtractActivityContent:
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
+
         unknown_content = b"MYSTERY_BYTES"
         raw = _make_zip("activity.xyz", unknown_content)
         result = extractor._extract_activity_content(12345, raw)
@@ -686,6 +716,7 @@ class TestExtractFitActivitiesFormat:
         :param tmp_path: Pytest tmp_path fixture.
         :return: GarminExtractor instance.
         """
+
         inst = GarminExtractor(
             start_date=date(2025, 1, 1),
             end_date=date(2025, 1, 1),
@@ -701,6 +732,7 @@ class TestExtractFitActivitiesFormat:
         :param activity_id: Activity ID string.
         :return: List with one activity dict.
         """
+
         return [
             {
                 "activityId": activity_id,
@@ -720,6 +752,7 @@ class TestExtractFitActivitiesFormat:
         :param tmp_path: Pytest tmp_path fixture.
         :return: None.
         """
+
         mock_client = MagicMock()
         mock_client.get_activities_by_date.return_value = self._activities()
         mock_client.download_activity.return_value = _make_zip(
@@ -744,6 +777,7 @@ class TestExtractFitActivitiesFormat:
         :param tmp_path: Pytest tmp_path fixture.
         :return: None.
         """
+
         mock_client = MagicMock()
         mock_client.get_activities_by_date.return_value = self._activities()
         mock_client.download_activity.return_value = _make_zip(
@@ -757,3 +791,504 @@ class TestExtractFitActivitiesFormat:
         assert paths[0].suffix == ".tcx"
         assert len(list(tmp_path.glob("*.fit"))) == 0
         assert len(list(tmp_path.glob("*.tcx"))) == 1
+
+
+# --------------------------------------------------------------------------------------
+# Failure isolation tests
+# --------------------------------------------------------------------------------------
+
+
+def test_extract_day_by_day_isolates_per_date_failures(tmp_path):
+    """
+    A transient API failure on one date does not abort extraction of subsequent dates.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 3),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP",),
+    )
+    extractor.user_id = "test-user"
+
+    sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+    mock_api = MagicMock(
+        side_effect=[
+            {"value": "ok-day-1"},
+            RuntimeError("transient API hiccup"),
+            {"value": "ok-day-3"},
+        ]
+    )
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, sleep_type.api_method, mock_api)
+
+    saved = extractor._extract_day_by_day(
+        sleep_type, date(2025, 1, 1), date(2025, 1, 3)
+    )
+
+    assert len(saved) == 2  # two successes, one failure skipped
+    assert mock_api.call_count == 3
+    assert any(
+        "2025-01-02" in f.error or f.date == "2025-01-02" for f in extractor.failures
+    )
+
+
+def test_extract_garmin_data_isolates_per_data_type_failures(tmp_path):
+    """
+    A failure inside _extract_data_by_type for one type does not abort the others.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP", "HEART_RATE"),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    fake_path = tmp_path / "fake.json"
+    fake_path.write_text("{}")
+
+    def fake_extract(data_type, *_):
+        if data_type.name == "SLEEP":
+            raise RuntimeError("SLEEP endpoint went away")
+        return [fake_path]
+
+    with patch.object(extractor, "_extract_data_by_type", side_effect=fake_extract):
+        saved = extractor.extract_garmin_data()
+
+    assert len(saved) == 1  # HEART_RATE succeeded
+    assert any(f.data_type == "SLEEP" for f in extractor.failures)
+
+
+def test_extract_fit_activities_handles_list_call_failure(tmp_path):
+    """
+    If activity-list API call fails, returns empty and records ACTIVITIES_LIST failure.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.side_effect = RuntimeError(
+        "list endpoint 500"
+    )
+
+    result = extractor.extract_fit_activities()
+
+    assert result == []
+    assert any(f.data_type == "ACTIVITIES_LIST" for f in extractor.failures)
+    extractor.garmin_client.download_activity.assert_not_called()
+
+
+def test_extract_fit_activities_isolates_per_activity_failures(tmp_path):
+    """
+    A non-connection exception during one download does not abort the loop.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.return_value = [
+        {
+            "activityId": 1,
+            "startTimeLocal": "2025-01-01 10:00:00",
+            "activityType": {"typeKey": "running"},
+        },
+        {
+            "activityId": 2,
+            "startTimeLocal": "2025-01-01 12:00:00",
+            "activityType": {"typeKey": "running"},
+        },
+    ]
+    # First raises non-connection; second returns content that fails magic
+    # detection -> _extract_activity_content returns None -> continues.
+    extractor.garmin_client.download_activity.side_effect = [
+        ValueError("boom"),
+        b"not-a-fit-or-anything",
+    ]
+
+    extractor.extract_fit_activities()
+
+    # Both attempts processed; first recorded as failure.
+    assert any(
+        f.activity_id == "1" and f.data_type == "ACTIVITY" for f in extractor.failures
+    )
+    # Loop did not abort: second download_activity call was attempted.
+    assert extractor.garmin_client.download_activity.call_count == 2
+
+
+def test_extract_fit_activities_reads_activities_list_from_disk(tmp_path):
+    """
+    When an ACTIVITIES_LIST JSON file exists in ingest_dir, the API is NOT called.
+    """
+
+    import json
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    list_file = tmp_path / ("test-user_ACTIVITIES_LIST_2025-01-01T12-00-00+00-00.json")
+    list_file.write_text(json.dumps([]))
+
+    extractor.extract_fit_activities()
+
+    extractor.garmin_client.get_activities_by_date.assert_not_called()
+
+
+def test_extract_fit_activities_falls_back_to_api_when_file_missing(tmp_path):
+    """
+    When no ACTIVITIES_LIST file is in ingest_dir, the API call is used.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activities_by_date.return_value = []
+
+    extractor.extract_fit_activities()
+
+    extractor.garmin_client.get_activities_by_date.assert_called_once()
+
+
+def test_extract_returns_summary_with_failures(tmp_path):
+    """
+    Module-level extract() returns failures and failed_accounts in the result dict.
+    """
+
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import (
+        ExtractionFailure,
+        extract,
+    )
+
+    fake_extractor = MagicMock()
+    fake_extractor.extract_garmin_data.return_value = []
+    fake_extractor.extract_fit_activities.return_value = []
+    fake_extractor.failures = [
+        ExtractionFailure(
+            data_type="SLEEP",
+            date="2025-01-02",
+            activity_id="",
+            error="RuntimeError: hiccup",
+        )
+    ]
+
+    with (
+        patch(
+            "garmin_health_data.auth.discover_accounts",
+            return_value=[("user-1", tmp_path)],
+        ),
+        patch(
+            "garmin_health_data.extractor.GarminExtractor",
+            return_value=fake_extractor,
+        ),
+    ):
+        result = extract(
+            ingest_dir=tmp_path,
+            data_interval_start="2025-01-01",
+            data_interval_end="2025-01-03",
+        )
+
+    assert "failures" in result
+    assert "failed_accounts" in result
+    assert len(result["failures"]) == 1
+    assert result["failures"][0].data_type == "SLEEP"
+    assert result["failed_accounts"] == []
+
+
+# --------------------------------------------------------------------------------------
+# Retry-with-backoff tests
+# --------------------------------------------------------------------------------------
+
+
+def test_with_retries_succeeds_after_transient_failures(monkeypatch):
+    """
+    The helper retries on transient errors and returns the eventual success.
+    """
+
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    # Skip the actual sleep so the test runs instantly.
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(
+        side_effect=[
+            GarminConnectionError("DNS hiccup 1"),
+            GarminConnectionError("DNS hiccup 2"),
+            {"ok": True},
+        ]
+    )
+
+    result = extractor._with_retries(fn, "arg1", kwarg="value")
+
+    assert result == {"ok": True}
+    assert fn.call_count == 3
+    fn.assert_called_with("arg1", kwarg="value")
+
+
+def test_with_retries_exhausts_and_reraises(monkeypatch):
+    """
+    After exhausting all retries the last transient exception is re-raised.
+    """
+
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from garmin_health_data import extractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(side_effect=GarminConnectionError("persistent failure"))
+
+    with pytest.raises(GarminConnectionError, match="persistent failure"):
+        extractor._with_retries(fn)
+
+    # 1 initial + 3 retries = 4 total attempts.
+    assert fn.call_count == 4
+
+
+def test_with_retries_does_not_retry_non_transient(monkeypatch):
+    """
+    Non-transient exceptions (e.g. ValueError) propagate immediately.
+    """
+
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from garmin_health_data import extractor
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    fn = MagicMock(side_effect=ValueError("bad input"))
+
+    with pytest.raises(ValueError, match="bad input"):
+        extractor._with_retries(fn)
+
+    # Only one attempt - no retries for non-transient exceptions.
+    assert fn.call_count == 1
+
+
+def test_extract_day_by_day_uses_retries_for_per_day_calls(tmp_path, monkeypatch):
+    """
+    A transient failure on one day is silently retried and absorbed.
+    """
+
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    instance = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("SLEEP",),
+    )
+    instance.user_id = "test-user"
+
+    sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+    mock_api = MagicMock(
+        side_effect=[
+            GarminConnectionError("transient"),
+            GarminConnectionError("still flaky"),
+            {"value": "ok"},
+        ]
+    )
+    instance.garmin_client = MagicMock()
+    setattr(instance.garmin_client, sleep_type.api_method, mock_api)
+
+    saved = instance._extract_day_by_day(sleep_type, date(2025, 1, 1), date(2025, 1, 1))
+
+    assert len(saved) == 1
+    assert mock_api.call_count == 3  # two retries then success
+    assert instance.failures == []  # no recorded failure since retry won
+
+
+def test_load_activities_list_merges_multiple_files_dedupes_by_id(tmp_path):
+    """
+    Multi-day extracts produce one ACTIVITIES_LIST_<date>.json per day.
+
+    The helper must merge all of them and dedupe by activityId so activities from
+    earlier days are not silently dropped (round-4 review fix).
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 3),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    # Three separate per-day list files. Activity 100 appears in two of them
+    # (e.g. an activity that spans midnight) — should be deduped to one.
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 100, "name": "day1"}])
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+        json.dumps(
+            [
+                {"activityId": 100, "name": "day1-dup"},
+                {"activityId": 200, "name": "day2"},
+            ]
+        )
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-03T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 300, "name": "day3"}])
+    )
+
+    result = extractor._load_activities_list_from_disk()
+
+    # Did NOT call API.
+    extractor.garmin_client.get_activities_by_date.assert_not_called()
+    # All three distinct activities present, dedupe happened.
+    ids = sorted(a["activityId"] for a in result)
+    assert ids == [100, 200, 300]
+
+
+def test_load_activities_list_falls_back_on_corrupt_file(tmp_path):
+    """
+    A single corrupt file (JSON parse error) returns None so the caller hits the API
+    rather than partial-loading from the remaining files.
+
+    Conservative by design — we'd rather refetch than silently miss activities.
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 2),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+        "{not valid json"
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 200}])
+    )
+
+    assert extractor._load_activities_list_from_disk() is None
+
+
+def test_no_date_api_calls_use_retries(tmp_path, monkeypatch):
+    """
+    NO_DATE data types (USER_PROFILE, PERSONAL_RECORDS, RACE_PREDICTIONS) must go
+    through _with_retries like DAILY/RANGE types do, otherwise a single transient
+    network hiccup would fail them on the first attempt.
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    # Skip the actual sleep so the test runs instantly.
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    instance = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("USER_PROFILE",),
+    )
+    instance.user_id = "test-user"
+
+    user_profile_type = GARMIN_DATA_REGISTRY.get_by_name("USER_PROFILE")
+    # NO_DATE call: first two attempts raise transient, third succeeds.
+    mock_api = MagicMock(
+        side_effect=[
+            GarminConnectionError("DNS hiccup"),
+            GarminConnectionError("still flaky"),
+            {"id": 12345, "displayName": "test"},
+        ]
+    )
+    instance.garmin_client = MagicMock()
+    instance.garmin_client.full_name = "Test User"
+    setattr(instance.garmin_client, user_profile_type.api_method, mock_api)
+
+    result = instance._extract_data_by_type(
+        user_profile_type, date_cls(2025, 1, 1), date_cls(2025, 1, 1)
+    )
+
+    # Two retries then success: 3 total attempts, no failure recorded.
+    assert mock_api.call_count == 3
+    assert len(result) == 1  # one saved file
+    assert instance.failures == []
