@@ -78,6 +78,7 @@ class GarminProcessor(Processor):
         """
         Initialize GarminProcessor with additional instance attributes.
         """
+
         super().__init__(*args, **kwargs)
         self.user_id = None
         self.must_update_user = False
@@ -297,6 +298,7 @@ class GarminProcessor(Processor):
         :param date_string: Date string in YYYY-MM-DD format.
         :return: Python date object.
         """
+
         return datetime.strptime(date_string, "%Y-%m-%d").date()
 
     def _ensure_user_exists(self, user_id: str, session: Session) -> None:

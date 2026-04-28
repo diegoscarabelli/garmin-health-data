@@ -39,6 +39,7 @@ def check_for_newer_version() -> None:
     Safe to call from any CLI entry point: never raises, never blocks for more
     than ``HTTP_TIMEOUT_SECONDS``.
     """
+
     if os.environ.get(ENV_DISABLE):
         return
     try:
@@ -65,6 +66,7 @@ def _get_latest_version() -> Optional[str]:
     Return the latest version string, preferring a fresh cache, falling back to a live
     PyPI fetch (which then refreshes the cache).
     """
+
     cached = _read_cached()
     if cached is not None:
         return cached
@@ -78,6 +80,7 @@ def _read_cached() -> Optional[str]:
     """
     Return the cached latest-version string if the cache is fresh, else None.
     """
+
     if not CACHE_PATH.exists():
         return None
     try:
@@ -103,6 +106,7 @@ def _write_cache(latest: str) -> None:
 
     Failures are swallowed so a non-writable cache directory never blocks the CLI.
     """
+
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CACHE_PATH, "w", encoding="utf-8") as f:
@@ -118,6 +122,7 @@ def _fetch_from_pypi() -> Optional[str]:
     Returns ``None`` on any network or parse error so the caller can no-op
     silently.
     """
+
     try:
         response = requests.get(PYPI_URL, timeout=HTTP_TIMEOUT_SECONDS)
     except requests.RequestException:

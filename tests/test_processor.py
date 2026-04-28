@@ -41,6 +41,7 @@ def processor():
 
     :return: GarminProcessor instance.
     """
+
     file_set = FileSet(file_paths=[], files={})
     session = MagicMock()
     proc = GarminProcessor(file_set, session)
@@ -55,6 +56,7 @@ def mock_session():
 
     :return: Mock session instance.
     """
+
     return MagicMock()
 
 
@@ -65,6 +67,7 @@ def _make_field(name: str, value, units: str = None) -> MagicMock:
     """
     Create a mock FIT field.
     """
+
     field = MagicMock()
     field.name = name
     field.value = value
@@ -76,6 +79,7 @@ def _make_frame(name: str, fields: list) -> MagicMock:
     """
     Create a mock FIT data frame.
     """
+
     frame = MagicMock()
     frame.frame_type = fitdecode.FIT_FRAME_DATA
     frame.name = name
@@ -87,6 +91,7 @@ def _mock_fit_reader(frames: list) -> MagicMock:
     """
     Create a mock fitdecode.FitReader context manager that iterates the given frames.
     """
+
     reader = MagicMock()
     reader.__enter__ = MagicMock(return_value=reader)
     reader.__exit__ = MagicMock(return_value=False)
@@ -102,6 +107,7 @@ def _seed_activity(
     """
     Insert a user and activity record for FIT file tests.
     """
+
     upsert_model_instances(
         session=session,
         model_instances=[User(user_id=1, full_name="Test User")],
@@ -165,6 +171,7 @@ class TestProcessFitFile:
         """
         Create a GarminProcessor with a dummy file set.
         """
+
         file_set = FileSet(file_paths=[], files={})
         # session arg is unused (each method receives its own session).
         return GarminProcessor(file_set=file_set, session=MagicMock())
@@ -173,6 +180,7 @@ class TestProcessFitFile:
         """
         First-time processing inserts metrics and sets ts_data_available.
         """
+
         activity = _seed_activity(db_session)
         assert activity.ts_data_available is False
 
@@ -221,6 +229,7 @@ class TestProcessFitFile:
         """
         Re-running deletes old rows and inserts fresh data.
         """
+
         activity = _seed_activity(db_session, ts_data_available=True)
 
         # Simulate pre-existing metrics from a previous run.
@@ -319,6 +328,7 @@ class TestProcessFitFile:
         """
         Activity with only laps (no record frames) still processes correctly.
         """
+
         activity = _seed_activity(db_session)
 
         lap_frame = _make_frame(
@@ -356,6 +366,7 @@ class TestProcessFitFile:
         """
         Raises ValueError when activity_id not in database.
         """
+
         # Seed user only, no activity.
         upsert_model_instances(
             session=db_session,
@@ -373,6 +384,7 @@ class TestProcessFitFile:
         """
         Raises ValueError for non-matching filename pattern.
         """
+
         processor = self._make_processor()
         with pytest.raises(ValueError, match="Cannot extract activity_id"):
             processor._process_fit_file(Path("bad_name.fit"), db_session)
@@ -382,6 +394,7 @@ class TestProcessFitFile:
         Record frames with GPS coordinates produce an ActivityPath row with semicircles
         converted to decimal degrees and points sorted by timestamp.
         """
+
         _seed_activity(db_session)
 
         # Semicircle values chosen for exact float conversions:
@@ -447,6 +460,7 @@ class TestProcessFitFile:
         """
         Records without position_lat/position_long produce zero ActivityPath rows.
         """
+
         _seed_activity(db_session)
 
         ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
@@ -479,6 +493,7 @@ class TestProcessFitFile:
         Frames with only position_lat (no position_long) are excluded; only frames with
         both coordinates produce path points.
         """
+
         _seed_activity(db_session)
 
         ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
@@ -525,6 +540,7 @@ class TestProcessFitFile:
 
         A subsequent run without GPS data deletes the row entirely.
         """
+
         _seed_activity(db_session)
 
         ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
@@ -625,6 +641,7 @@ class TestActivityBaseUpsert:
         """
         Activity upsert does not overwrite ts_data_available flag.
         """
+
         activity = _seed_activity(db_session, ts_data_available=True)
         assert activity.ts_data_available is True
 
@@ -679,6 +696,7 @@ class TestActivityBaseUpsert:
         """
         Activity upsert does not overwrite create_ts audit column.
         """
+
         _seed_activity(db_session)
 
         original = (
@@ -736,6 +754,7 @@ class TestActivityBaseUpsert:
         """
         Verify the column exclusion list matches the processor logic.
         """
+
         update_columns = [
             col.name
             for col in Activity.__table__.columns
@@ -760,6 +779,7 @@ class TestSleepUpsert:
         """
         Verify sleep upsert excludes create_ts from update columns.
         """
+
         from garmin_health_data.models import Sleep
 
         update_columns = [
@@ -1029,6 +1049,7 @@ class TestProcessStrengthMetrics:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
+
         # Arrange.
         activity_data = {
             "summarizedExerciseSets": [
@@ -1106,6 +1127,7 @@ class TestProcessStrengthMetrics:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
+
         # Arrange.
         activity_data = {
             "summarizedExerciseSets": [
@@ -1148,6 +1170,7 @@ class TestProcessStrengthMetrics:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
+
         # Arrange.
         activity_data = {
             "totalSets": 0,
@@ -1196,6 +1219,7 @@ class TestProcessExerciseSets:
         :param mock_session: Mock session fixture.
         :param tmp_path: Temporary directory fixture.
         """
+
         # Arrange.
         data = {
             "activityId": 22320029355,
@@ -1309,6 +1333,7 @@ class TestProcessExerciseSets:
         :param mock_session: Mock session fixture.
         :param tmp_path: Temporary directory fixture.
         """
+
         # Arrange.
         data = {
             "activityId": 22320029355,
@@ -1355,6 +1380,7 @@ class TestProcessExerciseSets:
         :param mock_session: Mock session fixture.
         :param tmp_path: Temporary directory fixture.
         """
+
         # Arrange.
         data = {
             "activityId": 12345,
@@ -1398,6 +1424,7 @@ class TestStrengthRouting:
         :param processor: GarminProcessor fixture.
         :param mock_session: Mock session fixture.
         """
+
         # Arrange.
         activity_data = {
             "activityId": 22320029355,
@@ -1469,6 +1496,7 @@ class TestProcessFitSubSecond:
         """
         Build a minimal processor instance bound to FIT_FILENAME.
         """
+
         file_set = MagicMock(spec=FileSet)
         return GarminProcessor(file_set=file_set, session=MagicMock())
 
@@ -1480,6 +1508,7 @@ class TestProcessFitSubSecond:
         values produce two distinct rows with sub-second precision (no UNIQUE constraint
         collision).
         """
+
         _seed_activity(db_session)
 
         ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
@@ -1529,6 +1558,7 @@ class TestProcessFitSubSecond:
 
         Prevents UNIQUE constraint failure (issue #36).
         """
+
         _seed_activity(db_session)
 
         ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)

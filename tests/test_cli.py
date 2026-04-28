@@ -22,6 +22,7 @@ def test_raw_sql_string_raises_error(tmp_path):
     original bug where PRAGMA integrity_check was passed as a plain string, causing
     ArgumentError.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -36,6 +37,7 @@ def test_verify_runs_integrity_check(tmp_path):
     """
     Test that verify command executes PRAGMA integrity_check successfully.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -50,6 +52,7 @@ def test_verify_nonexistent_db(tmp_path):
     """
     Test that verify command rejects non-existent database path.
     """
+
     db_path = tmp_path / "nonexistent.db"
 
     runner = CliRunner()
@@ -68,6 +71,7 @@ def _stub_extract_no_files(*args, **kwargs):
     """
     Return an empty extraction result; ingest_dir untouched.
     """
+
     return {
         "garmin_files": 0,
         "activity_files": 0,
@@ -80,6 +84,7 @@ def _common_invoke(runner, db_path, *extra_args):
     """
     Invoke the extract command with a default narrow date range.
     """
+
     return runner.invoke(
         extract,
         [
@@ -99,6 +104,7 @@ def test_extract_creates_lifecycle_dirs_next_to_db(tmp_path):
     Extract command creates garmin_files/{ingest,process,storage,quarantine} next to the
     database file before extraction runs.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -123,6 +129,7 @@ def test_extract_recovers_stale_process_files(tmp_path):
     Files left in process/ from a previously crashed run are moved back to ingest/ at
     the start of the next extract run.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -144,15 +151,19 @@ def test_extract_recovers_stale_process_files(tmp_path):
     assert result.exit_code == 0, result.output
     # Recovery message printed.
     assert "Recovered 1 file(s)" in result.output
-    # The stale file's content was preserved (it has been bulk-moved back
-    # to process/ since the test stub does not add new files to ingest/).
-    assert (base / "process" / "stale.json").read_text() == '{"old": true}'
+    # The stale file's content is preserved. With no GARMIN_FILE_TYPES
+    # pattern matching its name, the pre-routing step archived it directly
+    # to storage/ as backup-only — no longer left in process/ to loop on
+    # subsequent runs.
+    assert (base / "storage" / "stale.json").read_text() == '{"old": true}'
+    assert not (base / "process" / "stale.json").exists()
 
 
 def test_extract_uses_ingest_dir_for_extract_data(tmp_path):
     """
     extract_data is invoked with ingest_dir = garmin_files/ingest.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -184,6 +195,7 @@ def test_process_loop_routes_success_to_storage_failure_to_quarantine(tmp_path):
     successful FileSet's files end up in storage/ and the failed FileSet's files end up
     in quarantine/.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -234,6 +246,7 @@ def test_extract_prints_failure_summary(tmp_path):
     """
     End-of-run summary lists per-data-type failures from the extractor.
     """
+
     from garmin_health_data.extractor import ExtractionFailure
 
     db_path = tmp_path / "test.db"
@@ -283,6 +296,7 @@ def test_extract_only_skips_processing(tmp_path):
     --extract-only writes files into ingest/ and stops; no move to process/
     or storage/.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -316,6 +330,7 @@ def test_process_only_skips_extraction(tmp_path):
     --process-only does not call the extract API; it only processes whatever
     is in ingest/.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -343,6 +358,7 @@ def test_extract_only_and_process_only_are_mutually_exclusive(tmp_path):
     """
     Passing both flags exits non-zero with a clear error message.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -367,6 +383,7 @@ def test_extract_aborts_when_lock_held(tmp_path):
     A second concurrent extract aborts immediately with a clear message when the
     lifecycle lock is already held.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -394,6 +411,7 @@ def test_process_only_does_not_require_authentication(tmp_path):
     Authentication is only required when extracting; --process-only must work without
     invoking ensure_authenticated.
     """
+
     db_path = tmp_path / "test.db"
     create_tables(str(db_path))
 
@@ -413,3 +431,48 @@ def test_process_only_does_not_require_authentication(tmp_path):
 
     assert result.exit_code == 0, result.output
     auth_mock.assert_not_called()
+
+
+def test_unmatched_files_routed_to_storage_as_backup(tmp_path):
+    """
+    Files that don't match any GARMIN_FILE_TYPES processor pattern (e.g. an unknown .xyz
+    extension, or TCX/GPX/KML activity formats) are real Garmin data the user wanted
+    extracted, just not data we can load.
+
+    They go
+    directly to storage/ as backup-only — NOT to quarantine, which is for
+    genuine processing failures. Mirrors openetl's `store_format`
+    skip-to-storage behavior.
+    """
+
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    base = tmp_path / "garmin_files"
+    setup_lifecycle_dirs(base)
+    # Filename with timestamp so it groups into a FileSet, but with an
+    # extension that no GARMIN_FILE_TYPES pattern matches.
+    extra = base / "ingest" / "user1_UNKNOWN_2025-01-01T12-00-00+00-00.xyz"
+    extra.write_text("backup-only data")
+
+    def stub_extract(*args, **kwargs):
+        return {
+            "garmin_files": 1,
+            "activity_files": 0,
+            "failures": [],
+            "failed_accounts": [],
+        }
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch("garmin_health_data.cli.extract_data", side_effect=stub_extract),
+    ):
+        result = _common_invoke(runner, db_path)
+
+    assert result.exit_code == 0, result.output
+    # Backup-only file landed in storage, not quarantine.
+    assert (base / "storage" / extra.name).exists()
+    assert not (base / "quarantine" / extra.name).exists()
+    assert not extra.exists()
+    assert list((base / "process").iterdir()) == []

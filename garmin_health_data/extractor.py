@@ -64,6 +64,7 @@ def _with_retries(fn: Callable, *args, **kwargs):
     :raises Exception: The last transient exception if all retries are
         exhausted, or any non-transient exception immediately.
     """
+
     total_attempts = 1 + len(_RETRY_BACKOFFS)
     last_exc: Optional[BaseException] = None
     for attempt in range(total_attempts):
@@ -136,6 +137,7 @@ def _detect_format_from_magic(content: bytes) -> Optional[str]:
     :return: Lowercase file extension (``'fit'``, ``'tcx'``, ``'gpx'``,
         ``'kml'``), or ``None`` if the format cannot be identified.
     """
+
     # FIT: ANT+ FIT protocol magic bytes at offset 8–11.
     if len(content) >= 12 and content[8:12] == b".FIT":
         return "fit"
@@ -381,6 +383,7 @@ class GarminExtractor:
         :param end_date: End date for data extraction (inclusive).
         :return: List of saved file paths.
         """
+
         saved_files = []
         current_date = start_date
 
@@ -541,6 +544,7 @@ class GarminExtractor:
         :return: Tuple of ``(file_extension, content_bytes)``, or ``None``
             if the archive is empty.
         """
+
         inner_name = ""
 
         try:
@@ -612,6 +616,7 @@ class GarminExtractor:
         :return: Parsed activities list, or ``None`` if no file exists or it
             cannot be parsed (caller should fall back to the API).
         """
+
         pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
         matches = sorted(self.ingest_dir.glob(pattern))
         if not matches:
@@ -791,6 +796,7 @@ class GarminExtractor:
         :param timestamp: ISO 8601 timestamp for consistent filename batching.
         :return: Path to saved JSON file, or None if no data.
         """
+
         try:
             data = _with_retries(
                 self.garmin_client.get_activity_exercise_sets, activity_id
@@ -856,6 +862,7 @@ def extract(
     :raises ValueError: If any requested data type names are not found in registry, or
         if accounts filter is not a list.
     """
+
     import logging
 
     logger = logging.getLogger(__name__)
@@ -1041,6 +1048,7 @@ def cli_extract(
     :param data_types: Optional list of data type names to extract.
     :param accounts: Optional list of user_id strings to filter accounts.
     """
+
     start_pendulum = pendulum.parse(start_date, tz="UTC")
     end_pendulum = pendulum.parse(end_date, tz="UTC")
     ingest_path = Path(ingest_dir)

@@ -60,6 +60,7 @@ def cli():
 
     Extract your complete Garmin Connect health data to a local SQLite database.
     """
+
     # Show INFO-level messages from our own code (e.g. login delay warnings)
     # without exposing noisy INFO output from third-party libraries.
     # Guard against duplicate handlers when the CLI entrypoint is invoked
@@ -94,6 +95,7 @@ def auth(email: Optional[str], password: Optional[str]):
     """
     Authenticate with Garmin Connect and save tokens.
     """
+
     if email and password:
         # Use provided credentials.
         click.echo("Using provided credentials...")
@@ -164,6 +166,7 @@ def extract(
     Files are preserved on disk by default for offline backup and
     post-mortem inspection.
     """
+
     if extract_only and process_only:
         click.secho(
             "❌ --extract-only and --process-only are mutually exclusive.",
@@ -329,13 +332,35 @@ def extract(
             moved = move_ingest_to_process(files_root)
             click.echo(f"📦 Moved {format_count(moved)} file(s) ingest/ → process/.")
 
-            # Discover files now in process/.
-            file_paths = [p for p in process_dir.iterdir() if p.is_file()]
+            # Pre-routing (mirrors openetl's `ingest` task): files that
+            # match no known processor type (e.g. TCX/GPX/KML activity
+            # formats, anything unrecognised) are still real Garmin data
+            # the user wanted preserved. Route them straight to storage/
+            # before any FileSet grouping. Without this they would loop
+            # ingest <-> process forever via the next run's recovery +
+            # bulk-move; with it they reach a terminal state immediately.
+            all_in_process = [p for p in process_dir.iterdir() if p.is_file()]
+            processable, backup_only = _partition_processable_and_backup(all_in_process)
+            if backup_only:
+                click.secho(
+                    f"💾 Archiving {format_count(len(backup_only))} "
+                    f"backup-only file(s) to storage (no processor type "
+                    f"matched): "
+                    f"{', '.join(p.name for p in backup_only[:5])}"
+                    + (
+                        f" (+{len(backup_only) - 5} more)"
+                        if len(backup_only) > 5
+                        else ""
+                    ),
+                    fg="cyan",
+                )
+                move_files_to_storage(backup_only, files_root)
 
+            total_backup_only = len(backup_only)
             total_processed = 0
             total_quarantined = 0
-            if file_paths:
-                files_by_key = _group_files_by_user_and_timestamp(file_paths)
+            if processable:
+                files_by_key = _group_files_by_user_and_timestamp(processable)
 
                 num_filesets = len(files_by_key)
                 click.echo()
@@ -351,9 +376,9 @@ def extract(
                 # Per-FileSet: own session, try/except, route to storage/quarantine.
                 for (uid, timestamp_str), timestamp_files in files_by_key.items():
                     files_by_type = _classify_files_by_type(timestamp_files)
-
-                    # Skip groups with no recognised types (e.g. TCX/GPX-only).
                     if not files_by_type:
+                        # Should be unreachable since we pre-filtered above;
+                        # belt-and-suspenders guard.
                         continue
 
                     matched_paths = [
@@ -394,6 +419,17 @@ def extract(
             click.echo()
 
             _print_extraction_failures(result.get("failures", []))
+
+            click.echo("File lifecycle this run:")
+            click.echo(f"   • Loaded into DB: {format_count(total_processed)}")
+            click.echo(
+                f"   • Archived as backup-only "
+                f"(no processor type): {format_count(total_backup_only)}"
+            )
+            click.echo(
+                f"   • Quarantined (processing failed): {format_count(total_quarantined)}"
+            )
+            click.echo()
 
             counts = get_record_counts(db_path)
             db_size = get_database_size(db_path)
@@ -443,6 +479,7 @@ def _group_files_by_user_and_timestamp(
     :return: OrderedDict mapping ``(user_id, timestamp_str)`` to a list of
         Paths, sorted by key for deterministic processing order.
     """
+
     files_by_key: "OrderedDict[tuple, list]" = OrderedDict()
     for file_path in file_paths:
         parts = file_path.name.split("_", maxsplit=1)
@@ -461,28 +498,46 @@ def _group_files_by_user_and_timestamp(
 
 def _classify_files_by_type(file_paths: list) -> dict:
     """
-    Map files to their GARMIN_FILE_TYPES enum value via filename pattern.
+    Map files to their ``GARMIN_FILE_TYPES`` enum value via filename pattern.
 
-    Files that don't match any known pattern are skipped (with a warning) so
-    unsupported formats (e.g. TCX, GPX) don't crash the FileSet build.
+    Callers should have already filtered out backup-only (no-pattern-match)
+    files via :func:`_partition_processable_and_backup` before calling this.
 
     :param file_paths: Iterable of file Paths within a single FileSet.
     :return: Dict mapping ``GarminFileTypes`` enum to a list of matching Paths.
     """
+
     files_by_type: dict = {}
     for file_path in file_paths:
-        matched = False
         for file_type_enum in GARMIN_FILE_TYPES:
             if file_type_enum.value.match(file_path.name):
                 files_by_type.setdefault(file_type_enum, []).append(file_path)
-                matched = True
                 break  # Each file matches at most one pattern.
-        if not matched:
-            click.secho(
-                f"⚠️  No matching pattern for file: {file_path.name}",
-                fg="yellow",
-            )
     return files_by_type
+
+
+def _partition_processable_and_backup(file_paths: list) -> tuple:
+    """
+    Split files into (processable, backup-only) lists.
+
+    Processable files match at least one ``GARMIN_FILE_TYPES`` pattern.
+    Backup-only files (e.g. TCX / GPX / KML activity formats we have no
+    processor for, or any other unrecognised filename) are real Garmin data
+    the user wanted preserved on disk; the caller is expected to move them
+    straight to ``storage/`` rather than feed them to the processor.
+
+    :param file_paths: Iterable of file Paths.
+    :return: ``(processable, backup_only)`` tuple of lists.
+    """
+
+    processable: list = []
+    backup_only: list = []
+    for path in file_paths:
+        if any(t.value.match(path.name) for t in GARMIN_FILE_TYPES):
+            processable.append(path)
+        else:
+            backup_only.append(path)
+    return processable, backup_only
 
 
 def _print_extraction_failures(failures: list) -> None:
@@ -494,6 +549,7 @@ def _print_extraction_failures(failures: list) -> None:
 
     :param failures: List of ExtractionFailure dataclass instances.
     """
+
     if not failures:
         return
     click.echo()
@@ -525,6 +581,7 @@ def info(db_path: str):
     """
     Show database statistics and information.
     """
+
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
         click.echo("   Run 'garmin extract' to create a new database")
@@ -584,6 +641,7 @@ def verify(db_path: str):
     """
     Verify database integrity and structure.
     """
+
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
         return
