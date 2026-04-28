@@ -298,7 +298,9 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.1...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...HEAD
+[2.7.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.0...v2.7.1
+[2.7.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.4.0...v2.5.0
