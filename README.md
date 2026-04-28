@@ -12,7 +12,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 - 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
-- 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, no third-party dependency for API access.
+- 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, with no third-party Garmin Connect client library dependency.
 - 🖥️ **Cross-platform**: macOS, Linux, Windows. Python 3.10+.
 
 ## Requirements
@@ -82,7 +82,7 @@ Tokens are stored in per-account subdirectories and discovered automatically:
 
 All discovered accounts are extracted sequentially when running `garmin extract`, with per-account error isolation (one failing account doesn't block others).
 
-> Login strategies, token rotation, and the 30-45s anti-rate-limit pause: see [Authentication internals](#reference).
+> Login strategies, token rotation, and the 30-45s anti-rate-limit pause: see [Reference](#reference).
 
 ### Extracting data
 
@@ -159,7 +159,7 @@ Last Update Dates:
 # Check a specific database
 garmin info --db-path ~/my-garmin-data.db
 
-# Verify database integrity (table count + SQLite PRAGMA integrity_check)
+# Verify database integrity (expected schema table count + SQLite PRAGMA integrity_check)
 garmin verify
 ```
 
