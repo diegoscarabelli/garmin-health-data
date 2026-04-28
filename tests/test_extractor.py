@@ -1166,3 +1166,81 @@ def test_extract_day_by_day_uses_retries_for_per_day_calls(tmp_path, monkeypatch
     assert len(saved) == 1
     assert mock_api.call_count == 3  # two retries then success
     assert instance.failures == []  # no recorded failure since retry won
+
+
+def test_load_activities_list_merges_multiple_files_dedupes_by_id(tmp_path):
+    """
+    Multi-day extracts produce one ACTIVITIES_LIST_<date>.json per day.
+
+    The helper must merge all of them and dedupe by activityId so activities from
+    earlier days are not silently dropped (round-4 review fix).
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 3),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    # Three separate per-day list files. Activity 100 appears in two of them
+    # (e.g. an activity that spans midnight) — should be deduped to one.
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 100, "name": "day1"}])
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+        json.dumps(
+            [
+                {"activityId": 100, "name": "day1-dup"},
+                {"activityId": 200, "name": "day2"},
+            ]
+        )
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-03T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 300, "name": "day3"}])
+    )
+
+    result = extractor._load_activities_list_from_disk()
+
+    # Did NOT call API.
+    extractor.garmin_client.get_activities_by_date.assert_not_called()
+    # All three distinct activities present, dedupe happened.
+    ids = sorted(a["activityId"] for a in result)
+    assert ids == [100, 200, 300]
+
+
+def test_load_activities_list_falls_back_on_corrupt_file(tmp_path):
+    """
+    A single corrupt file (JSON parse error) returns None so the caller hits the API
+    rather than partial-loading from the remaining files.
+
+    Conservative by design — we'd rather refetch than silently miss activities.
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 2),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-01T12-00-00Z.json").write_text(
+        "{not valid json"
+    )
+    (tmp_path / "test-user_ACTIVITIES_LIST_2025-01-02T12-00-00Z.json").write_text(
+        json.dumps([{"activityId": 200}])
+    )
+
+    assert extractor._load_activities_list_from_disk() is None

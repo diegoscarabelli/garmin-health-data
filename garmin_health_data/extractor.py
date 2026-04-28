@@ -611,31 +611,62 @@ class GarminExtractor:
 
     def _load_activities_list_from_disk(self) -> Optional[list]:
         """
-        Read the saved ACTIVITIES_LIST JSON file from ``ingest_dir`` if present.
+        Read all saved ACTIVITIES_LIST JSON files from ``ingest_dir`` and merge them
+        into a single deduplicated activities list.
 
-        The registry-driven extract loop writes a file named
-        ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` for each run. Reading
-        it here lets ``extract_fit_activities`` skip a duplicate API call.
+        The registry-driven extract loop calls ``get_activities_by_date`` once
+        per day inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day
+        window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file
+        per day. Reading only the newest file would silently skip activities
+        from earlier days; instead, parse every matching file and merge by
+        ``activityId`` (last value wins for any duplicate).
 
-        :return: Parsed activities list, or ``None`` if no file exists or it
-            cannot be parsed (caller should fall back to the API).
+        Falls back to ``None`` (caller hits the live API) on any read or
+        parse error so a single corrupt file doesn't prevent extraction.
+
+        :return: Merged + deduplicated activities list, or ``None`` if no
+            files exist or any file cannot be parsed.
         """
 
         pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
         matches = sorted(self.ingest_dir.glob(pattern))
         if not matches:
             return None
-        # Use the newest file in case multiple runs left files behind.
-        try:
-            with open(matches[-1], "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            click.secho(
-                f"⚠️  Could not read {matches[-1].name}: {e}. "
-                f"Falling back to API call.",
-                fg="yellow",
-            )
+
+        merged: Dict = {}
+        anonymous: list = []
+        parsed_any = False
+        for match in matches:
+            try:
+                with open(match, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                click.secho(
+                    f"⚠️  Could not read {match.name}: {e}. "
+                    f"Falling back to API call.",
+                    fg="yellow",
+                )
+                return None
+            if not isinstance(payload, list):
+                click.secho(
+                    f"⚠️  Could not use {match.name}: expected a JSON list. "
+                    f"Falling back to API call.",
+                    fg="yellow",
+                )
+                return None
+            parsed_any = True
+            for activity in payload:
+                if isinstance(activity, dict) and "activityId" in activity:
+                    merged[activity["activityId"]] = activity
+                else:
+                    # Activity without an ID — keep verbatim, don't dedupe.
+                    anonymous.append(activity)
+
+        # An empty list IS a valid result (the user has no activities in the
+        # window). Only fall back to the API when no file was parseable.
+        if not parsed_any:
             return None
+        return list(merged.values()) + anonymous
 
     def extract_fit_activities(self) -> List[Path]:
         """

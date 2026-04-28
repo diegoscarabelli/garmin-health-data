@@ -343,6 +343,7 @@ def extract(
             # bulk-move; with it they reach a terminal state immediately.
             all_in_process = [p for p in process_dir.iterdir() if p.is_file()]
             processable, backup_only = _partition_processable_and_backup(all_in_process)
+            total_backup_only = 0
             if backup_only:
                 click.secho(
                     f"💾 Archiving {format_count(len(backup_only))} "
@@ -356,9 +357,20 @@ def extract(
                     ),
                     fg="cyan",
                 )
-                move_files_to_storage(backup_only, files_root)
-
-            total_backup_only = len(backup_only)
+                # Same warn-and-continue treatment as the per-FileSet
+                # storage move: an IO failure here must not abort the
+                # whole run. Files stay in process/; the next run's
+                # recovery + bulk-move will surface them again.
+                try:
+                    move_files_to_storage(backup_only, files_root)
+                    total_backup_only = len(backup_only)
+                except OSError as e:
+                    click.secho(
+                        f"⚠️  Move-to-storage for backup-only files "
+                        f"failed: {type(e).__name__}: {e}. Files remain "
+                        f"in process/; the next run will recover them.",
+                        fg="yellow",
+                    )
             total_processed = 0
             total_quarantined = 0
             if processable:
