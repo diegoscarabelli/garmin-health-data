@@ -48,7 +48,7 @@ garmin extract
 garmin info
 ```
 
-That's it! Your data is now in a local SQLite database (`garmin_data.db`).
+That's it! `garmin extract` saved your raw downloaded files under `garmin_files/storage/` (kept on disk as an offline backup) and loaded them into a local SQLite database (`garmin_data.db`) for analysis.
 
 ## Usage
 
