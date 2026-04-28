@@ -7,7 +7,7 @@ venv:
 
 format: venv
 	$(PYTHON) -m autoflake .
-	$(PYTHON) -m docformatter --in-place . || { ec=$$?; if [ $$ec -eq 1 ] || [ $$ec -eq 3 ]; then true; else exit $$ec; fi; }
+	$(PYTHON) -m docformatter --in-place . || { ec=$$?; if [ $$ec -eq 3 ]; then true; else exit $$ec; fi; }
 	$(PYTHON) -m black -q .
 	$(PYTHON) -m sqlfluff fix -q --disable-progress-bar --processes 0
 
