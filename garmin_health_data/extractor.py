@@ -472,10 +472,14 @@ class GarminExtractor:
             return self._extract_day_by_day(data_type, start_date, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.NO_DATE:
-            # Process no-date data.
+            # Process no-date data. Wrap the call in _with_retries so
+            # transient network failures absorb the same way they do for
+            # DAILY / RANGE types via _extract_day_by_day; otherwise NO_DATE
+            # types (USER_PROFILE, PERSONAL_RECORDS, RACE_PREDICTIONS) would
+            # fail on the first DNS hiccup.
             click.echo(f"{data_type.emoji} Fetching {data_type.name.lower()} data.")
             api_method = getattr(self.garmin_client, data_type.api_method)
-            data = api_method()
+            data = _with_retries(api_method)
 
             if data:
                 # Enhance USER_PROFILE data with client information.

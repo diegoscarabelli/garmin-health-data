@@ -1244,3 +1244,51 @@ def test_load_activities_list_falls_back_on_corrupt_file(tmp_path):
     )
 
     assert extractor._load_activities_list_from_disk() is None
+
+
+def test_no_date_api_calls_use_retries(tmp_path, monkeypatch):
+    """
+    NO_DATE data types (USER_PROFILE, PERSONAL_RECORDS, RACE_PREDICTIONS) must go
+    through _with_retries like DAILY/RANGE types do, otherwise a single transient
+    network hiccup would fail them on the first attempt.
+    """
+    from datetime import date as date_cls
+    from unittest.mock import MagicMock
+
+    from garmin_health_data import extractor
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+    from garmin_health_data.garmin_client.exceptions import GarminConnectionError
+
+    # Skip the actual sleep so the test runs instantly.
+    monkeypatch.setattr(extractor.time, "sleep", lambda _: None)
+
+    instance = GarminExtractor(
+        start_date=date_cls(2025, 1, 1),
+        end_date=date_cls(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("USER_PROFILE",),
+    )
+    instance.user_id = "test-user"
+
+    user_profile_type = GARMIN_DATA_REGISTRY.get_by_name("USER_PROFILE")
+    # NO_DATE call: first two attempts raise transient, third succeeds.
+    mock_api = MagicMock(
+        side_effect=[
+            GarminConnectionError("DNS hiccup"),
+            GarminConnectionError("still flaky"),
+            {"id": 12345, "displayName": "test"},
+        ]
+    )
+    instance.garmin_client = MagicMock()
+    instance.garmin_client.full_name = "Test User"
+    setattr(instance.garmin_client, user_profile_type.api_method, mock_api)
+
+    result = instance._extract_data_by_type(
+        user_profile_type, date_cls(2025, 1, 1), date_cls(2025, 1, 1)
+    )
+
+    # Two retries then success: 3 total attempts, no failure recorded.
+    assert mock_api.call_count == 3
+    assert len(result) == 1  # one saved file
+    assert instance.failures == []
