@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-04-28
+
+### Fixed
+
+- **Windows CI flake on `test_refreshes_stale_cache`**: `_read_cached()` computed `age = time.time() - st_mtime` and treated the cache as stale only when `age >= CACHE_TTL_SECONDS`. On Windows the NTFS mtime resolution is finer than `time.time()`, so a file written immediately before the check could have an mtime slightly *after* the current clock; the resulting negative age made a `TTL=0` test (and any TTL+race) treat the cache as fresh. Negative ages are now clamped to `0.0`, restoring the intended "stale at TTL=0" behavior.
+
 ## [2.7.0] - 2026-04-27
 
 ### Added

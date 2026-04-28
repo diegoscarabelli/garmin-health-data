@@ -84,7 +84,11 @@ def _read_cached() -> Optional[str]:
     if not CACHE_PATH.exists():
         return None
     try:
-        age = time.time() - CACHE_PATH.stat().st_mtime
+        # Clamp negative ages to 0: on Windows, NTFS mtime resolution is
+        # finer than time.time(), so age can be slightly negative right after
+        # a write. Without the clamp a TTL of 0 would (wrongly) treat the
+        # cache as fresh.
+        age = max(0.0, time.time() - CACHE_PATH.stat().st_mtime)
     except OSError:
         return None
     if age >= CACHE_TTL_SECONDS:

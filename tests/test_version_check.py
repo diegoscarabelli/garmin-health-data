@@ -3,6 +3,8 @@ Tests for the optional PyPI version-check helper.
 """
 
 import json
+import os
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -161,6 +163,32 @@ def test_refreshes_stale_cache(isolated_cache, capsys, monkeypatch):
     assert "999.0.0" in out
     # Cache was rewritten with the fresh value.
     assert json.loads(isolated_cache.read_text())["latest"] == "999.0.0"
+
+
+def test_refreshes_when_mtime_is_in_the_future(isolated_cache, capsys, monkeypatch):
+    """
+    On Windows, NTFS mtime resolution is finer than ``time.time()`` so a file written
+    immediately before the check can have an mtime slightly *after* the current clock.
+
+    The cache must still be considered stale at TTL=0 rather than returning the cached
+    value because age is negative.
+    """
+
+    isolated_cache.write_text(json.dumps({"latest": "0.0.1"}))
+    # Force the cache file's mtime 1 second into the future to deterministically
+    # simulate the Windows clock-resolution race.
+    future = time.time() + 1.0
+    os.utime(isolated_cache, (future, future))
+    monkeypatch.setattr(version_check, "CACHE_TTL_SECONDS", 0)
+
+    with patch.object(
+        version_check.requests,
+        "get",
+        return_value=_mock_pypi_response("999.0.0"),
+    ):
+        version_check.check_for_newer_version()
+
+    assert "999.0.0" in capsys.readouterr().out
 
 
 def test_silent_on_malformed_cache(isolated_cache, capsys):
