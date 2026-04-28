@@ -115,7 +115,9 @@ def auth(email: Optional[str], password: Optional[str]):
 @click.option(
     "--end-date",
     type=click.DateTime(formats=["%Y-%m-%d"]),
-    help="End date (YYYY-MM-DD). Defaults to today.",
+    help="End date (YYYY-MM-DD), EXCLUSIVE — data from this date is not "
+    "included (except when start and end are the same day, in which case "
+    "that single day is extracted). Defaults to today.",
 )
 @click.option(
     "--data-types",
@@ -241,8 +243,8 @@ def extract(
             click.echo("👤 Extracting all discovered accounts")
 
         click.echo(
-            f"📆 Date range: {format_date(start_date.date())} to "
-            f"{format_date(end_date.date())}"
+            f"📆 Date range: {format_date(start_date.date())} (inclusive) "
+            f"to {format_date(end_date.date())} (exclusive)"
         )
         click.echo()
     else:
@@ -386,22 +388,47 @@ def extract(
                     ]
                     file_set = FileSet(file_paths=matched_paths, files=files_by_type)
 
-                    with get_session(db_path) as session:
-                        try:
+                    # Phase A — DB load. get_session() commits on clean
+                    # exit and rolls back on exception, so no explicit
+                    # commit/rollback is needed here. A processing failure
+                    # routes the FileSet to quarantine.
+                    db_load_failed = False
+                    try:
+                        with get_session(db_path) as session:
                             processor = GarminProcessor(file_set, session)
                             processor.process_file_set(file_set, session)
-                            session.commit()
-                            move_files_to_storage(matched_paths, files_root)
-                            total_processed += len(matched_paths)
-                        except Exception as e:
-                            session.rollback()
-                            click.secho(
-                                f"❌ FileSet {uid}/{timestamp_str} failed: "
-                                f"{type(e).__name__}: {e}. Moving to quarantine.",
-                                fg="red",
-                            )
-                            move_files_to_quarantine(matched_paths, files_root)
-                            total_quarantined += len(matched_paths)
+                    except Exception as e:
+                        click.secho(
+                            f"❌ FileSet {uid}/{timestamp_str} DB load "
+                            f"failed: {type(e).__name__}: {e}. "
+                            f"Moving to quarantine.",
+                            fg="red",
+                        )
+                        move_files_to_quarantine(matched_paths, files_root)
+                        total_quarantined += len(matched_paths)
+                        db_load_failed = True
+
+                    if db_load_failed:
+                        continue
+
+                    # Phase B — file move. The DB transaction has already
+                    # committed; if the move fails (disk full, permission,
+                    # etc.) we must NOT quarantine, because the data is
+                    # already loaded. Leave the files in process/ and warn:
+                    # the next run's recovery + bulk-move will surface them
+                    # again, and the upserts will be idempotent no-ops.
+                    try:
+                        move_files_to_storage(matched_paths, files_root)
+                        total_processed += len(matched_paths)
+                    except OSError as e:
+                        click.secho(
+                            f"⚠️  FileSet {uid}/{timestamp_str}: DB load "
+                            f"succeeded but move-to-storage failed: "
+                            f"{type(e).__name__}: {e}. Files remain in "
+                            f"process/; the next run will recover and "
+                            f"re-upsert (no-op).",
+                            fg="yellow",
+                        )
 
                 click.echo()
                 click.secho(
@@ -419,6 +446,19 @@ def extract(
             click.echo()
 
             _print_extraction_failures(result.get("failures", []))
+
+            failed_accounts = result.get("failed_accounts", [])
+            if failed_accounts:
+                click.secho(
+                    f"❌ Account-level extraction failures "
+                    f"({len(failed_accounts)}): "
+                    f"{', '.join(failed_accounts)}. "
+                    f"These accounts were skipped entirely; check the "
+                    f"per-account logs above for details.",
+                    fg="red",
+                    bold=True,
+                )
+                click.echo()
 
             click.echo("File lifecycle this run:")
             click.echo(f"   • Loaded into DB: {format_count(total_processed)}")

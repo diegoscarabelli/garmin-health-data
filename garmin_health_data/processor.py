@@ -2786,7 +2786,8 @@ class GarminProcessor(Processor):
             if deduped_count > 0:
                 click.secho(
                     f"⚠️  Coalesced {deduped_count} duplicate time-series "
-                    f"row(s) (same timestamp + metric name).",
+                    f"row(s) for activity_id={activity_id} from "
+                    f"{file_path.name} (same timestamp + metric name).",
                     fg="yellow",
                 )
             ts_metrics = list(ts_metrics_by_key.values())

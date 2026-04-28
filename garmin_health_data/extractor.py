@@ -99,8 +99,12 @@ class ExtractionFailure:
     A single extraction failure recorded by the extractor for end-of-run reporting.
 
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
-    :ivar date: ISO date string for per-date failures, or ``""`` when the
-        failure is not date-scoped (per-data-type or per-activity contexts).
+    :ivar date: Date context for the failure. Most commonly an ISO date
+        string (``"YYYY-MM-DD"``) for per-date failures, but may also be a
+        date range string like ``"<start>..<end>"`` (e.g. for
+        ``ACTIVITIES_LIST`` failures that span the whole run window) or
+        ``""`` when no date context applies (per-data-type or per-activity
+        failures).
     :ivar activity_id: Activity ID as a string for per-activity failures, or
         ``""`` otherwise.
     :ivar error: Human-readable error description (typically
