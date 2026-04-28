@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-04-28
+
+### Fixed
+
+- **Per-account partial failures dropped on account-level crash** in the multi-account `extract()` loop. `all_failures.extend(extractor.failures)` lived inside the `try` block on the success path only, so any per-date / per-data-type / per-activity failures captured BEFORE an account-level crash (e.g. an exception in `extract_fit_activities` after `extract_garmin_data` already recorded several per-day failures) were silently lost from the end-of-run summary. The merge moves to a `finally:` block so partial failures are always preserved, regardless of whether the account also crashed. Mirrors the same fix already in place in the openetl Garmin pipeline. New regression test (`test_partial_failures_preserved_when_account_crashes`) guards against the regression.
+
 ## [2.7.1] - 2026-04-28
 
 ### Fixed
@@ -298,7 +304,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...HEAD
+[2.7.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.1...v2.7.0
 [2.6.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.0...v2.6.1
