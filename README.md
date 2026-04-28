@@ -3,13 +3,13 @@
 [![CI](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Download your complete Garmin Connect health and activity data as local files, then process them into a SQLite database for analysis. Ships a self-contained Garmin Connect client (`garmin_health_data/garmin_client/`) that handles SSO authentication and API access. The well-structured and documented schema makes the database straightforward to analyze, and particularly effective as a data source for AI agents.
+A single CLI command downloads your complete Garmin Connect health and activity data as local files and loads them into a SQLite database for analysis — extract and process in one pass, or split the two stages with `--extract-only` / `--process-only` for backup-only or replay workflows. Ships a self-contained Garmin Connect client (`garmin_health_data/garmin_client/`) that handles SSO authentication and API access. The well-structured and documented schema makes the database straightforward to analyze, and particularly effective as a data source for AI agents.
 
 **Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure.
 
 ## Features
 
-- 🏥 **Comprehensive data**: sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics — plus FIT activity files with detailed time-series, laps, and splits — downloaded as local files, then processed into a single SQLite database.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, no third-party dependency for API access.
