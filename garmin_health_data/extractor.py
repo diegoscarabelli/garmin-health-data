@@ -988,6 +988,7 @@ def extract(
     failed_accounts = []
 
     for user_id, token_dir in discovered:
+        extractor: Optional[GarminExtractor] = None
         try:
             click.echo()
             click.echo(
@@ -1015,7 +1016,6 @@ def extract(
 
             all_garmin_files.extend(garmin_files)
             all_activity_files.extend(activity_files)
-            all_failures.extend(extractor.failures)
 
         except Exception:
             logger.exception(
@@ -1026,6 +1026,16 @@ def extract(
                 fg="red",
             )
             failed_accounts.append(user_id)
+        finally:
+            # Always merge per-account ExtractionFailures so granular per-date /
+            # per-data-type / per-activity failures recorded BEFORE an
+            # account-level crash still appear in the end-of-run summary.
+            # Without this, a partial run that captured 5 per-day failures and
+            # then crashed in extract_fit_activities would lose those 5 from
+            # the summary. `extractor` is None if the constructor itself
+            # raised, in which case there's nothing to merge.
+            if extractor is not None:
+                all_failures.extend(extractor.failures)
 
     # Check if any data was extracted.
     if not all_garmin_files and not all_activity_files:

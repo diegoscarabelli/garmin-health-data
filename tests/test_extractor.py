@@ -477,6 +477,56 @@ class TestExtractMultiAccount:
         # Both accounts failed; both should be in failed_accounts.
         assert len(result["failed_accounts"]) > 0
 
+    @patch("garmin_health_data.auth.discover_accounts")
+    @patch("garmin_health_data.extractor.GarminExtractor")
+    def test_partial_failures_preserved_when_account_crashes(
+        self, mock_extractor_class, mock_discover
+    ):
+        """
+        Per-date / per-data-type / per-activity failures recorded BEFORE an account-
+        level crash must still appear in the merged ``failures`` list.
+
+        Without the ``finally:`` merge, those granular failures would be
+        dropped when the account also raises a fatal exception, so the
+        end-of-run summary would only show "account failed" without the
+        per-day detail captured before the crash.
+        """
+
+        mock_discover.return_value = [("11111111", Path("/tokens/11111111"))]
+
+        from garmin_health_data.extractor import ExtractionFailure
+
+        mock_extractor = MagicMock()
+        mock_extractor.failures = [
+            ExtractionFailure(
+                data_type="SLEEP",
+                date="2025-01-01",
+                activity_id="",
+                error="GarminConnectionError: 503",
+            ),
+            ExtractionFailure(
+                data_type="SLEEP",
+                date="2025-01-02",
+                activity_id="",
+                error="GarminConnectionError: 503",
+            ),
+        ]
+        # extract_garmin_data succeeds (returns nothing) but
+        # extract_fit_activities raises after partial failures were recorded.
+        mock_extractor.extract_garmin_data.return_value = []
+        mock_extractor.extract_fit_activities.side_effect = RuntimeError(
+            "FIT download crashed mid-account"
+        )
+        mock_extractor_class.return_value = mock_extractor
+
+        result = extract(Path("/tmp/test"), "2025-01-01", "2025-01-03")
+
+        # Account-level crash recorded.
+        assert "11111111" in result["failed_accounts"]
+        # Pre-crash granular failures preserved (the bug fix).
+        assert len(result["failures"]) == 2
+        assert {f.date for f in result["failures"]} == {"2025-01-01", "2025-01-02"}
+
 
 def _make_zip(inner_filename: str, content: bytes) -> bytes:
     """
