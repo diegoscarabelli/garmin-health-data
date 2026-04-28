@@ -9,7 +9,7 @@ Download your complete Garmin Connect health and activity data as local files, t
 
 ## Features
 
-- 🏥 **Comprehensive data**: sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics — plus FIT activity files with detailed time-series, laps, and splits — into a single local SQLite database.
+- 🏥 **Comprehensive data**: sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics — plus FIT activity files with detailed time-series, laps, and splits — downloaded as local files, then processed into a single SQLite database.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, no third-party dependency for API access.
