@@ -143,7 +143,6 @@ def _random_browser_headers() -> Dict[str, str]:
 
     :return: Dictionary of browser-style HTTP headers.
     """
-
     if HAS_UA_GEN:
         ua = _generate_ua()
         return dict(ua.headers.get())
@@ -159,7 +158,6 @@ def _build_basic_auth(client_id: str) -> str:
     :param client_id: DI OAuth2 client identifier.
     :return: Basic auth header value (including the ``Basic `` prefix).
     """
-
     return "Basic " + base64.b64encode(f"{client_id}:".encode()).decode()
 
 
@@ -170,7 +168,6 @@ def _native_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     :param extra: Optional extra headers to merge on top of the native defaults.
     :return: Dictionary of HTTP headers.
     """
-
     headers: Dict[str, str] = {
         "User-Agent": NATIVE_API_USER_AGENT,
         "X-Garmin-User-Agent": NATIVE_X_GARMIN_USER_AGENT,

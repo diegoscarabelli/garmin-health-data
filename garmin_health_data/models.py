@@ -85,9 +85,9 @@ class UserProfile(Base, InsertBase):
     """
     User fitness profile data from Garmin Connect.
 
-    Contains physical characteristics and fitness metrics. The latest column
-    indicates the most recent profile record for each user. Multiple records
-    can exist per `user_id`, but only one can have `latest`=True.
+    Contains physical characteristics and fitness metrics. The latest column indicates
+    the most recent profile record for each user. Multiple records can exist per
+    `user_id`, but only one can have `latest`=True.
     """
 
     __tablename__ = "user_profile"

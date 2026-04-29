@@ -28,7 +28,6 @@ def test_setup_creates_all_four_dirs(tmp_path):
     """
     All four lifecycle directories are created under the base dir.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     for name in LIFECYCLE_DIRS:
@@ -39,7 +38,6 @@ def test_setup_is_idempotent(tmp_path):
     """
     Calling setup twice is a no-op the second time.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     (base / "ingest" / "marker.txt").write_text("keep me")
@@ -51,7 +49,6 @@ def test_recover_stale_process_moves_files_back_to_ingest(tmp_path):
     """
     Files left in process/ from a crashed run are moved back to ingest/.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     stale = base / "process" / "stale.json"
@@ -68,7 +65,6 @@ def test_recover_stale_process_noop_when_empty(tmp_path):
     """
     Empty process/ recovery is a no-op.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     assert recover_stale_process(base) == 0
@@ -78,7 +74,6 @@ def test_move_ingest_to_process_moves_all_files(tmp_path):
     """
     Bulk move from ingest/ to process/ relocates every file.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     (base / "ingest" / "a.json").write_text("a")
@@ -95,7 +90,6 @@ def test_move_files_to_storage_relocates_each_file(tmp_path):
     """
     A FileSet's files move from process/ to storage/.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     p1 = base / "process" / "x.json"
@@ -116,7 +110,6 @@ def test_move_files_to_quarantine_relocates_each_file(tmp_path):
     """
     A failed FileSet's files move from process/ to quarantine/.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     p1 = base / "process" / "bad.json"
@@ -133,7 +126,6 @@ def test_move_overwrites_existing_destination(tmp_path):
     """
     Moving a file to a destination that already exists overwrites cleanly.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     src = base / "process" / "dup.json"
@@ -154,7 +146,6 @@ def test_recover_stale_process_overwrites_ingest_file(tmp_path):
     crashed-in-process copy is preferred because it was the most recently extracted
     version, and re-extraction is idempotent anyway.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     (base / "process" / "dup.json").write_text("from-crashed-run")
@@ -175,7 +166,6 @@ def test_move_ingest_to_process_overwrites_process_file(tmp_path):
     already had a same-named copy in process/ from a different timeline. The bulk move
     favours the ingest/ version (most recent).
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     (base / "ingest" / "dup.json").write_text("from-ingest")
@@ -193,7 +183,6 @@ def test_acquire_lock_succeeds_when_unheld(tmp_path):
     """
     First lock acquisition succeeds and creates the .lock file.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     with acquire_lock(base):
@@ -205,7 +194,6 @@ def test_acquire_lock_raises_when_held_by_another_process(tmp_path):
     """
     A second concurrent acquisition raises LockHeldError.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     with acquire_lock(base):
@@ -219,7 +207,6 @@ def test_acquire_lock_releases_after_context_exit(tmp_path):
     """
     Lock is released when context exits, allowing re-acquisition.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     with acquire_lock(base):
@@ -233,7 +220,6 @@ def test_acquire_lock_releases_on_exception(tmp_path):
     """
     Lock is released even if the with-block raises.
     """
-
     base = tmp_path / "garmin_files"
     setup_lifecycle_dirs(base)
     with pytest.raises(RuntimeError):

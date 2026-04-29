@@ -52,19 +52,18 @@ def _with_retries(fn: Callable, *args, **kwargs):
     errors.
 
     Retries only on the connection / DNS / timeout exception classes listed in
-    ``_TRANSIENT_API_EXCEPTIONS``. Other exceptions propagate immediately so
-    the caller's broader try/except (e.g. per-date isolation in
-    :meth:`GarminExtractor._extract_day_by_day`) can record the failure once
-    and move on.
+    ``_TRANSIENT_API_EXCEPTIONS``. Other exceptions propagate immediately so the
+    caller's broader try/except (e.g. per-date isolation in
+    :meth:`GarminExtractor._extract_day_by_day`) can record the failure once and move
+    on.
 
     :param fn: Callable to invoke.
     :param args: Positional arguments forwarded to ``fn``.
     :param kwargs: Keyword arguments forwarded to ``fn``.
     :return: Whatever ``fn`` returns on success.
-    :raises Exception: The last transient exception if all retries are
-        exhausted, or any non-transient exception immediately.
+    :raises Exception: The last transient exception if all retries are exhausted, or any
+        non-transient exception immediately.
     """
-
     total_attempts = 1 + len(_RETRY_BACKOFFS)
     last_exc: Optional[BaseException] = None
     for attempt in range(total_attempts):
@@ -99,16 +98,15 @@ class ExtractionFailure:
     A single extraction failure recorded by the extractor for end-of-run reporting.
 
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
-    :ivar date: Date context for the failure. Most commonly an ISO date
-        string (``"YYYY-MM-DD"``) for per-date failures, but may also be a
-        date range string like ``"<start>..<end>"`` (e.g. for
-        ``ACTIVITIES_LIST`` failures that span the whole run window) or
-        ``""`` when no date context applies (per-data-type or per-activity
-        failures).
-    :ivar activity_id: Activity ID as a string for per-activity failures, or
-        ``""`` otherwise.
-    :ivar error: Human-readable error description (typically
-        ``"<ExceptionType>: <message>"``).
+    :ivar date: Date context for the failure. Most commonly an ISO date string (``"YYYY-
+        MM-DD"``) for per-date failures, but may also be a date range string like
+        ``"<start>..<end>"`` (e.g. for ``ACTIVITIES_LIST`` failures that span the whole
+        run window) or ``""`` when no date context applies (per-data-type or per-
+        activity failures).
+    :ivar activity_id: Activity ID as a string for per-activity failures, or ``""``
+        otherwise.
+    :ivar error: Human-readable error description (typically ``"<ExceptionType>:
+        <message>"``).
     """
 
     data_type: str
@@ -141,7 +139,6 @@ def _detect_format_from_magic(content: bytes) -> Optional[str]:
     :return: Lowercase file extension (``'fit'``, ``'tcx'``, ``'gpx'``,
         ``'kml'``), or ``None`` if the format cannot be identified.
     """
-
     # FIT: ANT+ FIT protocol magic bytes at offset 8–11.
     if len(content) >= 12 and content[8:12] == b".FIT":
         return "fit"
@@ -192,7 +189,6 @@ class GarminExtractor:
         :param data_types: Optional list of data type names to extract (e.g., ['SLEEP',
             'HRV']). If None, extracts all available data types.
         """
-
         self.start_date = start_date
         self.end_date = end_date
         self.ingest_dir = ingest_dir
@@ -234,7 +230,6 @@ class GarminExtractor:
         :raises RuntimeError: If tokens are missing, expired, or invalid. Run
             ``garmin auth`` to resolve authentication issues.
         """
-
         token_store_path = Path(token_store_dir).expanduser()
         click.echo("Authenticating with Garmin Connect using saved tokens.")
 
@@ -275,7 +270,6 @@ class GarminExtractor:
         :return: List of GarminDataType objects to extract.
         :raises ValueError: If any requested data type names are not found in registry.
         """
-
         if data_types is None:
             return GARMIN_DATA_REGISTRY.all_data_types
 
@@ -317,7 +311,6 @@ class GarminExtractor:
 
         :return: List of saved JSON file paths.
         """
-
         # Get the data types to extract (all or filtered subset).
         data_types_to_extract = self._get_data_types_to_extract(self.data_types)
 
@@ -377,17 +370,15 @@ class GarminExtractor:
         """
         Extract a Garmin data type one day at a time with per-date error isolation.
 
-        Handles both DAILY and RANGE API time parameter patterns. A failure on
-        one date is logged and recorded in :attr:`failures`; extraction
-        continues with the next date so transient API hiccups never abort the
-        full date range.
+        Handles both DAILY and RANGE API time parameter patterns. A failure on one date
+        is logged and recorded in :attr:`failures`; extraction continues with the next
+        date so transient API hiccups never abort the full date range.
 
         :param data_type: GarminDataType defining the extraction parameters.
         :param start_date: Start date for data extraction (inclusive).
         :param end_date: End date for data extraction (inclusive).
         :return: List of saved file paths.
         """
-
         saved_files = []
         current_date = start_date
 
@@ -455,7 +446,6 @@ class GarminExtractor:
         :param end_date: End date for data extraction (inclusive).
         :return: List of saved file paths.
         """
-
         # Special case: ACTIVITY and EXERCISE_SETS use different extraction logic.
         if data_type.name in ("ACTIVITY", "EXERCISE_SETS"):
             click.echo(
@@ -512,7 +502,6 @@ class GarminExtractor:
         :param file_date: Date for timestamp generation used in filename.
         :return: List of saved file paths.
         """
-
         # Create midday timestamp for consistent grouping.
         midday_dt = datetime.combine(file_date, datetime.min.time()).replace(
             hour=12, minute=0, second=0
@@ -552,7 +541,6 @@ class GarminExtractor:
         :return: Tuple of ``(file_extension, content_bytes)``, or ``None``
             if the archive is empty.
         """
-
         inner_name = ""
 
         try:
@@ -618,20 +606,19 @@ class GarminExtractor:
         Read all saved ACTIVITIES_LIST JSON files from ``ingest_dir`` and merge them
         into a single deduplicated activities list.
 
-        The registry-driven extract loop calls ``get_activities_by_date`` once
-        per day inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day
-        window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file
-        per day. Reading only the newest file would silently skip activities
-        from earlier days; instead, parse every matching file and merge by
-        ``activityId`` (last value wins for any duplicate).
+        The registry-driven extract loop calls ``get_activities_by_date`` once per day
+        inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day window writes one
+        ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file per day. Reading only the
+        newest file would silently skip activities from earlier days; instead, parse
+        every matching file and merge by ``activityId`` (last value wins for any
+        duplicate).
 
-        Falls back to ``None`` (caller hits the live API) on any read or
-        parse error so a single corrupt file doesn't prevent extraction.
+        Falls back to ``None`` (caller hits the live API) on any read or parse error so
+        a single corrupt file doesn't prevent extraction.
 
-        :return: Merged + deduplicated activities list, or ``None`` if no
-            files exist or any file cannot be parsed.
+        :return: Merged + deduplicated activities list, or ``None`` if no files exist or
+            any file cannot be parsed.
         """
-
         pattern = f"{self.user_id}_ACTIVITIES_LIST_*.json"
         matches = sorted(self.ingest_dir.glob(pattern))
         if not matches:
@@ -684,7 +671,6 @@ class GarminExtractor:
 
         :return: List of saved activity file paths.
         """
-
         click.echo(
             f"Fetching activities from Garmin Connect "
             f"(start: {self.start_date}, end: {self.end_date} inclusive)..."
@@ -764,7 +750,7 @@ class GarminExtractor:
                 # errors (parse failures, transient SDK bugs) on one activity
                 # don't abort the loop. Record the failure for the summary.
                 click.secho(
-                    f"⚠️  Skipping activity {activity_id}: " f"{type(e).__name__}: {e}.",
+                    f"⚠️  Skipping activity {activity_id}: {type(e).__name__}: {e}.",
                     fg="yellow",
                 )
                 self.failures.append(
@@ -835,7 +821,6 @@ class GarminExtractor:
         :param timestamp: ISO 8601 timestamp for consistent filename batching.
         :return: Path to saved JSON file, or None if no data.
         """
-
         try:
             data = _with_retries(
                 self.garmin_client.get_activity_exercise_sets, activity_id
@@ -850,11 +835,11 @@ class GarminExtractor:
 
         # Skip if no exercise sets data.
         if not data or not data.get("exerciseSets"):
-            click.echo(f"No exercise sets data for activity " f"{activity_id}.")
+            click.echo(f"No exercise sets data for activity {activity_id}.")
             return None
 
         filename = (
-            f"{self.user_id}_EXERCISE_SETS_{activity_id}" f"_{timestamp}.json"
+            f"{self.user_id}_EXERCISE_SETS_{activity_id}_{timestamp}.json"
         ).replace(":", "-")
         filepath = self.ingest_dir / filename
 
@@ -901,7 +886,6 @@ def extract(
     :raises ValueError: If any requested data type names are not found in registry, or
         if accounts filter is not a list.
     """
-
     import logging
 
     logger = logging.getLogger(__name__)
@@ -1097,7 +1081,6 @@ def cli_extract(
     :param data_types: Optional list of data type names to extract.
     :param accounts: Optional list of user_id strings to filter accounts.
     """
-
     start_pendulum = pendulum.parse(start_date, tz="UTC")
     end_pendulum = pendulum.parse(end_date, tz="UTC")
     ingest_path = Path(ingest_dir)
