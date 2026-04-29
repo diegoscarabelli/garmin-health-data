@@ -1,5 +1,6 @@
 [![PyPI version](https://img.shields.io/pypi/v/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
 [![Python versions](https://img.shields.io/pypi/pyversions/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
+[![Downloads](https://img.shields.io/pepy/dt/garmin-health-data.svg)](https://pepy.tech/project/garmin-health-data)
 [![CI](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
