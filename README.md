@@ -1,8 +1,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
 [![Python versions](https://img.shields.io/pypi/pyversions/garmin-health-data.svg)](https://pypi.org/project/garmin-health-data/)
-[![Downloads](https://img.shields.io/pepy/dt/garmin-health-data.svg)](https://pepy.tech/project/garmin-health-data)
 [![CI](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/diegoscarabelli/garmin-health-data/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Downloads](https://img.shields.io/pepy/dt/garmin-health-data.svg?color=orange)](https://pepy.tech/project/garmin-health-data)
 
 A single CLI command downloads your complete Garmin Connect health and activity data as local files and loads them into a SQLite database for analysis — extract and process in one pass, or split the two stages with `--extract-only` / `--process-only` for backup-only or replay workflows. Ships a self-contained Garmin Connect client (`garmin_health_data/garmin_client/`) that handles SSO authentication and API access. The well-structured and documented schema makes the database straightforward to analyze, and particularly effective as a data source for AI agents.
 
