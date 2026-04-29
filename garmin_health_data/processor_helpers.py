@@ -43,8 +43,9 @@ class Processor:
 
     def process_file_set(self, file_set: FileSet, session: Session):
         """
-        Process a file set. Override in subclasses.
+        Process a file set.
 
+        Override in subclasses.
         :param file_set: FileSet to process.
         :param session: SQLAlchemy session.
         """
@@ -61,11 +62,10 @@ def upsert_model_instances(
     """
     Bulk upsert SQLAlchemy ORM model instances into SQLite database tables.
 
-    This function uses SQLite's INSERT ... ON CONFLICT syntax to perform
-    efficient bulk upsert operations, matching the implementation pattern
-    used in OpenETL for PostgreSQL. Large batches are automatically split
-    into chunks so the total parameter count stays within SQLite's
-    SQLITE_MAX_VARIABLE_NUMBER limit.
+    This function uses SQLite's INSERT ... ON CONFLICT syntax to perform efficient bulk
+    upsert operations, matching the implementation pattern used in OpenETL for
+    PostgreSQL. Large batches are automatically split into chunks so the total parameter
+    count stays within SQLite's SQLITE_MAX_VARIABLE_NUMBER limit.
 
     :param session: SQLAlchemy session.
     :param model_instances: List of model instances to upsert.

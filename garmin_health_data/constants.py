@@ -64,7 +64,6 @@ class GarminDataRegistry:
         """
         Register all Garmin Connect data types.
         """
-
         data_types = [
             # Daily Data - Single date parameter: get_method(date_str)
             GarminDataType(
@@ -159,14 +158,14 @@ class GarminDataRegistry:
                 "get_activities_by_date",
                 APIMethodTimeParam.RANGE,
                 "/activitylist-service/activities/search/activities",
-                "Numerous aggregated metrics for user-recorded " "activities.",
+                "Numerous aggregated metrics for user-recorded activities.",
                 "📋",
             ),
             GarminDataType(
                 "EXERCISE_SETS",
                 "get_activity_exercise_sets",
                 APIMethodTimeParam.RANGE,
-                "/activity-service/activity/" "{activity_id}/exerciseSets",
+                "/activity-service/activity/{activity_id}/exerciseSets",
                 "Per-set granular strength training data with "
                 "ML-classified exercises, reps, weight, duration, "
                 "and set type.",
@@ -221,7 +220,6 @@ class GarminDataRegistry:
         :param data_type: GarminDataType to register.
         :raises ValueError: If a data type with the same name already exists.
         """
-
         if data_type.name in self._data_types_by_name:
             raise ValueError(f"Data type with name '{data_type.name}' already exists.")
 
@@ -238,7 +236,6 @@ class GarminDataRegistry:
         :param name: Name of the data type to retrieve.
         :return: GarminDataType if found, None otherwise.
         """
-
         return self._data_types_by_name.get(name)
 
     def get_by_time_param(
@@ -250,7 +247,6 @@ class GarminDataRegistry:
         :param api_method_time_param: API method time parameter.
         :return: List of GarminDataType data types for the specified time param.
         """
-
         return self._data_types_by_time_param[api_method_time_param].copy()
 
     @property
@@ -260,7 +256,6 @@ class GarminDataRegistry:
 
         :return: Copy of all registered data types.
         """
-
         return self._all_data_types.copy()
 
     @property
@@ -279,7 +274,6 @@ class GarminDataRegistry:
 
         :return: List of data types with RANGE time parameter.
         """
-
         return self.get_by_time_param(APIMethodTimeParam.RANGE)
 
     @property
@@ -289,7 +283,6 @@ class GarminDataRegistry:
 
         :return: List of data types with NO_DATE time parameter.
         """
-
         return self.get_by_time_param(APIMethodTimeParam.NO_DATE)
 
 
@@ -309,7 +302,6 @@ def _create_garmin_file_types() -> type:
 
     :return: Enum class with file type patterns for Garmin Connect data pipeline.
     """
-
     patterns = {}
 
     # Add patterns for each data type in registry.

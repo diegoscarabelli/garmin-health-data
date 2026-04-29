@@ -38,7 +38,6 @@ def dumps(client: "GarminClient") -> str:
     :raises GarminAuthenticationError: If any required token field is missing,
         indicating the client was not fully authenticated before dumping.
     """
-
     missing = [
         k
         for k, v in (
@@ -64,20 +63,19 @@ def dump(client: "GarminClient", path: Union[str, Path]) -> None:
     """
     Write a client's DI tokens to disk as ``garmin_tokens.json``.
 
-    Accepts either a directory (in which case ``garmin_tokens.json`` is appended)
-    or a ``.json`` file path. Creates parent directories as needed. The file mode
-    is forced to ``0o600`` on every write so the secret tokens are never readable
-    by other users, even if the file is freshly created (umask) or if a caller
-    forgets to chmod after the initial bootstrap.
+    Accepts either a directory (in which case ``garmin_tokens.json`` is appended) or a
+    ``.json`` file path. Creates parent directories as needed. The file mode is forced
+    to ``0o600`` on every write so the secret tokens are never readable by other users,
+    even if the file is freshly created (umask) or if a caller forgets to chmod after
+    the initial bootstrap.
 
-    Writes to a sibling temp file first, then atomically replaces the destination
-    via ``os.replace`` so an interrupted write never leaves a truncated token store.
+    Writes to a sibling temp file first, then atomically replaces the destination via
+    ``os.replace`` so an interrupted write never leaves a truncated token store.
 
     :param client: GarminClient with populated DI fields.
     :param path: Directory or ``.json`` file path.
     :raises GarminConnectionError: If the token store cannot be written.
     """
-
     p = Path(path).expanduser()
     if p.is_dir() or not p.name.endswith(".json"):
         p = p / "garmin_tokens.json"
@@ -138,7 +136,6 @@ def loads(client: "GarminClient", tokenstore: str) -> None:
     :raises GarminConnectionError: If the JSON is malformed.
     :raises GarminAuthenticationError: If the JSON parses but contains no token.
     """
-
     try:
         data = json.loads(tokenstore)
     except Exception as e:
@@ -168,16 +165,15 @@ def load(client: "GarminClient", path: Union[str, Path]) -> None:
     """
     Load DI tokens into a client from disk.
 
-    Accepts either a directory containing ``garmin_tokens.json`` or a direct
-    ``.json`` file path. Records the resolved path on the client so that
-    subsequent token refreshes can persist back to the same file.
+    Accepts either a directory containing ``garmin_tokens.json`` or a direct ``.json``
+    file path. Records the resolved path on the client so that subsequent token
+    refreshes can persist back to the same file.
 
     :param client: GarminClient to populate.
     :param path: Directory or ``.json`` file path.
-    :raises GarminConnectionError: If the file is missing or unreadable, or if
-        the JSON is malformed.
+    :raises GarminConnectionError: If the file is missing or unreadable, or if the JSON
+        is malformed.
     """
-
     try:
         p = Path(path).expanduser()
         if p.is_dir() or not p.name.endswith(".json"):

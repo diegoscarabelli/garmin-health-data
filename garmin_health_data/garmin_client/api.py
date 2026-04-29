@@ -57,8 +57,8 @@ class ActivityDownloadFormat(Enum):
     """
     Supported binary download formats for ``download_activity``.
 
-    The openetl pipeline only ever uses ``ORIGINAL`` (zipped FIT). The other
-    members exist for signature parity with upstream ``python-garminconnect``.
+    The openetl pipeline only ever uses ``ORIGINAL`` (zipped FIT). The other members
+    exist for signature parity with upstream ``python-garminconnect``.
     """
 
     ORIGINAL = auto()
@@ -78,7 +78,6 @@ def _validate_date_format(date_str: str, param_name: str = "date") -> str:
     :raises ValueError: If the input is not a string, has the wrong shape, or does not
         represent a real calendar date.
     """
-
     if not isinstance(date_str, str):
         raise ValueError(f"{param_name} must be a string")
 
@@ -108,10 +107,9 @@ def get_sleep_data(client: "GarminClient", cdate: str) -> Dict[str, Any]:
 
     :param client: GarminClient instance.
     :param cdate: Date in ``YYYY-MM-DD`` format.
-    :return: Sleep data dictionary including sleep stages, scores, HRV, and
-        breathing disruptions.
+    :return: Sleep data dictionary including sleep stages, scores, HRV, and breathing
+        disruptions.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_SLEEP_URL}/{client.display_name}"
     params = {"date": cdate, "nonSleepBufferMinutes": 60}
@@ -126,7 +124,6 @@ def get_stress_data(client: "GarminClient", cdate: str) -> Dict[str, Any]:
     :param cdate: Date in ``YYYY-MM-DD`` format.
     :return: Stress data dictionary with 3-minute interval time series.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_STRESS_URL}/{cdate}"
     return client._connectapi(url)
@@ -141,7 +138,6 @@ def get_respiration_data(client: "GarminClient", cdate: str) -> Dict[str, Any]:
     :return: Respiration dictionary with 2-minute interval and 1-hour aggregate
         readings.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_RESPIRATION_URL}/{cdate}"
     return client._connectapi(url)
@@ -155,7 +151,6 @@ def get_heart_rates(client: "GarminClient", cdate: str) -> Dict[str, Any]:
     :param cdate: Date in ``YYYY-MM-DD`` format.
     :return: Heart rate dictionary with 2-minute interval time series.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{HEART_RATES_DAILY_URL}/{client.display_name}"
     params = {"date": cdate}
@@ -170,7 +165,6 @@ def get_training_readiness(client: "GarminClient", cdate: str) -> List[Dict[str,
     :param cdate: Date in ``YYYY-MM-DD`` format.
     :return: List of training readiness score dictionaries for the day.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{TRAINING_READINESS_URL}/{cdate}"
     return client._connectapi(url)
@@ -182,10 +176,8 @@ def get_training_status(client: "GarminClient", cdate: str) -> Dict[str, Any]:
 
     :param client: GarminClient instance.
     :param cdate: Date in ``YYYY-MM-DD`` format.
-    :return: Training status dictionary including VO2 max, training load, and
-        ACWR.
+    :return: Training status dictionary including VO2 max, training load, and ACWR.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{TRAINING_STATUS_URL}/{cdate}"
     return client._connectapi(url)
@@ -195,15 +187,14 @@ def get_steps_data(client: "GarminClient", cdate: str) -> List[Dict[str, Any]]:
     """
     Fetch steps data for the given date.
 
-    Returns an empty list when the API returns ``None`` (e.g. for dates with no
-    sync history). This matches upstream ``python-garminconnect`` behavior so the
-    openetl pipeline's downstream filtering is unchanged.
+    Returns an empty list when the API returns ``None`` (e.g. for dates with no sync
+    history). This matches upstream ``python-garminconnect`` behavior so the openetl
+    pipeline's downstream filtering is unchanged.
 
     :param client: GarminClient instance.
     :param cdate: Date in ``YYYY-MM-DD`` format.
     :return: List of 15-minute steps interval dictionaries, or an empty list.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{USER_SUMMARY_CHART_URL}/{client.display_name}"
     params = {"date": cdate}
@@ -221,7 +212,6 @@ def get_floors(client: "GarminClient", cdate: str) -> Dict[str, Any]:
     :param cdate: Date in ``YYYY-MM-DD`` format.
     :return: Floors dictionary with 15-minute interval time series.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{FLOORS_CHART_DAILY_URL}/{cdate}"
     return client._connectapi(url)
@@ -236,7 +226,6 @@ def get_intensity_minutes_data(client: "GarminClient", cdate: str) -> Dict[str, 
     :return: Intensity minutes dictionary with weekly and daily moderate/vigorous
         breakdown.
     """
-
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_INTENSITY_MINUTES_URL}/{cdate}"
     return client._connectapi(url)
@@ -264,13 +253,12 @@ def get_activities_by_date(
     :param startdate: Start date in ``YYYY-MM-DD`` format.
     :param enddate: Optional end date in ``YYYY-MM-DD`` format.
     :param activitytype: Optional activity type filter (``cycling``, ``running``,
-        ``swimming``, ``multi_sport``, ``fitness_equipment``, ``hiking``,
-        ``walking``, ``other``).
+        ``swimming``, ``multi_sport``, ``fitness_equipment``, ``hiking``, ``walking``,
+        ``other``).
     :param sortorder: Optional sort direction (``asc`` to override the default
         descending order).
     :return: List of activity dictionaries.
     """
-
     activities: List[Dict[str, Any]] = []
     start = 0
     limit = 20
@@ -311,11 +299,10 @@ def get_activity_exercise_sets(
 
     :param client: GarminClient instance.
     :param activity_id: Garmin activity ID (numeric or string-encoded numeric).
-    :return: Exercise sets dictionary with ML-classified exercises, reps,
-        weights, and set types.
+    :return: Exercise sets dictionary with ML-classified exercises, reps, weights, and
+        set types.
     :raises ValueError: If ``activity_id`` is not a positive integer.
     """
-
     aid = int(activity_id)
     if aid <= 0:
         raise ValueError(f"activity_id must be a positive integer, got {activity_id}")
@@ -336,7 +323,6 @@ def get_personal_record(client: "GarminClient") -> Dict[str, Any]:
     :return: Personal records dictionary covering steps, running, cycling, swimming, and
         strength.
     """
-
     url = f"{PERSONAL_RECORD_URL}/{client.display_name}"
     return client._connectapi(url)
 
@@ -365,7 +351,6 @@ def get_race_predictions(
     :raises ValueError: For invalid ``_type``, partial parameter sets, or ranges
         longer than one year.
     """
-
     valid = {"daily", "monthly", None}
     if _type not in valid:
         raise ValueError(f"_type must be one of {valid!r}")
@@ -401,7 +386,6 @@ def get_user_profile(client: "GarminClient") -> Dict[str, Any]:
     :return: User settings dictionary including ``id``, gender, weight, height,
         birthday, and threshold metrics.
     """
-
     return client._connectapi(USER_SETTINGS_URL)
 
 
@@ -418,9 +402,8 @@ def download_activity(
     """
     Download an activity file in the requested binary format.
 
-    The ``ORIGINAL`` format returns a zipped FIT file (the openetl pipeline
-    extracts the FIT inside). The other formats return their respective
-    serialized representations.
+    The ``ORIGINAL`` format returns a zipped FIT file (the openetl pipeline extracts the
+    FIT inside). The other formats return their respective serialized representations.
 
     :param client: GarminClient instance.
     :param activity_id: Garmin activity ID.
@@ -428,7 +411,6 @@ def download_activity(
     :return: Raw bytes of the downloaded file.
     :raises ValueError: If ``dl_fmt`` is not a supported format.
     """
-
     aid = str(activity_id)
     urls = {
         ActivityDownloadFormat.ORIGINAL: f"{FIT_DOWNLOAD_URL}/{aid}",

@@ -60,7 +60,6 @@ def cli():
 
     Extract your complete Garmin Connect health data to a local SQLite database.
     """
-
     # Show INFO-level messages from our own code (e.g. login delay warnings)
     # without exposing noisy INFO output from third-party libraries.
     # Guard against duplicate handlers when the CLI entrypoint is invoked
@@ -95,7 +94,6 @@ def auth(email: Optional[str], password: Optional[str]):
     """
     Authenticate with Garmin Connect and save tokens.
     """
-
     if email and password:
         # Use provided credentials.
         click.echo("Using provided credentials...")
@@ -168,7 +166,6 @@ def extract(
     Files are preserved on disk by default for offline backup and
     post-mortem inspection.
     """
-
     if extract_only and process_only:
         click.secho(
             "❌ --extract-only and --process-only are mutually exclusive.",
@@ -524,14 +521,13 @@ def _group_files_by_user_and_timestamp(
     Group files into per-(user_id, timestamp) FileSets.
 
     Each Garmin extracted file is named ``<user_id>_<DATA_TYPE>_<timestamp>.<ext>``.
-    Files sharing the same ``(user_id, timestamp)`` represent one day's worth
-    of data for one account and are processed together as a FileSet.
+    Files sharing the same ``(user_id, timestamp)`` represent one day's worth of data
+    for one account and are processed together as a FileSet.
 
     :param file_paths: Iterable of file Paths in process/.
-    :return: OrderedDict mapping ``(user_id, timestamp_str)`` to a list of
-        Paths, sorted by key for deterministic processing order.
+    :return: OrderedDict mapping ``(user_id, timestamp_str)`` to a list of Paths, sorted
+        by key for deterministic processing order.
     """
-
     files_by_key: "OrderedDict[tuple, list]" = OrderedDict()
     for file_path in file_paths:
         parts = file_path.name.split("_", maxsplit=1)
@@ -552,13 +548,12 @@ def _classify_files_by_type(file_paths: list) -> dict:
     """
     Map files to their ``GARMIN_FILE_TYPES`` enum value via filename pattern.
 
-    Callers should have already filtered out backup-only (no-pattern-match)
-    files via :func:`_partition_processable_and_backup` before calling this.
+    Callers should have already filtered out backup-only (no-pattern-match) files via
+    :func:`_partition_processable_and_backup` before calling this.
 
     :param file_paths: Iterable of file Paths within a single FileSet.
     :return: Dict mapping ``GarminFileTypes`` enum to a list of matching Paths.
     """
-
     files_by_type: dict = {}
     for file_path in file_paths:
         for file_type_enum in GARMIN_FILE_TYPES:
@@ -572,16 +567,15 @@ def _partition_processable_and_backup(file_paths: list) -> tuple:
     """
     Split files into (processable, backup-only) lists.
 
-    Processable files match at least one ``GARMIN_FILE_TYPES`` pattern.
-    Backup-only files (e.g. TCX / GPX / KML activity formats we have no
-    processor for, or any other unrecognised filename) are real Garmin data
-    the user wanted preserved on disk; the caller is expected to move them
-    straight to ``storage/`` rather than feed them to the processor.
+    Processable files match at least one ``GARMIN_FILE_TYPES`` pattern. Backup-only
+    files (e.g. TCX / GPX / KML activity formats we have no processor for, or any other
+    unrecognised filename) are real Garmin data the user wanted preserved on disk; the
+    caller is expected to move them straight to ``storage/`` rather than feed them to
+    the processor.
 
     :param file_paths: Iterable of file Paths.
-    :return: ``(processable, backup_only)`` tuple of lists.
+    :return:``(processable, backup_only)`` tuple of lists.
     """
-
     processable: list = []
     backup_only: list = []
     for path in file_paths:
@@ -601,7 +595,6 @@ def _print_extraction_failures(failures: list) -> None:
 
     :param failures: List of ExtractionFailure dataclass instances.
     """
-
     if not failures:
         return
     click.echo()
@@ -633,7 +626,6 @@ def info(db_path: str):
     """
     Show database statistics and information.
     """
-
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
         click.echo("   Run 'garmin extract' to create a new database")
@@ -693,7 +685,6 @@ def verify(db_path: str):
     """
     Verify database integrity and structure.
     """
-
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
         return

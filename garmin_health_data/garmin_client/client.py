@@ -115,7 +115,6 @@ class GarminClient:
         :param kwargs: Optional ``pool_connections`` and ``pool_maxsize`` for the
             requests adapter when curl_cffi is unavailable.
         """
-
         self.domain = domain
         self._sso = f"https://sso.{domain}"
         self._connect = f"https://connect.{domain}"
@@ -151,15 +150,13 @@ class GarminClient:
         """
         Load tokens from disk, populate profile state, and return a ready client.
 
-        :param token_dir: Directory containing ``garmin_tokens.json``, or a
-            direct path to that file.
+        :param token_dir: Directory containing ``garmin_tokens.json``, or a direct path
+            to that file.
         :return: Authenticated GarminClient ready to make API calls.
-        :raises GarminConnectionError: If the token file is missing or
-            unreadable.
-        :raises GarminAuthenticationError: If the token file contains no token,
-            or if the profile fetch fails.
+        :raises GarminConnectionError: If the token file is missing or unreadable.
+        :raises GarminAuthenticationError: If the token file contains no token, or if
+            the profile fetch fails.
         """
-
         client = cls()
         client.load(token_dir)
         client._load_profile()
@@ -174,7 +171,6 @@ class GarminClient:
         """
         :return: True if a DI access token is currently held.
         """
-
         return bool(self.di_token)
 
     def get_api_headers(self) -> Dict[str, str]:
@@ -184,7 +180,6 @@ class GarminClient:
         :return: Dictionary including the Bearer token and native UA headers.
         :raises GarminAuthenticationError: If no token is held.
         """
-
         if not self.is_authenticated:
             raise GarminAuthenticationError("Not authenticated")
         return _native_headers(
@@ -238,7 +233,6 @@ class GarminClient:
         :raises GarminConnectionError: When all strategies fail with non-auth
             errors.
         """
-
         # Clear any leftover MFA state from a prior abandoned login attempt so
         # resume_login doesn't incorrectly route to a stale strategy.
         for attr in (
@@ -329,17 +323,16 @@ class GarminClient:
         """
         Complete an MFA challenge that was paused via ``return_on_mfa=True``.
 
-        Routes to the appropriate MFA completion function based on which login
-        strategy stashed its session state on the client.
+        Routes to the appropriate MFA completion function based on which login strategy
+        stashed its session state on the client.
 
-        :param _client_state: Opaque session token returned by ``login()`` (kept
-            for signature parity with the upstream library; resume routes via
-            attribute presence on the client instance, not via this argument).
+        :param _client_state: Opaque session token returned by ``login()`` (kept for
+            signature parity with the upstream library; resume routes via attribute
+            presence on the client instance, not via this argument).
         :param mfa_code: 6-digit MFA code.
-        :return: ``(None, None)`` on success.
+        :return:``(None, None)`` on success.
         :raises GarminAuthenticationError: On verification failure.
         """
-
         if hasattr(self, "_widget_session"):
             ticket = strategies.complete_mfa_widget(self, mfa_code)
             sso_embed = f"{self._sso}/sso/embed"
@@ -377,18 +370,16 @@ class GarminClient:
         """
         Consume a CAS service ticket by exchanging it for DI OAuth2 tokens.
 
-        Unlike the upstream library, this client does not fall back to
-        ``JWT_WEB`` cookie auth: DI Bearer tokens have worked exclusively for
-        months and the JWT_WEB path is dead code we don't want to maintain.
+        Unlike the upstream library, this client does not fall back to ``JWT_WEB``
+        cookie auth: DI Bearer tokens have worked exclusively for months and the JWT_WEB
+        path is dead code we don't want to maintain.
 
         :param ticket: CAS service ticket from the SSO login flow.
-        :param sess: Optional session that originated the ticket (kept for
-            interface parity; the DI token exchange uses its own HTTP client).
+        :param sess: Optional session that originated the ticket (kept for interface
+            parity; the DI token exchange uses its own HTTP client).
         :param service_url: SSO service URL the ticket was issued for.
-        :raises GarminAuthenticationError: If the DI exchange fails on all
-            client IDs.
+        :raises GarminAuthenticationError: If the DI exchange fails on all client IDs.
         """
-
         # sess is intentionally accepted but unused: the DI token exchange
         # speaks a different protocol (OAuth2 over diauth.garmin.com) and does
         # not consume CAS cookies from the SSO login session.
@@ -400,10 +391,9 @@ class GarminClient:
         """
         POST helper using curl_cffi if installed, plain requests otherwise.
 
-        Used by the DI token exchange and refresh, both of which post directly
-        to ``diauth.garmin.com`` (no SSO cookies required).
+        Used by the DI token exchange and refresh, both of which post directly to
+        ``diauth.garmin.com`` (no SSO cookies required).
         """
-
         if HAS_CFFI:
             return cffi_requests.post(url, impersonate="chrome", **kwargs)
         return requests.post(url, **kwargs)  # noqa: S113
@@ -428,7 +418,6 @@ class GarminClient:
         :raises GarminAuthenticationError: If any client ID returns a 4xx, or if all
             fail for non-transport reasons (malformed response, missing token).
         """
-
         svc_url = service_url or MOBILE_SSO_SERVICE_URL
 
         di_token = None
@@ -524,18 +513,16 @@ class GarminClient:
         """
         Refresh the DI access token using the stored refresh token.
 
-        Garmin rotates the refresh token on each use, so the response includes
-        a new refresh token that replaces the old one. The caller is responsible
-        for persisting the new pair to disk via :meth:`_refresh_session`.
+        Garmin rotates the refresh token on each use, so the response includes a new
+        refresh token that replaces the old one. The caller is responsible for
+        persisting the new pair to disk via :meth:`_refresh_session`.
 
-        :raises GarminAuthenticationError: If no refresh token is held, or the
-            server rejects it.
-        :raises GarminTooManyRequestsError: If the DI token endpoint returns
-            HTTP 429.
-        :raises GarminConnectionError: On transport errors (connection,
-            timeout, SSL) or non-JSON responses.
+        :raises GarminAuthenticationError: If no refresh token is held, or the server
+            rejects it.
+        :raises GarminTooManyRequestsError: If the DI token endpoint returns HTTP 429.
+        :raises GarminConnectionError: On transport errors (connection, timeout, SSL) or
+            non-JSON responses.
         """
-
         if not self.di_refresh_token or not self.di_client_id:
             raise GarminAuthenticationError("No DI refresh token available")
         try:
@@ -606,7 +593,6 @@ class GarminClient:
         :param token: JWT access token.
         :return: Client ID string, or None if the token cannot be parsed.
         """
-
         try:
             parts = token.split(".")
             if len(parts) < 2:
@@ -622,7 +608,6 @@ class GarminClient:
         """
         :return: True if the current access token expires within 15 minutes.
         """
-
         token = self.di_token
         if not token:
             return False
@@ -644,12 +629,10 @@ class GarminClient:
         """
         Refresh the DI access token and persist the new pair to disk.
 
-        Called automatically by :meth:`_request` when the token is near expiry
-        or when an API call returns 401. The persistence step is best-effort:
-        a failure to write the new tokens to disk does not block the in-memory
-        refresh from succeeding.
+        Called automatically by :meth:`_request` when the token is near expiry or when
+        an API call returns 401. The persistence step is best-effort: a failure to write
+        the new tokens to disk does not block the in-memory refresh from succeeding.
         """
-
         if not self.di_token:
             return
         try:
@@ -681,7 +664,6 @@ class GarminClient:
         :raises GarminAuthenticationError: If the profile response is missing
             ``displayName``.
         """
-
         profile = self._connectapi(SOCIAL_PROFILE_URL)
         if not profile or "displayName" not in profile:
             raise GarminAuthenticationError("Profile response missing displayName")
@@ -703,7 +685,6 @@ class GarminClient:
         :raises GarminConnectionError: If the response body is not valid JSON
             (e.g., a Cloudflare HTML edge page returned with a 200 status).
         """
-
         resp = self._request("GET", path, **kwargs)
         if resp.status_code == 204:
             return {}
@@ -725,7 +706,6 @@ class GarminClient:
         :param path: API path.
         :return: Raw response bytes.
         """
-
         headers = kwargs.pop("headers", {})
         headers["Accept"] = "*/*"
         return self._request("GET", path, headers=headers, **kwargs).content
@@ -754,7 +734,6 @@ class GarminClient:
             defaults to 15s.
         :return: The successful response object.
         """
-
         if self.is_authenticated and self._token_expires_soon():
             self._refresh_session()
 
@@ -829,7 +808,6 @@ class GarminClient:
 
     def dumps(self) -> str:
         """:return: JSON string of the current DI token state."""
-
         return tokens.dumps(self)
 
     def dump(self, path: Union[str, Path]) -> None:
@@ -838,7 +816,6 @@ class GarminClient:
 
         :param path: Directory or ``.json`` file path.
         """
-
         tokens.dump(self, path)
 
     def loads(self, tokenstore: str) -> None:
@@ -848,25 +825,22 @@ class GarminClient:
         :param tokenstore: JSON string with ``di_token``, ``di_refresh_token``,
             ``di_client_id``.
         """
-
         tokens.loads(self, tokenstore)
 
     def load(self, path: Union[str, Path]) -> None:
         """
         Replace current DI tokens with the ones loaded from disk.
 
-        Records the resolved path so that subsequent token refreshes persist
-        back to the same file.
+        Records the resolved path so that subsequent token refreshes persist back to the
+        same file.
 
         :param path: Directory or ``.json`` file path.
         """
-
         tokens.load(self, path)
 
     # ------------------------------------------------------------------
     # API method bindings (delegate to api module)
     # ------------------------------------------------------------------
-
     # Defined as bound methods (not lambdas) so they show up correctly in
     # introspection / autocomplete and so getattr-based dispatch in
     # extract.py keeps working.

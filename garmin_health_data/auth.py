@@ -151,7 +151,7 @@ def discover_accounts(
         return [("legacy", base_path)]
 
     raise RuntimeError(
-        f"No accounts found in {base_path}. " "Run 'garmin auth' to authenticate."
+        f"No accounts found in {base_path}. Run 'garmin auth' to authenticate."
     )
 
 

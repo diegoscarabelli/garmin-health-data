@@ -107,7 +107,6 @@ def widget_login_cffi(
     :raises GarminAuthenticationError: On invalid credentials or missing MFA prompt.
     :raises GarminConnectionError: On HTTP errors or unexpected page contents.
     """
-
     if not HAS_CFFI:
         raise GarminConnectionError("curl_cffi not installed; widget+cffi unavailable")
 
@@ -233,7 +232,6 @@ def complete_mfa_widget(client: Any, mfa_code: str) -> str:
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminConnectionError: On HTTP errors.
     """
-
     sess = client._widget_session
     r = client._widget_last_resp
 
@@ -288,18 +286,17 @@ def portal_web_login_cffi(
     """
     Log in via the portal web endpoint using curl_cffi TLS impersonation.
 
-    Tries five browser TLS fingerprints in order. Safari is less likely to be
-    blocked by Cloudflare than Chrome.
+    Tries five browser TLS fingerprints in order. Safari is less likely to be blocked by
+    Cloudflare than Chrome.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code (see widget flow).
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
     :raises GarminConnectionError: If all five impersonations fail.
     """
-
     if not HAS_CFFI:
         raise GarminConnectionError("curl_cffi not installed; portal+cffi unavailable")
 
@@ -359,19 +356,17 @@ def portal_web_login_requests(
     """
     Log in via the portal web endpoint using plain ``requests``.
 
-    Acts as a no-curl_cffi fallback for the portal flow. Browser-style headers
-    (random User-Agent + sec-ch-ua) are generated inside ``_portal_web_login``
-    and passed explicitly on each request, so no session-level headers are set
-    here.
+    Acts as a no-curl_cffi fallback for the portal flow. Browser-style headers (random
+    User-Agent + sec-ch-ua) are generated inside ``_portal_web_login`` and passed
+    explicitly on each request, so no session-level headers are set here.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
     """
-
     sess = requests.Session()
     return _portal_web_login(
         client,
@@ -394,11 +389,11 @@ def _portal_web_login(
     """
     Shared portal web login implementation used by the cffi and requests variants.
 
-    Hits ``/portal/api/login``, which is the same endpoint the Garmin Connect
-    React app uses. Cloudflare cannot block it without breaking the website
-    itself, but it does rate-limit consecutive GET+POST without intervening
-    delay. The 30-45s sleep between Step 1 and Step 2 mimics natural browser
-    behavior and consistently avoids the 429 block.
+    Hits ``/portal/api/login``, which is the same endpoint the Garmin Connect React app
+    uses. Cloudflare cannot block it without breaking the website itself, but it does
+    rate-limit consecutive GET+POST without intervening delay. The 30-45s sleep between
+    Step 1 and Step 2 mimics natural browser behavior and consistently avoids the 429
+    block.
 
     :param client: GarminClient instance.
     :param sess: Pre-built session (cffi or plain requests).
@@ -406,12 +401,11 @@ def _portal_web_login(
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On invalid credentials or missing MFA prompt.
     :raises GarminConnectionError: On HTTP errors or unexpected response shape.
     """
-
     signin_url = f"{client._sso}/portal/sso/en-US/sign-in"
 
     # Generate a consistent random browser identity for this login attempt.
@@ -538,21 +532,20 @@ def complete_mfa_portal_web(client: Any, mfa_code: str) -> None:
     """
     Complete MFA via the portal web flow.
 
-    Tries ``/portal/api/mfa/verifyCode`` first, then ``/mobile/api/mfa/verifyCode``
-    as a fallback. Both share the SSO session cookies, but Garmin occasionally
-    routes one or the other through a different rate limit bucket, so trying
-    both gives the best success rate.
+    Tries ``/portal/api/mfa/verifyCode`` first, then ``/mobile/api/mfa/verifyCode`` as a
+    fallback. Both share the SSO session cookies, but Garmin occasionally routes one or
+    the other through a different rate limit bucket, so trying both gives the best
+    success rate.
 
     :param client: GarminClient instance with portal web MFA state.
     :param mfa_code: 6-digit MFA code.
-    :raises GarminTooManyRequestsError: If every attempted endpoint returned HTTP 429
-        or a 429 in the JSON body (pure rate-limit aggregate).
+    :raises GarminTooManyRequestsError: If every attempted endpoint returned HTTP 429 or
+        a 429 in the JSON body (pure rate-limit aggregate).
     :raises GarminConnectionError: If every attempted endpoint failed with a
         transport/non-JSON error (pure infrastructure aggregate).
     :raises GarminAuthenticationError: If at least one endpoint returned a parseable
         non-SUCCESSFUL response (definitive verification failure).
     """
-
     sess = client._mfa_portal_web_session
     mfa_json = {
         "mfaMethod": getattr(client, "_mfa_method", "email"),
@@ -676,21 +669,20 @@ def portal_login(
     """
     Log in via the mobile SSO API using curl_cffi for TLS impersonation.
 
-    This is the Android Garmin Connect Mobile app flow. Used as a fallback when
-    the web portal flows are blocked.
+    This is the Android Garmin Connect Mobile app flow. Used as a fallback when the web
+    portal flows are blocked.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On bad credentials or unexpected status.
-    :raises GarminConnectionError: If curl_cffi is unavailable, on non-OK
-        responses, or on non-JSON response bodies.
+    :raises GarminConnectionError: If curl_cffi is unavailable, on non-OK responses, or
+        on non-JSON response bodies.
     """
-
     if not HAS_CFFI:
         raise GarminConnectionError("curl_cffi not installed; mobile+cffi unavailable")
 
@@ -816,7 +808,6 @@ def complete_mfa_portal(client: Any, mfa_code: str) -> None:
         (server/transport error, not a verification failure).
     :raises GarminAuthenticationError: On a parsed non-SUCCESSFUL verification response.
     """
-
     sess = client._mfa_cffi_session
     r = sess.post(
         f"{client._sso}/mobile/api/mfa/verifyCode",
@@ -866,22 +857,21 @@ def mobile_login(
     """
     Log in via the mobile SSO API using plain ``requests``.
 
-    No TLS impersonation. Position 4 of 5 in the strategy chain, ahead of only
-    the widget+cffi last-resort. Likely to be 429'd by Cloudflare without TLS
-    impersonation, but occasionally succeeds when the cffi-based portal and
-    mobile flows have been blocked on the current IP.
+    No TLS impersonation. Position 4 of 5 in the strategy chain, ahead of only the
+    widget+cffi last-resort. Likely to be 429'd by Cloudflare without TLS impersonation,
+    but occasionally succeeds when the cffi-based portal and mobile flows have been
+    blocked on the current IP.
 
     :param client: GarminClient instance.
     :param email: Garmin Connect email.
     :param password: Garmin Connect password.
     :param prompt_mfa: Callable returning a 6-digit MFA code.
     :param return_on_mfa: If True, return early on MFA challenge.
-    :return: ``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
+    :return:``(None, None)`` on success, or ``("needs_mfa", session)`` on MFA.
     :raises GarminTooManyRequestsError: On HTTP 429.
     :raises GarminAuthenticationError: On bad credentials.
     :raises GarminConnectionError: On non-JSON response.
     """
-
     sess = requests.Session()
     sess.headers.update(
         {
@@ -999,7 +989,6 @@ def complete_mfa(client: Any, mfa_code: str) -> None:
         (server/transport error, not a verification failure).
     :raises GarminAuthenticationError: On a parsed non-SUCCESSFUL verification response.
     """
-
     r = client._mfa_session.post(
         f"{client._sso}/mobile/api/mfa/verifyCode",
         params={
