@@ -144,6 +144,10 @@ When adding new data processors:
 - Handle NULL values and missing data gracefully.
 - Use upsert patterns for deduplication.
 
+### Raw SQL Strings (docformatter Footgun)
+
+Don't pass triple-quoted strings to `sqlalchemy.text(...)`: `docformatter` may treat them as docstrings and append a period (`DO NOTHING` becomes `DO NOTHING.`), corrupting the SQL. Use implicitly concatenated regular string literals instead. See #44 / #45.
+
 ## CLI Development
 
 When modifying CLI commands:

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.4] - 2026-04-30
+
+### Fixed
+
+- **`garmin info` and `garmin verify` rejected a missing default database with an unhelpful Click validator error** (`Invalid value for '--db-path': Path 'garmin_data.db' does not exist.`). The function bodies already contained a friendlier "Database not found, run `garmin extract`" fallback, but it was unreachable because `type=click.Path(exists=True)` rejected the input first. The `exists=True` constraint has been removed so the in-function check runs; both commands now exit 1 (so scripts can detect the failure) and both print the "run `garmin extract`" hint (previously only `info` did). Fixed in #47.
+- **PyPI new-version hint did not appear on bare `garmin`.** The version check is wired into the `@click.group()` callback, which Click does not invoke when no subcommand is supplied. Added `invoke_without_command=True` so the hint fires on bare invocations as well; help is rendered manually in that case to preserve the existing user-visible behavior. Fixed in #47.
+
 ## [2.7.3] - 2026-04-30
 
 ### Fixed
@@ -310,7 +317,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.3...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.4...HEAD
+[2.7.4]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.3...v2.7.4
 [2.7.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.0...v2.7.1
