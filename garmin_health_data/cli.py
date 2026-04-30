@@ -52,9 +52,10 @@ _TIMESTAMP_REGEX = (
 )
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(version=__version__)
-def cli():
+@click.pass_context
+def cli(ctx: click.Context):
     """
     Garmin Connect health data extraction tool.
 
@@ -77,6 +78,12 @@ def cli():
     # via GARMIN_NO_VERSION_CHECK=1, never blocks more than ~2s, never aborts
     # the user's command.
     check_for_newer_version()
+
+    # invoke_without_command=True is set so the version check above fires on
+    # bare `garmin` too. Click no longer prints help automatically in that
+    # case, so render it here and exit.
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 @cli.command()
@@ -618,18 +625,19 @@ def _print_extraction_failures(failures: list) -> None:
 @cli.command()
 @click.option(
     "--db-path",
-    type=click.Path(exists=True),
+    type=click.Path(),
     default="garmin_data.db",
     help="Path to SQLite database file.",
 )
-def info(db_path: str):
+@click.pass_context
+def info(ctx: click.Context, db_path: str):
     """
     Show database statistics and information.
     """
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
-        click.echo("   Run 'garmin extract' to create a new database")
-        return
+        click.echo("   Run 'garmin extract' to create a new database.")
+        ctx.exit(1)
 
     click.echo()
     click.echo(
@@ -677,17 +685,19 @@ def info(db_path: str):
 @cli.command()
 @click.option(
     "--db-path",
-    type=click.Path(exists=True),
+    type=click.Path(),
     default="garmin_data.db",
     help="Path to SQLite database file.",
 )
-def verify(db_path: str):
+@click.pass_context
+def verify(ctx: click.Context, db_path: str):
     """
     Verify database integrity and structure.
     """
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
-        return
+        click.echo("   Run 'garmin extract' to create a new database.")
+        ctx.exit(1)
 
     click.echo()
     click.echo(click.style("🔍 Verifying database...", fg="cyan", bold=True))

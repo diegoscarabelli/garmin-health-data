@@ -48,7 +48,8 @@ def test_verify_runs_integrity_check(tmp_path):
 
 def test_verify_nonexistent_db(tmp_path):
     """
-    Test that verify command rejects non-existent database path.
+    Test that verify command rejects non-existent database path with a friendly message
+    (rather than Click's raw "does not exist" path-validator error).
     """
     db_path = tmp_path / "nonexistent.db"
 
@@ -56,7 +57,8 @@ def test_verify_nonexistent_db(tmp_path):
     result = runner.invoke(verify, ["--db-path", str(db_path)])
 
     assert result.exit_code != 0
-    assert "does not exist" in result.output
+    assert "Database not found" in result.output
+    assert "garmin extract" in result.output
 
 
 # --------------------------------------------------------------------------------------
