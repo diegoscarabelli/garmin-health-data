@@ -56,7 +56,7 @@ def test_verify_nonexistent_db(tmp_path):
     runner = CliRunner()
     result = runner.invoke(verify, ["--db-path", str(db_path)])
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
     assert "Database not found" in result.output
     assert "garmin extract" in result.output
 

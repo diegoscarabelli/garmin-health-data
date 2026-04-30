@@ -84,6 +84,7 @@ def cli(ctx: click.Context):
     # case, so render it here and exit.
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
+        ctx.exit(0)
 
 
 @cli.command()
