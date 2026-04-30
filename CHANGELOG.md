@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] - 2026-04-30
+
+### Fixed
+
+- **`garmin extract` crashed with `sqlite3.OperationalError: near ".": syntax error` on a fresh database.** The `INSERT INTO user ... ON CONFLICT (user_id) DO NOTHING` statement in `GarminProcessor._ensure_user_exists()` was authored as a triple-quoted string passed to `sqlalchemy.text(...)`. `docformatter` misidentified that string as a docstring and "normalized" it by appending a period after `DO NOTHING`, producing invalid SQL. The path was only reachable when the `user` table was empty, so existing installs were unaffected and CI didn't catch it. The SQL is now written as implicitly concatenated regular string literals so docformatter leaves it untouched. Reported by @nakor in #44, fixed in #45.
+
 ## [2.7.2] - 2026-04-28
 
 ### Fixed
@@ -304,7 +310,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.3...HEAD
+[2.7.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...v2.7.2
 [2.7.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.6.1...v2.7.0
