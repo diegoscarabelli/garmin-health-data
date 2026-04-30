@@ -313,10 +313,9 @@ class GarminProcessor(Processor):
             # Create minimal user record with conflict handling.
             session.execute(
                 text(
-                    """
-                    INSERT INTO user (user_id, full_name, birth_date) VALUES (:user_id,
-                    NULL, NULL) ON CONFLICT (user_id) DO NOTHING.
-                    """
+                    "INSERT INTO user (user_id, full_name, birth_date) "
+                    "VALUES (:user_id, NULL, NULL) "
+                    "ON CONFLICT (user_id) DO NOTHING"
                 ),
                 {"user_id": int(user_id)},
             )
