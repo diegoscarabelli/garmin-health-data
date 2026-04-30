@@ -144,6 +144,25 @@ When adding new data processors:
 - Handle NULL values and missing data gracefully.
 - Use upsert patterns for deduplication.
 
+### Raw SQL Strings (docformatter Footgun)
+
+Do **not** pass triple-quoted string literals to `sqlalchemy.text(...)` or any other raw-SQL execution path. `docformatter` (configured in `pyproject.toml` and run via the pre-commit `format` hook) treats triple-quoted strings as docstrings in some contexts and "normalizes" them by appending a period to the first sentence, which corrupts the SQL (e.g. `... DO NOTHING` becomes `... DO NOTHING.`, producing an `OperationalError` at runtime). This shipped as a real bug in #44, fixed in #45.
+
+Use implicitly concatenated regular string literals instead:
+
+```python
+session.execute(
+    text(
+        "INSERT INTO user (user_id, full_name, birth_date) "
+        "VALUES (:user_id, NULL, NULL) "
+        "ON CONFLICT (user_id) DO NOTHING"
+    ),
+    {"user_id": int(user_id)},
+)
+```
+
+If a SQL statement is genuinely too long for that style, move it into a module-level constant assigned from `textwrap.dedent("""...""")` rather than passing the triple-quoted string directly to `text(...)`. Per-row code paths against an empty database are not exercised by the default test suite, so a docformatter-induced corruption can ship undetected.
+
 ## CLI Development
 
 When modifying CLI commands:
