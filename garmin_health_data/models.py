@@ -780,6 +780,31 @@ class IntensityMinutes(Base, InsertBase):
     value = Column(Float)
 
 
+class BodyComposition(Base, InsertBase):
+    """
+    Scale weigh-ins from a connected smart scale (e.g. Index S2) or manual entry.
+
+    One row per weigh-in keyed by ``(user_id, timestamp)``. A user may weigh more than
+    once per day. Weight and bone/muscle mass are stored in grams to match the Garmin
+    Connect API and the existing ``user_profile.weight`` convention.
+    """
+
+    __tablename__ = "body_composition"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    timestamp = Column(DateTime(timezone=True), primary_key=True)
+    weight = Column(Float)
+    bmi = Column(Float)
+    body_fat = Column(Float)
+    body_water = Column(Float)
+    bone_mass = Column(Float)
+    muscle_mass = Column(Float)
+    physique_rating = Column(Integer)
+    visceral_fat = Column(Integer)
+    metabolic_age = Column(Integer)
+    source_type = Column(String)
+
+
 class Floors(Base, InsertBase):
     """
     Timeseries floors data from Garmin devices.

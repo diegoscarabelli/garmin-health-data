@@ -12,7 +12,8 @@ library; URL templates live in :mod:`.constants`.
 The 15 supported endpoints:
 
 - Daily wellness:        sleep, stress, respiration, heart_rates, training_readiness,
-                         training_status, steps, floors, intensity_minutes
+                         training_status, steps, floors, intensity_minutes,
+                         body_composition
 - Range activities:      activities_by_date (paginated), activity_exercise_sets
 - No-date metadata:      personal_records, race_predictions, user_profile
 - Binary download:       download_activity (FIT/TCX/GPX/KML/CSV)
@@ -43,6 +44,7 @@ from .constants import (
     TRAINING_STATUS_URL,
     USER_SETTINGS_URL,
     USER_SUMMARY_CHART_URL,
+    WEIGHT_DATERANGE_URL,
 )
 
 if TYPE_CHECKING:
@@ -229,6 +231,32 @@ def get_intensity_minutes_data(client: "GarminClient", cdate: str) -> Dict[str, 
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_INTENSITY_MINUTES_URL}/{cdate}"
     return client._connectapi(url)
+
+
+def get_body_composition(
+    client: "GarminClient", startdate: str, enddate: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Fetch scale weigh-ins (weight and body composition) for a date range.
+
+    Each entry in ``dateWeightList`` corresponds to a single weigh-in. A user may weigh
+    more than once per day, in which case the API returns multiple entries. Days with no
+    weigh-in return an empty ``dateWeightList``.
+
+    :param client: GarminClient instance.
+    :param startdate: Start date in ``YYYY-MM-DD`` format.
+    :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
+        ``startdate``.
+    :return: Snapshot dictionary with ``dateWeightList`` (one entry per weigh-in) and
+        ``totalAverage`` aggregates.
+    """
+    startdate = _validate_date_format(startdate, "startdate")
+    if enddate is None:
+        enddate = startdate
+    else:
+        enddate = _validate_date_format(enddate, "enddate")
+    params = {"startDate": startdate, "endDate": enddate}
+    return client._connectapi(WEIGHT_DATERANGE_URL, params=params)
 
 
 # ----------------------------------------------------------------------------------------

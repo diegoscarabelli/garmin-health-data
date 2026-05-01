@@ -154,6 +154,16 @@ class GarminDataRegistry:
             ),
             # Range Data - Date range parameters: get_method(start_str, end_str)
             GarminDataType(
+                "BODY_COMPOSITION",
+                "get_body_composition",
+                APIMethodTimeParam.RANGE,
+                "/weight-service/weight/daterangesnapshot",
+                "Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, "
+                "muscle mass, physique rating, visceral fat, metabolic age. Multiple "
+                "entries per day if the user weighs more than once.",
+                "⚖️",
+            ),
+            GarminDataType(
                 "ACTIVITIES_LIST",
                 "get_activities_by_date",
                 APIMethodTimeParam.RANGE,

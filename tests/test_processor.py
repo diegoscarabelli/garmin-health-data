@@ -22,6 +22,7 @@ from garmin_health_data.models import (
     ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
+    BodyComposition,
     SleepLevel,
     StrengthExercise,
     StrengthSet,
@@ -1556,3 +1557,220 @@ class TestProcessFitSubSecond:
         # Coalesced to one row; last value wins.
         assert len(rows) == 1
         assert rows[0].value == 152.0
+
+
+# --- Body composition tests -------------------------------------------------
+
+
+class TestProcessBodyComposition:
+    """
+    Tests for _process_body_composition method.
+    """
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_inserts_records_with_field_mapping(
+        self, mock_upsert, processor, mock_session, tmp_path
+    ):
+        """
+        Verify each ``dateWeightList`` entry is mapped to a BodyComposition record with
+        insert-or-ignore semantics on (user_id, timestamp).
+        """
+        # Arrange: one fully-populated INDEX_SCALE entry plus one partial MANUAL
+        # entry to confirm null fields propagate through .get().
+        # Timestamps: 1714564800000 ms = 2024-05-01 12:00 UTC,
+        #             1714651200000 ms = 2024-05-02 12:00 UTC.
+        data = {
+            "startDate": "2024-05-01",
+            "endDate": "2024-05-01",
+            "dateWeightList": [
+                {
+                    "samplePk": 1714564800000,
+                    "date": 1714564800000,
+                    "calendarDate": "2024-05-01",
+                    "timestampGMT": 1714564800000,
+                    "weight": 75300.0,
+                    "bmi": 24.5,
+                    "bodyFat": 22.5,
+                    "bodyWater": 55.2,
+                    "boneMass": 3500.0,
+                    "muscleMass": 60000.0,
+                    "physiqueRating": 5,
+                    "visceralFat": 8,
+                    "metabolicAge": 30,
+                    "sourceType": "INDEX_SCALE",
+                },
+                {
+                    "timestampGMT": 1714651200000,
+                    "weight": 75100.0,
+                    "sourceType": "MANUAL",
+                },
+            ],
+        }
+        file_path = tmp_path / "123_BODY_COMPOSITION_2025-05-01T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        # Act.
+        processor._process_body_composition(file_path, mock_session)
+
+        # Assert: upsert called once with insert-or-ignore semantics.
+        mock_upsert.assert_called_once()
+        kwargs = mock_upsert.call_args.kwargs
+        assert kwargs["session"] == mock_session
+        assert kwargs["conflict_columns"] == ["user_id", "timestamp"]
+        assert kwargs["on_conflict_update"] is False
+
+        records = kwargs["model_instances"]
+        assert len(records) == 2
+        assert all(isinstance(r, BodyComposition) for r in records)
+
+        first = records[0]
+        assert first.user_id == 123456789
+        assert first.timestamp == datetime(2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+        assert first.weight == 75300.0
+        assert first.bmi == 24.5
+        assert first.body_fat == 22.5
+        assert first.body_water == 55.2
+        assert first.bone_mass == 3500.0
+        assert first.muscle_mass == 60000.0
+        assert first.physique_rating == 5
+        assert first.visceral_fat == 8
+        assert first.metabolic_age == 30
+        assert first.source_type == "INDEX_SCALE"
+
+        second = records[1]
+        assert second.weight == 75100.0
+        assert second.source_type == "MANUAL"
+        assert second.bmi is None
+        assert second.body_fat is None
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_empty_date_weight_list_is_noop(
+        self, mock_upsert, processor, mock_session, tmp_path
+    ):
+        """
+        Days with no weigh-in return an empty ``dateWeightList`` and must not call
+        upsert.
+        """
+        data = {"dateWeightList": [], "totalAverage": {}}
+        file_path = tmp_path / "123_BODY_COMPOSITION_2025-05-01T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        processor._process_body_composition(file_path, mock_session)
+
+        mock_upsert.assert_not_called()
+
+    @patch("garmin_health_data.processor.upsert_model_instances")
+    def test_falls_back_to_date_when_timestamp_gmt_missing(
+        self, mock_upsert, processor, mock_session, tmp_path
+    ):
+        """
+        Some payloads omit ``timestampGMT``; ``date`` is the fallback.
+
+        Entries with neither are skipped without raising.
+        """
+        data = {
+            "dateWeightList": [
+                {"date": 1714564800000, "weight": 75000.0},
+                {"weight": 76000.0},  # No timestamp at all -- skipped.
+            ],
+        }
+        file_path = tmp_path / "123_BODY_COMPOSITION_2025-05-01T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        processor._process_body_composition(file_path, mock_session)
+
+        mock_upsert.assert_called_once()
+        records = mock_upsert.call_args.kwargs["model_instances"]
+        assert len(records) == 1
+        assert records[0].weight == 75000.0
+        assert records[0].timestamp == datetime(
+            2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc
+        )
+
+    def test_persists_to_real_database(self, db_session: Session, tmp_path):
+        """
+        End-to-end: write a real JSON file, run the processor against an in-memory
+        SQLite DB, and verify the rows landed with correct field mapping.
+        """
+        # Arrange: seed user (FK target).
+        upsert_model_instances(
+            session=db_session,
+            model_instances=[User(user_id=999, full_name="Test")],
+            conflict_columns=["user_id"],
+            on_conflict_update=True,
+        )
+        db_session.commit()
+
+        data = {
+            "dateWeightList": [
+                {
+                    "timestampGMT": 1714564800000,
+                    "weight": 75300.0,
+                    "bmi": 24.5,
+                    "bodyFat": 22.5,
+                    "boneMass": 3500.0,
+                    "muscleMass": 60000.0,
+                    "sourceType": "INDEX_SCALE",
+                }
+            ],
+        }
+        file_path = tmp_path / "999_BODY_COMPOSITION_2025-05-01T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        proc = GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+        proc.user_id = 999
+
+        # Act.
+        proc._process_body_composition(file_path, db_session)
+        db_session.commit()
+
+        # Assert.
+        rows = db_session.execute(select(BodyComposition)).scalars().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.user_id == 999
+        # SQLite drops tzinfo on DateTime(timezone=True) round-trip; compare naive.
+        assert row.timestamp.replace(tzinfo=timezone.utc) == datetime(
+            2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc
+        )
+        assert row.weight == 75300.0
+        assert row.body_fat == 22.5
+        assert row.muscle_mass == 60000.0
+        assert row.source_type == "INDEX_SCALE"
+
+    def test_reprocess_is_idempotent(self, db_session: Session, tmp_path):
+        """
+        Re-running the processor on the same payload must not duplicate or modify
+        rows -- ON CONFLICT DO NOTHING semantics.
+        """
+        upsert_model_instances(
+            session=db_session,
+            model_instances=[User(user_id=999, full_name="Test")],
+            conflict_columns=["user_id"],
+            on_conflict_update=True,
+        )
+        db_session.commit()
+
+        data = {
+            "dateWeightList": [
+                {"timestampGMT": 1714564800000, "weight": 75300.0},
+            ],
+        }
+        file_path = tmp_path / "999_BODY_COMPOSITION_2025-05-01T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        proc = GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+        proc.user_id = 999
+
+        proc._process_body_composition(file_path, db_session)
+        db_session.commit()
+        proc._process_body_composition(file_path, db_session)
+        db_session.commit()
+
+        rows = db_session.execute(select(BodyComposition)).scalars().all()
+        assert len(rows) == 1
