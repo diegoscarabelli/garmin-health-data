@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-05-02
+
+### Added
+
+- **`BODY_COMPOSITION` data type**: scale weigh-ins from a connected smart scale (e.g. Index S2) or manual weight entries. Captures weight, BMI, body fat %, body water %, bone mass, muscle mass, physique rating, visceral fat, metabolic age, and `source_type` (e.g. `INDEX_SCALE`, `MANUAL`). Persisted to a new `body_composition` table keyed by `(user_id, timestamp)` so multiple weigh-ins per day are preserved; weight and bone/muscle mass stored in grams to match the existing `user_profile.weight` convention. Insert-only with `ON CONFLICT DO NOTHING` (measurements are immutable). Contributed by @amanusk in #49.
+- **`sample_pk` column on `body_composition`**: nullable `BIGINT` capturing Garmin's stable per-sample identifier (`samplePk` from the API), with a non-unique index. Provides a stable handle for reconciling rows against deletions made in Garmin Connect (e.g. user removes a bad weigh-in). Nullable because manual entries lack the field.
+
+### Fixed
+
+- **`get_body_composition` saved one useless JSON file per day for users with no scale data**. The Garmin `/weight-service/weight/daterangesnapshot` endpoint returns a populated wrapper dict on no-data days (`startDate`, `endDate`, an empty `dateWeightList`, and a `totalAverage` of nulls) rather than an empty response. The extractor's generic `if data:` truthiness check saw the wrapper as truthy and wrote a file. The API client now collapses the empty-wrapper shape to `None` so the extractor short-circuits, matching the contract of other RANGE-typed endpoints (e.g. `ACTIVITIES_LIST`).
+
+### Changed
+
+- **`_process_body_composition` now warns when an entry has neither `timestampGMT` nor `date`**: previously such entries were silently skipped. A yellow `⚠️ Skipping body composition entry with no timestamp` warning matches the convention in `_process_training_readiness` / `_process_floors` and surfaces silent data loss in the run log.
+- **API module docstring** (`garmin_client/api.py`): bumped endpoint count from 15 to 16 and renamed the "Range activities" bucket to "Range data" to accurately describe both activity-related and wellness range endpoints.
+- **README**: added `BODY_COMPOSITION` to the data types table and the Health Time-Series table-structure section (now 8 tables); bumped the total table count from 33 to 34 across the schema overview, project pitch, and comparison matrix.
+
 ## [2.7.4] - 2026-04-30
 
 ### Fixed
