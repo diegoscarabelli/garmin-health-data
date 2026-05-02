@@ -1,7 +1,7 @@
 """
 API method implementations for the vendored Garmin Connect client.
 
-Each function here corresponds to one of the 15 Garmin Connect endpoints the
+Each function here corresponds to one of the 16 Garmin Connect endpoints the
 openetl pipeline consumes. The functions are written as plain functions taking
 the ``GarminClient`` instance as their first argument so that the client class
 can stay slim, and so that the file is testable in isolation.
@@ -9,12 +9,12 @@ can stay slim, and so that the file is testable in isolation.
 Method-to-endpoint mapping is inherited from the upstream ``python-garminconnect``
 library; URL templates live in :mod:`.constants`.
 
-The 15 supported endpoints:
+The 16 supported endpoints:
 
 - Daily wellness:        sleep, stress, respiration, heart_rates, training_readiness,
-                         training_status, steps, floors, intensity_minutes,
+                         training_status, steps, floors, intensity_minutes
+- Range data:            activities_by_date (paginated), activity_exercise_sets,
                          body_composition
-- Range activities:      activities_by_date (paginated), activity_exercise_sets
 - No-date metadata:      personal_records, race_predictions, user_profile
 - Binary download:       download_activity (FIT/TCX/GPX/KML/CSV)
 """
