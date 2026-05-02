@@ -295,6 +295,7 @@ This means you can safely:
 | **STEPS** | Step counts and activity levels | 15-min intervals |
 | **FLOORS** | Floors climbed and descended | 15-min intervals |
 | **INTENSITY_MINUTES** | Moderate/vigorous activity minutes | 15-min intervals |
+| **BODY_COMPOSITION** | Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, muscle mass | Per weigh-in |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |
 | **EXERCISE_SETS** | Per-set strength training data: reps, weight, ML-classified exercise name | Per activity |
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |
@@ -304,7 +305,7 @@ This means you can safely:
 
 ### Database Schema
 
-The SQLite database contains 33 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 34 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -386,7 +387,7 @@ sleep (main sleep sessions)
 
 *Foreign keys: `sleep` → `user.user_id`; all child tables → `sleep.sleep_id`*
 
-**Health Time-Series (7 tables)**
+**Health Time-Series (8 tables)**
 
 ```
 heart_rate (continuous heart rate measurements)
@@ -396,6 +397,7 @@ respiration (breathing rate data)
 steps (step counts and activity levels)
 floors (floors climbed/descended)
 intensity_minutes (activity intensity tracking)
+body_composition (scale weigh-ins: weight, BMI, body fat, etc.)
 ```
 
 *Foreign keys: all tables → `user.user_id`*
@@ -430,7 +432,7 @@ race_predictions (predicted race times)
 
 ## Comparison With Other Tools
 
-**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 33-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
+**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 34-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
 
 **[garmy](https://github.com/bes-dev/garmy)** is optimized for programmatic access to the Garmin Connect API, particularly useful for AI assistant integration via its built-in MCP (Model Context Protocol) server. It enables real-time interaction with Claude Desktop or custom chatbots for quick daily insights and summaries. However, it's limited to API-provided metrics (daily aggregates only, no FIT file access), making deep analytics or granular time-series analysis impossible. Best suited for lightweight health monitoring apps that prioritize AI integration over comprehensive data collection.
 
@@ -449,7 +451,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 33 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 34 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |
