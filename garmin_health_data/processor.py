@@ -36,6 +36,7 @@ from garmin_health_data.models import (
     ActivitySplitMetric,
     ActivityTsMetric,
     BodyBattery,
+    BodyComposition,
     BreathingDisruption,
     CyclingAggMetrics,
     Floors,
@@ -118,6 +119,7 @@ class GarminProcessor(Processor):
                 ("USER_PROFILE", self._process_user_profile),
                 ("ACTIVITIES_LIST", self._process_activities),
                 ("EXERCISE_SETS", self._process_exercise_sets),
+                ("BODY_COMPOSITION", self._process_body_composition),
                 ("FLOORS", self._process_floors),
                 ("HEART_RATE", self._process_heart_rate),
                 ("INTENSITY_MINUTES", self._process_intensity_minutes),
@@ -2230,6 +2232,59 @@ class GarminProcessor(Processor):
             )
         else:
             click.secho("⚠️ No aggregated intensity minutes data found.", fg="yellow")
+
+    def _process_body_composition(self, file_path: Path, session: Session):
+        """
+        Process a BODY_COMPOSITION file containing scale weigh-ins.
+
+        Extracts each entry from ``dateWeightList`` and inserts it into the
+        ``body_composition`` table keyed by ``(user_id, timestamp)`` with insert-only
+        semantics. Days with no weigh-in (empty list) are a no-op.
+
+        :param file_path: Path to the BODY_COMPOSITION JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+
+        entries = payload.get("dateWeightList") or []
+        records = []
+        for entry in entries:
+            ts_ms = entry.get("timestampGMT") or entry.get("date")
+            if ts_ms is None:
+                click.secho(
+                    f"⚠️ Skipping body composition entry with no timestamp: "
+                    f"{entry}.",
+                    fg="yellow",
+                )
+                continue
+            records.append(
+                BodyComposition(
+                    user_id=int(self.user_id),
+                    timestamp=datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc),
+                    weight=entry.get("weight"),
+                    bmi=entry.get("bmi"),
+                    body_fat=entry.get("bodyFat"),
+                    body_water=entry.get("bodyWater"),
+                    bone_mass=entry.get("boneMass"),
+                    muscle_mass=entry.get("muscleMass"),
+                    physique_rating=entry.get("physiqueRating"),
+                    visceral_fat=entry.get("visceralFat"),
+                    metabolic_age=entry.get("metabolicAge"),
+                    source_type=entry.get("sourceType"),
+                    sample_pk=entry.get("samplePk"),
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "timestamp"],
+                on_conflict_update=False,
+            )
+            click.echo(f"Processed {len(records)} body composition records.")
+        else:
+            click.secho("⚠️ No body composition data found.", fg="yellow")
 
     def _process_floors(self, file_path: Path, session: Session):
         """

@@ -552,6 +552,32 @@ CREATE TABLE IF NOT EXISTS intensity_minutes (
 CREATE INDEX IF NOT EXISTS intensity_minutes_user_id_timestamp_idx
 ON intensity_minutes (user_id, timestamp DESC);
 
+-- Scale weigh-ins from a connected smart scale (e.g. Index S2) or manual entry. One row per measurement keyed by (user_id, timestamp); a user may weigh more than once per day.
+CREATE TABLE IF NOT EXISTS body_composition (
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this weigh-in belongs to.
+    , timestamp DATETIME NOT NULL          -- UTC timestamp of the weigh-in (timestampGMT from the API).
+    , weight FLOAT                         -- Body weight in grams.
+    , bmi FLOAT                            -- Body Mass Index.
+    , body_fat FLOAT                       -- Body fat percentage (0-100).
+    , body_water FLOAT                     -- Body water percentage (0-100).
+    , bone_mass FLOAT                      -- Bone mass in grams.
+    , muscle_mass FLOAT                    -- Muscle mass in grams.
+    , physique_rating INTEGER              -- Garmin physique rating (1-9).
+    , visceral_fat INTEGER                 -- Visceral fat rating.
+    , metabolic_age INTEGER                -- Metabolic age in years.
+    , source_type TEXT                     -- Origin of the measurement (e.g., ''INDEX_SCALE'', ''MANUAL'').
+    , sample_pk BIGINT                     -- Garmin's stable per-sample ID (samplePk). Nullable for manual entries lacking the field. Use to reconcile deletions made in Garmin Connect.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (user_id, timestamp)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS body_composition_user_id_timestamp_idx
+ON body_composition (user_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS body_composition_sample_pk_idx
+ON body_composition (sample_pk);
+
 -- Floors climbed measurements from Garmin devices tracking floors ascended and descended throughout the day at 15-minute intervals. Records are available only when floor climbing activity is detected.
 CREATE TABLE IF NOT EXISTS floors (
     user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this floors measurement belongs to.

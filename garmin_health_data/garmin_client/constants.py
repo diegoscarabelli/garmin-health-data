@@ -111,6 +111,9 @@ USER_SUMMARY_CHART_URL = "/wellness-service/wellness/dailySummaryChart"
 FLOORS_CHART_DAILY_URL = "/wellness-service/wellness/floorsChartData/daily"
 DAILY_INTENSITY_MINUTES_URL = "/wellness-service/wellness/daily/im"
 
+# Weight / body composition.
+WEIGHT_DATERANGE_URL = "/weight-service/weight/daterangesnapshot"
+
 # Metrics endpoints.
 TRAINING_READINESS_URL = "/metrics-service/metrics/trainingreadiness"
 TRAINING_STATUS_URL = "/metrics-service/metrics/trainingstatus/aggregated"
