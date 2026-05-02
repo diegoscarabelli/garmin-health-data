@@ -235,20 +235,25 @@ def get_intensity_minutes_data(client: "GarminClient", cdate: str) -> Dict[str, 
 
 def get_body_composition(
     client: "GarminClient", startdate: str, enddate: Optional[str] = None
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
     Fetch scale weigh-ins (weight and body composition) for a date range.
 
     Each entry in ``dateWeightList`` corresponds to a single weigh-in. A user may weigh
-    more than once per day, in which case the API returns multiple entries. Days with no
-    weigh-in return an empty ``dateWeightList``.
+    more than once per day, in which case the API returns multiple entries.
+
+    On days with no weigh-in the Garmin endpoint returns a populated wrapper dict
+    (``startDate``, ``endDate``, an empty ``dateWeightList``, and a ``totalAverage`` of
+    nulls) rather than an empty response. This function normalizes that shape to
+    ``None`` so the extractor's ``if data:`` truthiness check skips the file write,
+    matching the behavior of other RANGE-typed endpoints (e.g. ``ACTIVITIES_LIST``).
 
     :param client: GarminClient instance.
     :param startdate: Start date in ``YYYY-MM-DD`` format.
     :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
         ``startdate``.
     :return: Snapshot dictionary with ``dateWeightList`` (one entry per weigh-in) and
-        ``totalAverage`` aggregates.
+        ``totalAverage`` aggregates, or ``None`` if no weigh-ins were recorded.
     """
     startdate = _validate_date_format(startdate, "startdate")
     if enddate is None:
@@ -256,7 +261,10 @@ def get_body_composition(
     else:
         enddate = _validate_date_format(enddate, "enddate")
     params = {"startDate": startdate, "endDate": enddate}
-    return client._connectapi(WEIGHT_DATERANGE_URL, params=params)
+    result = client._connectapi(WEIGHT_DATERANGE_URL, params=params)
+    if result and result.get("dateWeightList"):
+        return result
+    return None
 
 
 # ----------------------------------------------------------------------------------------
