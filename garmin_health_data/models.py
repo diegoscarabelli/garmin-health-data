@@ -803,6 +803,7 @@ class BodyComposition(Base, InsertBase):
     visceral_fat = Column(Integer)
     metabolic_age = Column(Integer)
     source_type = Column(String)
+    sample_pk = Column(BigInteger)
 
 
 class Floors(Base, InsertBase):

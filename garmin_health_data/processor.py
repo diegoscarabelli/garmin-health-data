@@ -2251,6 +2251,11 @@ class GarminProcessor(Processor):
         for entry in entries:
             ts_ms = entry.get("timestampGMT") or entry.get("date")
             if ts_ms is None:
+                click.secho(
+                    f"⚠️ Skipping body composition entry with no timestamp: "
+                    f"{entry}.",
+                    fg="yellow",
+                )
                 continue
             records.append(
                 BodyComposition(
@@ -2266,6 +2271,7 @@ class GarminProcessor(Processor):
                     visceral_fat=entry.get("visceralFat"),
                     metabolic_age=entry.get("metabolicAge"),
                     source_type=entry.get("sourceType"),
+                    sample_pk=entry.get("samplePk"),
                 )
             )
 

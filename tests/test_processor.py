@@ -1637,12 +1637,14 @@ class TestProcessBodyComposition:
         assert first.visceral_fat == 8
         assert first.metabolic_age == 30
         assert first.source_type == "INDEX_SCALE"
+        assert first.sample_pk == 1714564800000
 
         second = records[1]
         assert second.weight == 75100.0
         assert second.source_type == "MANUAL"
         assert second.bmi is None
         assert second.body_fat is None
+        assert second.sample_pk is None
 
     @patch("garmin_health_data.processor.upsert_model_instances")
     def test_empty_date_weight_list_is_noop(
@@ -1661,14 +1663,20 @@ class TestProcessBodyComposition:
 
         mock_upsert.assert_not_called()
 
+    @patch("garmin_health_data.processor.click.secho")
     @patch("garmin_health_data.processor.upsert_model_instances")
     def test_falls_back_to_date_when_timestamp_gmt_missing(
-        self, mock_upsert, processor, mock_session, tmp_path
+        self,
+        mock_upsert,
+        mock_secho,
+        processor,
+        mock_session,
+        tmp_path,
     ):
         """
         Some payloads omit ``timestampGMT``; ``date`` is the fallback.
 
-        Entries with neither are skipped without raising.
+        Entries with neither are skipped with a yellow warning.
         """
         data = {
             "dateWeightList": [
@@ -1689,6 +1697,13 @@ class TestProcessBodyComposition:
         assert records[0].timestamp == datetime(
             2024, 5, 1, 12, 0, 0, tzinfo=timezone.utc
         )
+
+        # Verify a yellow warning surfaced for the entry with no timestamp.
+        warnings = [
+            call for call in mock_secho.call_args_list if "no timestamp" in call.args[0]
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].kwargs.get("fg") == "yellow"
 
     def test_persists_to_real_database(self, db_session: Session, tmp_path):
         """
