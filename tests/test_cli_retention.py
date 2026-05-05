@@ -180,6 +180,50 @@ def test_prune_requires_end_date():
     assert "end-date" in result.output.lower()
 
 
+def test_prune_missing_db_path_aborts_cleanly(tmp_path: Path):
+    """
+    Regression: a non-existent --db-path must produce a clean Click abort with a "run
+    `garmin extract`" hint, not an unhandled FileNotFoundError traceback.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "prune",
+            "--db-path",
+            str(tmp_path / "does-not-exist.db"),
+            "--end-date",
+            "2026-01-31",
+            "--yes",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Database not found" in result.output
+    assert "garmin extract" in result.output
+
+
+def test_downsample_missing_db_path_aborts_cleanly(tmp_path: Path):
+    """
+    Regression: same as the prune test for the downsample command.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "downsample",
+            "--db-path",
+            str(tmp_path / "does-not-exist.db"),
+            "--end-date",
+            "2026-01-31",
+            "--time-grain",
+            "60s",
+            "--yes",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Database not found" in result.output
+
+
 # ---------------------------------------------------------------------------
 # garmin downsample
 # ---------------------------------------------------------------------------
