@@ -783,12 +783,14 @@ class TestUpsertModelInstancesReturning:
             assert first[0].sleep_id == second[0].sleep_id
             assert session.scalar(select(func.count()).select_from(Sleep)) == 1
 
-    def test_returning_do_nothing_recovers_existing_keys(self, temp_db):
+    def test_returning_do_nothing_preserves_input_order_and_existing_values(
+        self, temp_db
+    ):
         """
-        ON CONFLICT DO NOTHING does not emit RETURNING rows for ignored conflicts.
+        ``on_conflict_update=False`` with ``returning_columns`` returns one row per
+        input row, in input order, with existing values preserved for conflicted rows.
 
-        The helper falls back to a SELECT over the conflict keys to recover IDs for both
-        newly-inserted and pre-existing rows.
+        Implemented via the no-op ``DO UPDATE`` trick.
         """
         engine = get_engine(temp_db)
         with Session(engine) as session:
@@ -796,20 +798,26 @@ class TestUpsertModelInstancesReturning:
 
             ts1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
             ts2 = datetime(2024, 1, 1, 12, 1, 0, tzinfo=timezone.utc)
+            ts3 = datetime(2024, 1, 1, 12, 2, 0, tzinfo=timezone.utc)
             upsert_model_instances(
                 session=session,
-                model_instances=[HeartRate(user_id=1, timestamp=ts1, value=70)],
+                model_instances=[
+                    HeartRate(user_id=1, timestamp=ts1, value=70),
+                    HeartRate(user_id=1, timestamp=ts3, value=72),
+                ],
                 conflict_columns=["user_id", "timestamp"],
                 on_conflict_update=False,
             )
             session.commit()
 
-            # Mix of existing (ts1) and new (ts2). DO NOTHING ignores ts1.
+            # Mix of conflict (ts1), new (ts2), conflict (ts3) in non-trivial
+            # order to stress position-alignment.
             persisted = upsert_model_instances(
                 session=session,
                 model_instances=[
                     HeartRate(user_id=1, timestamp=ts1, value=999),
                     HeartRate(user_id=1, timestamp=ts2, value=80),
+                    HeartRate(user_id=1, timestamp=ts3, value=999),
                 ],
                 conflict_columns=["user_id", "timestamp"],
                 on_conflict_update=False,
@@ -817,13 +825,12 @@ class TestUpsertModelInstancesReturning:
             )
             session.commit()
 
-            # SQLite strips tzinfo on read-back even with DateTime(timezone=True),
-            # so compare against naive equivalents.
-            naive_ts1 = ts1.replace(tzinfo=None)
-            naive_ts2 = ts2.replace(tzinfo=None)
-            assert {p.timestamp for p in persisted} == {naive_ts1, naive_ts2}
-            ts1_row = next(p for p in persisted if p.timestamp == naive_ts1)
-            assert ts1_row.value == 70  # Original, not overwritten.
+            # Position-aligned: result[i] corresponds to input[i].
+            assert len(persisted) == 3
+            naive = [t.replace(tzinfo=None) for t in (ts1, ts2, ts3)]
+            assert [p.timestamp for p in persisted] == naive
+            # Existing values preserved for conflicts; new value for the insert.
+            assert [p.value for p in persisted] == [70, 80, 72]
 
     def test_returning_across_chunk_boundaries(self, temp_db):
         """
