@@ -17,13 +17,19 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from garmin_health_data.models import (
+    HRV,
     Activity,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
     ActivityTsMetric,
     BodyComposition,
+    BreathingDisruption,
+    Sleep,
     SleepLevel,
+    SleepMovement,
+    SleepRestlessMoment,
+    SpO2,
     StrengthExercise,
     StrengthSet,
     User,
@@ -751,28 +757,173 @@ class TestActivityBaseUpsert:
 # --- Sleep upsert tests ----------------------------------------------------
 
 
-class TestSleepUpsert:
+# --- Sleep orchestrator integration tests ----------------------------------
+
+
+class TestProcessSleepOrchestrator:
     """
-    Tests for column exclusion during sleep upserts.
+    Integration tests for the SLEEP processing pipeline against a real SQLite database.
+
+    Regression coverage for #52: ``upsert_model_instances`` returns the input
+    model_instances list rather than the rows persisted by SQLite, so an auto-increment
+    primary key like ``sleep_id`` is never populated on the returned instance.
+    ``_process_sleep_base`` therefore returned ``None`` and the orchestrator silently
+    skipped every per-night detail extractor. These tests exercise the full end-to-end
+    path that was previously untested.
     """
 
-    def test_sleep_update_columns_excludes_create_ts(self):
+    @staticmethod
+    def _seed_user(session: Session, user_id: int = 1) -> None:
         """
-        Verify sleep upsert excludes create_ts from update columns.
-        """
-        from garmin_health_data.models import Sleep
+        Insert a User row required by the foreign key on sleep.user_id.
 
-        update_columns = [
-            col.name
-            for col in Sleep.__table__.columns
-            if col.name not in ["user_id", "start_ts", "sleep_id", "create_ts"]
-        ]
-        assert "sleep_id" not in update_columns
-        assert "create_ts" not in update_columns
-        assert "user_id" not in update_columns
-        assert "start_ts" not in update_columns
-        assert "end_ts" in update_columns
-        assert "update_ts" in update_columns
+        :param session: SQLAlchemy Session bound to a real engine.
+        :param user_id: User identifier to seed.
+        """
+        upsert_model_instances(
+            session=session,
+            model_instances=[User(user_id=user_id, full_name="Test User")],
+            conflict_columns=["user_id"],
+            on_conflict_update=True,
+        )
+        session.commit()
+
+    @staticmethod
+    def _make_processor(user_id: int = 1) -> GarminProcessor:
+        """
+        Build a GarminProcessor pinned to the given user_id.
+
+        :param user_id: User identifier the processor should attribute records to.
+        :return: GarminProcessor instance with a dummy file set.
+        """
+        proc = GarminProcessor(
+            file_set=FileSet(file_paths=[], files={}), session=MagicMock()
+        )
+        proc.user_id = user_id
+        return proc
+
+    @staticmethod
+    def _minimal_sleep_payload() -> dict:
+        """
+        Build a SLEEP JSON containing one entry in each per-night detail array.
+
+        :return: SLEEP-shaped dict with dailySleepDTO plus all six detail arrays.
+        """
+        return {
+            "dailySleepDTO": {
+                # 2025-01-02T00:00:00Z, 08:00:00Z, local == GMT for UTC offset 0.
+                "sleepStartTimestampGMT": 1735776000000,
+                "sleepEndTimestampGMT": 1735804800000,
+                "sleepStartTimestampLocal": 1735776000000,
+            },
+            "sleepLevels": [
+                {
+                    "startGMT": "2025-01-02T00:00:00.0",
+                    "endGMT": "2025-01-02T01:00:00.0",
+                    "activityLevel": 1,
+                },
+            ],
+            "sleepMovement": [
+                {"startGMT": "2025-01-02T00:30:00.0", "activityLevel": 0.5},
+            ],
+            "sleepRestlessMoments": [
+                {"startGMT": 1735777800000, "value": 3},
+            ],
+            "wellnessEpochSPO2DataDTOList": [
+                {"epochTimestamp": "2025-01-02T01:00:00.0", "spo2Reading": 96},
+            ],
+            "hrvData": [
+                {"startGMT": 1735779600000, "value": 50},
+            ],
+            "breathingDisruptionData": [
+                {"startGMT": 1735781400000, "value": 1},
+            ],
+        }
+
+    def test_process_sleep_base_returns_real_pk(self, db_session: Session):
+        """
+        ``_process_sleep_base`` must return the auto-generated sleep_id from the
+        database after the upsert, not ``None`` (#52).
+
+        :param db_session: Real SQLAlchemy Session against a temp SQLite DB.
+        """
+        self._seed_user(db_session)
+        processor = self._make_processor()
+
+        sleep_id = processor._process_sleep_base(
+            self._minimal_sleep_payload(), db_session
+        )
+        db_session.commit()
+
+        assert sleep_id is not None
+        assert isinstance(sleep_id, int)
+        row = db_session.execute(
+            select(Sleep).where(Sleep.sleep_id == sleep_id)
+        ).scalar_one()
+        assert row.user_id == 1
+        # SQLite strips tzinfo on read-back even with DateTime(timezone=True).
+        assert row.start_ts.replace(tzinfo=timezone.utc) == datetime(
+            2025, 1, 2, 0, 0, 0, tzinfo=timezone.utc
+        )
+
+    def test_process_sleep_populates_detail_tables(
+        self, db_session: Session, tmp_path: Path
+    ):
+        """
+        ``_process_sleep`` must populate every per-night detail table when the SLEEP
+        JSON contains the corresponding arrays (#52).
+
+        :param db_session: Real SQLAlchemy Session against a temp SQLite DB.
+        :param tmp_path: Pytest temp directory for the SLEEP JSON file.
+        """
+        self._seed_user(db_session)
+        processor = self._make_processor()
+
+        sleep_file = tmp_path / "1_SLEEP_2025-01-02.json"
+        sleep_file.write_text(json.dumps(self._minimal_sleep_payload()))
+
+        processor._process_sleep(sleep_file, db_session)
+        db_session.commit()
+
+        for model in (
+            SleepLevel,
+            SleepMovement,
+            SleepRestlessMoment,
+            SpO2,
+            HRV,
+            BreathingDisruption,
+        ):
+            count = db_session.scalar(select(func.count()).select_from(model))
+            assert count == 1, (
+                f"Expected 1 row in {model.__tablename__}, got {count}. "
+                "Detail extractor was silently skipped."
+            )
+
+    def test_process_sleep_base_idempotent_returns_same_pk(self, db_session: Session):
+        """
+        Reprocessing the same SLEEP payload must return the existing sleep_id, so the
+        second-pass detail extractors target the same parent row (idempotency for re-
+        extraction of historical SLEEP JSONs from storage/, mentioned in the bug
+        report's reprocessing notes).
+
+        :param db_session: Real SQLAlchemy Session against a temp SQLite DB.
+        """
+        self._seed_user(db_session)
+        processor = self._make_processor()
+
+        first_id = processor._process_sleep_base(
+            self._minimal_sleep_payload(), db_session
+        )
+        db_session.commit()
+        second_id = processor._process_sleep_base(
+            self._minimal_sleep_payload(), db_session
+        )
+        db_session.commit()
+
+        assert first_id is not None
+        assert first_id == second_id
+        sleep_count = db_session.scalar(select(func.count()).select_from(Sleep))
+        assert sleep_count == 1
 
 
 # --- Sleep level tests ------------------------------------------------------
