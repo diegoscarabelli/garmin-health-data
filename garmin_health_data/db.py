@@ -41,7 +41,7 @@ from garmin_health_data.models import (
 _MIN_SQLITE_VERSION = (3, 35, 0)
 
 
-def _check_sqlite_version() -> None:
+def check_sqlite_version() -> None:
     """
     Validate that the linked SQLite library meets the minimum required version.
 
@@ -63,7 +63,7 @@ def get_engine(db_path: str = "garmin_data.db"):
     :param db_path: Path to SQLite database file.
     :return: SQLAlchemy engine.
     """
-    _check_sqlite_version()
+    check_sqlite_version()
     db_file = Path(db_path).expanduser().resolve()
 
     # Create database URL (use as_posix() for cross-platform compatibility).

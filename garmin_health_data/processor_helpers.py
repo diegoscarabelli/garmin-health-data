@@ -10,6 +10,8 @@ from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from garmin_health_data.db import check_sqlite_version
+
 # Lowest SQLITE_MAX_VARIABLE_NUMBER across supported builds.
 # Pre-3.32.0 defaulted to 999; 3.32.0+ raised it to 32 766.
 # Using the floor guarantees safety on all platforms.
@@ -93,6 +95,18 @@ def upsert_model_instances(
     """
     if not model_instances:
         return []
+
+    # Validate `returning_columns` and surface the SQLite version requirement
+    # at the call boundary so callers that build a Session outside `get_engine`
+    # (and therefore skip its version gate) still get a clear error instead of
+    # an opaque SQL syntax failure on `RETURNING`.
+    if returning_columns is not None:
+        if not returning_columns:
+            raise ValueError(
+                "`returning_columns` must be a non-empty list when provided. "
+                "Pass None to opt out of the RETURNING path."
+            )
+        check_sqlite_version()
 
     model_class = type(model_instances[0])
     model_columns = model_class.__table__.columns.keys()

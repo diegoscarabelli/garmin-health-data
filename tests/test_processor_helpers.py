@@ -699,6 +699,31 @@ class TestUpsertModelInstancesReturning:
         )
         session.commit()
 
+    def test_returning_columns_empty_list_raises(self, temp_db):
+        """
+        Passing ``returning_columns=[]`` is a programming error: it skips the RETURNING
+        path but breaks the contract that "if you ask for results, you get one row per
+        input." Surface it instead of silently returning an empty list.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="non-empty"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[
+                        Sleep(
+                            user_id=1,
+                            start_ts=datetime(2025, 1, 2, 0, 0, 0, tzinfo=timezone.utc),
+                            end_ts=datetime(2025, 1, 2, 8, 0, 0, tzinfo=timezone.utc),
+                            timezone_offset_hours=0.0,
+                        )
+                    ],
+                    conflict_columns=["user_id", "start_ts"],
+                    on_conflict_update=True,
+                    returning_columns=[],
+                )
+
     def test_returning_columns_none_returns_input_list(self, temp_db):
         """
         ``returning_columns=None`` preserves backward-compatible behavior: the input
