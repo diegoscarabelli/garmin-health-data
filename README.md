@@ -185,7 +185,30 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 
 ## Reference
 
-### `extract` command flags
+### Commands at a glance
+
+| Command | What it does | Section |
+|---|---|---|
+| [`garmin auth`](#garmin-auth) | Log into Garmin Connect and store OAuth tokens. Run once per account. | [auth](#garmin-auth) |
+| [`garmin extract`](#garmin-extract) | Download data from Garmin Connect and load it into the SQLite database. The default workflow. Supports rolling-window auto retention via opt-in flags. | [extract](#garmin-extract) |
+| [`garmin info`](#garmin-info) | Show row counts, last-update dates, and DB size. Read-only. | [info](#garmin-info) |
+| [`garmin verify`](#garmin-verify) | Check schema integrity and run SQLite's `PRAGMA integrity_check`. Read-only. | [verify](#garmin-verify) |
+| [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.8 databases. Run once after upgrading from 2.7.x. | [retention](#retention-prune-downsample-migrate-cascade) |
+
+All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
+
+### `garmin auth`
+
+```bash
+garmin auth
+garmin auth --email user@example.com --password '...'
+```
+
+Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/<user_id>/`. Run once per Garmin Connect account; tokens auto-refresh as long as you extract at least once every 30 days. The `--email` / `--password` flags can also be supplied via the `GARMIN_EMAIL` / `GARMIN_PASSWORD` environment variables. See the [Authentication internals](#authentication-internals) collapsible below for the login-strategy waterfall and the 30-45s anti-rate-limit pause explanation.
+
+### `garmin extract`
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
@@ -299,6 +322,36 @@ This means you can safely:
 - **Retry failed extractions** without manual cleanup.
 
 </details>
+
+### `garmin info`
+
+```bash
+garmin info
+garmin info --db-path ~/my-garmin-data.db
+```
+
+Read-only. Prints database file path and size, per-table row counts for the major tables, and the latest update date observed across the 10 core time-series tables. Useful to confirm an extraction landed and to spot tables that haven't been refreshed recently.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+
+Exits with code 1 and a "run `garmin extract`" hint if the database file does not exist.
+
+### `garmin verify`
+
+```bash
+garmin verify
+garmin verify --db-path ~/my-garmin-data.db
+```
+
+Read-only. Counts the tables present in the database, compares against the expected schema count, and runs SQLite's `PRAGMA integrity_check`. Useful as a smoke test after a manual schema change, a backup restore, or a `garmin migrate-cascade` run.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+
+Exits with code 1 if the schema integrity check fails or the database does not exist.
 
 ### Retention: `prune`, `downsample`, `migrate-cascade`
 
