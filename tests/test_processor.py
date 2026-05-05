@@ -757,30 +757,6 @@ class TestActivityBaseUpsert:
 # --- Sleep upsert tests ----------------------------------------------------
 
 
-class TestSleepUpsert:
-    """
-    Tests for column exclusion during sleep upserts.
-    """
-
-    def test_sleep_update_columns_excludes_create_ts(self):
-        """
-        Verify sleep upsert excludes create_ts from update columns.
-        """
-        from garmin_health_data.models import Sleep
-
-        update_columns = [
-            col.name
-            for col in Sleep.__table__.columns
-            if col.name not in ["user_id", "start_ts", "sleep_id", "create_ts"]
-        ]
-        assert "sleep_id" not in update_columns
-        assert "create_ts" not in update_columns
-        assert "user_id" not in update_columns
-        assert "start_ts" not in update_columns
-        assert "end_ts" in update_columns
-        assert "update_ts" in update_columns
-
-
 # --- Sleep orchestrator integration tests ----------------------------------
 
 

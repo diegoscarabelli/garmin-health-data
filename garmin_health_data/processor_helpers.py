@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -58,21 +58,32 @@ def upsert_model_instances(
     conflict_columns: List[str],
     on_conflict_update: bool = True,
     update_columns: Optional[List[str]] = None,
+    returning_columns: Optional[List[str]] = None,
 ) -> List[Any]:
     """
     Bulk upsert SQLAlchemy ORM model instances into SQLite database tables.
 
-    This function uses SQLite's INSERT ... ON CONFLICT syntax to perform efficient bulk
-    upsert operations, matching the implementation pattern used in OpenETL for
-    PostgreSQL. Large batches are automatically split into chunks so the total parameter
-    count stays within SQLite's SQLITE_MAX_VARIABLE_NUMBER limit.
+    Uses SQLite's ``INSERT ... ON CONFLICT`` syntax to perform efficient bulk upsert
+    operations, matching the implementation pattern used in OpenETL for PostgreSQL.
+    Large batches are automatically split into chunks so the total parameter count stays
+    within SQLite's ``SQLITE_MAX_VARIABLE_NUMBER`` limit.
+
+    When ``returning_columns`` is omitted (default), the input list is returned
+    unchanged. When provided, the listed columns are read back from the database via
+    ``RETURNING`` (or, for the insert-ignore path, a follow-up ``SELECT`` over the
+    conflict keys), so callers can recover database-assigned columns such as auto-
+    increment primary keys or server-defaulted timestamps. Requires SQLite >= 3.35.
 
     :param session: SQLAlchemy session.
     :param model_instances: List of model instances to upsert.
     :param conflict_columns: Columns that define uniqueness.
     :param on_conflict_update: If True, update on conflict; if False, ignore.
     :param update_columns: Columns to update (if None, update all non-conflict cols).
-    :return: List of persisted instances.
+    :param returning_columns: Columns to populate on the returned instances. If None,
+        the input ``model_instances`` list is returned unchanged.
+    :return: List of model instances. If ``returning_columns`` is None, this is the
+        input list. Otherwise, it is a fresh list of model instances populated with only
+        the requested columns from the database.
     """
     if not model_instances:
         return []
@@ -89,12 +100,16 @@ def upsert_model_instances(
                 instance_dict[key] = value
         values.append(instance_dict)
 
-    # Determine which columns to update on conflict.
+    # Determine which columns to update on conflict. Excludes:
+    # - conflict columns (used to identify the row, must not change),
+    # - primary-key columns (immutable; for an auto-increment PK like sleep_id,
+    #   not present on the input instance, leaving it would generate
+    #   `SET sleep_id = NULL` and trigger a new-rowid assignment in SQLite),
+    # - create_ts (audit column, should reflect the original insert time),
+    # - update_ts (set explicitly below to current_timestamp if present).
+    pk_columns = {col.name for col in model_class.__table__.primary_key.columns}
     if update_columns is None:
-        # Update all columns except conflict columns, create_ts, and update_ts.
-        # Exclude create_ts (should never change on update).
-        # Exclude update_ts (will be set explicitly below if it exists).
-        excluded_cols = set(conflict_columns) | {"create_ts", "update_ts"}
+        excluded_cols = set(conflict_columns) | pk_columns | {"create_ts", "update_ts"}
         update_columns = [col for col in model_columns if col not in excluded_cols]
 
     # Clamp chunk size so total parameters stay within the SQLite
@@ -103,6 +118,8 @@ def upsert_model_instances(
     # from the values dicts.
     num_cols = len(model_class.__table__.columns)
     max_rows = max(1, _SQLITE_MAX_PARAMS // num_cols)
+
+    returned_rows: List[Dict[str, Any]] = []
 
     for chunk_start in range(0, len(values), max_rows):
         chunk = values[chunk_start : chunk_start + max_rows]
@@ -129,6 +146,40 @@ def upsert_model_instances(
                 index_elements=conflict_columns
             )
 
-        session.execute(upsert_stmt)
+        if returning_columns:
+            return_cols = [getattr(model_class, col) for col in returning_columns]
+            if on_conflict_update:
+                # ON CONFLICT DO UPDATE always emits a row per input, so
+                # RETURNING gives us one row per input row.
+                upsert_stmt = upsert_stmt.returning(*return_cols)
+                result = session.execute(upsert_stmt)
+                returned_rows.extend(row._asdict() for row in result.fetchall())
+            else:
+                # ON CONFLICT DO NOTHING does not emit RETURNING rows for
+                # ignored conflicts. Execute without RETURNING, then SELECT
+                # the conflict keys of this chunk to recover IDs for both
+                # newly-inserted and pre-existing rows.
+                session.execute(upsert_stmt)
+                conflict_conditions = [
+                    and_(
+                        *[
+                            (
+                                getattr(model_class, col) == value[col]
+                                if value[col] is not None
+                                else getattr(model_class, col).is_(None)
+                            )
+                            for col in conflict_columns
+                        ]
+                    )
+                    for value in chunk
+                ]
+                stmt = select(*return_cols).where(or_(*conflict_conditions))
+                returned_rows.extend(
+                    row._asdict() for row in session.execute(stmt).all()
+                )
+        else:
+            session.execute(upsert_stmt)
 
-    return model_instances
+    if returning_columns is None:
+        return model_instances
+    return [model_class(**row) for row in returned_rows]
