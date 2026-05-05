@@ -35,6 +35,26 @@ from garmin_health_data.models import (
     User,
 )
 
+# Minimum SQLite version. 3.35.0 (2021-03-12) added support for
+# `INSERT ... ON CONFLICT ... RETURNING`, which the bulk upsert helper relies on
+# to read back database-assigned columns (e.g. the auto-increment `sleep_id`).
+_MIN_SQLITE_VERSION = (3, 35, 0)
+
+
+def check_sqlite_version() -> None:
+    """
+    Validate that the linked SQLite library meets the minimum required version.
+
+    :raises RuntimeError: If the installed SQLite version is too old.
+    """
+    if sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION:
+        required = ".".join(str(v) for v in _MIN_SQLITE_VERSION)
+        raise RuntimeError(
+            f"garmin-health-data requires SQLite >= {required} "
+            f"(found {sqlite3.sqlite_version}). "
+            "Upgrade your Python build or system SQLite library."
+        )
+
 
 def get_engine(db_path: str = "garmin_data.db"):
     """
@@ -43,6 +63,7 @@ def get_engine(db_path: str = "garmin_data.db"):
     :param db_path: Path to SQLite database file.
     :return: SQLAlchemy engine.
     """
+    check_sqlite_version()
     db_file = Path(db_path).expanduser().resolve()
 
     # Create database URL (use as_posix() for cross-platform compatibility).

@@ -1308,23 +1308,15 @@ class GarminProcessor(Processor):
         # Process to database.
         if sleep_record:
             sleep = Sleep(**sleep_record)
-            # Exclude columns that should not be overwritten on re-runs:
-            # - sleep_id: serial primary key, must not change for FK integrity.
-            # - create_ts: audit column, should only reflect initial insert time.
-            update_columns = [
-                col.name
-                for col in Sleep.__table__.columns
-                if col.name not in ["user_id", "start_ts", "sleep_id", "create_ts"]
-            ]
-            persisted_sleep = upsert_model_instances(
+            persisted = upsert_model_instances(
                 session=session,
                 model_instances=[sleep],
                 conflict_columns=["user_id", "start_ts"],
-                update_columns=update_columns,
                 on_conflict_update=True,
+                returning_columns=["sleep_id"],
             )
             click.echo("Processed main sleep data.")
-            return persisted_sleep[0].sleep_id
+            return persisted[0].sleep_id
         else:
             click.secho("⚠️ No main sleep data found.", fg="yellow")
             return None
