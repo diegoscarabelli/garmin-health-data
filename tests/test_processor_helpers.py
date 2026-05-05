@@ -832,6 +832,108 @@ class TestUpsertModelInstancesReturning:
             # Existing values preserved for conflicts; new value for the insert.
             assert [p.value for p in persisted] == [70, 80, 72]
 
+    def test_returning_do_nothing_does_not_bump_update_ts(self, temp_db):
+        """
+        ``update_ts`` must be preserved across an ``on_conflict_update=False`` +
+        ``returning_columns`` re-upsert.
+
+        Locks in the contract that the no-op ``DO UPDATE`` trick (only assigning a
+        conflict column to itself) does not accidentally refresh audit timestamps.
+        """
+        import time
+
+        from garmin_health_data.models import Activity
+
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+
+            kwargs = dict(
+                activity_id=1,
+                user_id=1,
+                start_ts=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                end_ts=datetime(2024, 1, 1, 13, 0, 0, tzinfo=timezone.utc),
+                timezone_offset_hours=0.0,
+                activity_type_id=1,
+                activity_type_key="r",
+                event_type_id=1,
+                event_type_key="u",
+                parent=False,
+                purposeful=True,
+                favorite=False,
+                pr=False,
+                auto_calc_calories=True,
+                has_polyline=False,
+                has_images=False,
+                has_video=False,
+                has_heat_map=False,
+                manual_activity=False,
+            )
+            upsert_model_instances(
+                session=session,
+                model_instances=[Activity(**kwargs)],
+                conflict_columns=["activity_id"],
+                on_conflict_update=False,
+            )
+            session.commit()
+
+            original_ts = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalar_one()
+                .update_ts
+            )
+
+        # SQLite's CURRENT_TIMESTAMP has second precision; ensure any spurious
+        # refresh would produce a different value.
+        time.sleep(1.1)
+
+        with Session(engine) as session:
+            upsert_model_instances(
+                session=session,
+                model_instances=[Activity(**kwargs)],
+                conflict_columns=["activity_id"],
+                on_conflict_update=False,
+                returning_columns=["activity_id"],
+            )
+            session.commit()
+
+            after_ts = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalar_one()
+                .update_ts
+            )
+            assert after_ts == original_ts
+
+    def test_returning_do_nothing_same_batch_duplicate_keys(self, temp_db):
+        """
+        Same-batch duplicate conflict keys with ``on_conflict_update=False`` +
+        ``returning_columns``: SQLite resolves with first-wins semantics. Exactly one
+        row is stored, the result list contains one entry per input row (in input
+        order), and every entry reflects the first-input value.
+
+        Pins down a SQLite-specific behavior — PostgreSQL would error here.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+
+            ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+            persisted = upsert_model_instances(
+                session=session,
+                model_instances=[
+                    HeartRate(user_id=1, timestamp=ts, value=70),
+                    HeartRate(user_id=1, timestamp=ts, value=80),
+                ],
+                conflict_columns=["user_id", "timestamp"],
+                on_conflict_update=False,
+                returning_columns=["user_id", "timestamp", "value"],
+            )
+            session.commit()
+
+            assert session.scalar(select(func.count()).select_from(HeartRate)) == 1
+            assert len(persisted) == 2
+            assert [p.value for p in persisted] == [70, 70]
+
     def test_returning_across_chunk_boundaries(self, temp_db):
         """
         RETURNING results are accumulated across chunked statements.
