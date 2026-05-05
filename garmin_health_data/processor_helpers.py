@@ -99,20 +99,21 @@ def upsert_model_instances(
     model_class = type(model_instances[0])
     model_columns = model_class.__table__.columns.keys()
 
-    # Validate `returning_columns` and surface the SQLite version requirement
-    # at the call boundary so callers that build a Session outside `get_engine`
-    # (and therefore skip its version gate) still get a clear error instead of
-    # an opaque SQL syntax / IndexError failure further down.
+    # Validate inputs and surface the SQLite version requirement at the call
+    # boundary so callers that build a Session outside `get_engine` (and
+    # therefore skip its version gate) still get a clear error instead of an
+    # opaque SQL syntax / IndexError / AttributeError failure further down.
+    if not conflict_columns:
+        raise ValueError(
+            "`conflict_columns` must be a non-empty list. An empty list "
+            "produces invalid `ON CONFLICT` SQL in both DO UPDATE and DO "
+            "NOTHING modes."
+        )
     if returning_columns is not None:
         if not returning_columns:
             raise ValueError(
                 "`returning_columns` must be a non-empty list when provided. "
                 "Pass None to opt out of the RETURNING path."
-            )
-        if not conflict_columns:
-            raise ValueError(
-                "`conflict_columns` must be a non-empty list when "
-                "`returning_columns` is provided."
             )
         unknown = [col for col in returning_columns if col not in model_columns]
         if unknown:
