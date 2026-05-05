@@ -63,7 +63,7 @@ def strategy_for(name: str) -> Strategy:
        ``LAST``, ``total_*`` -> ``LAST``).
     3. Default: :attr:`Strategy.AGGREGATE`.
 
-    :param name: Metric name as stored in ``activity_ts_metric.metric_name``.
+    :param name: Metric name as stored in ``activity_ts_metric.name``.
     :return: The resolved :class:`Strategy` for the metric.
     """
     if name in EXPLICIT_OVERRIDES:
