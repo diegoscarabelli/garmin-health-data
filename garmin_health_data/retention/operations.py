@@ -28,6 +28,28 @@ from typing import Any, Iterable, List, Optional, Sequence, Tuple
 from garmin_health_data.retention.parsers import resolve_range
 from garmin_health_data.retention.strategies import Strategy, strategy_for
 
+
+def _ensure_schema_current(db_path: Path) -> None:
+    """
+    Run the packaged DDL against the database so any tables added in this release exist
+    before the calling operation reads or writes them.
+
+    This matters for users who run ``garmin migrate-cascade`` and then ``garmin
+    downsample`` directly without an intervening ``garmin extract``: the
+    ``activity_ts_metric_downsampled`` table was introduced in 2.8 and is not present in
+    pre-2.8 databases. The DDL uses ``CREATE TABLE IF NOT EXISTS`` so this is a no-op
+    for already-current schemas.
+
+    :param db_path: Path to the SQLite database file.
+    """
+    # Local import to avoid a cycle: db.py imports models, which imports
+    # nothing from retention; retention.operations only needs db.create_tables
+    # at call time.
+    from garmin_health_data.db import create_tables
+
+    create_tables(str(db_path))
+
+
 # Handle importlib.resources for different Python versions, mirroring the
 # pattern in :mod:`garmin_health_data.db`.
 if sys.version_info >= (3, 9):
@@ -483,6 +505,8 @@ def prune_ts_metrics(
     if not db_file.exists():
         raise FileNotFoundError(f"Database file not found: {db_file}")
 
+    _ensure_schema_current(db_file)
+
     start_dt, end_dt = resolve_range(start, end)
     user_ids_list: Optional[List[int]] = list(user_ids) if user_ids else None
 
@@ -681,6 +705,8 @@ def downsample_activities(
     if not db_file.exists():
         raise FileNotFoundError(f"Database file not found: {db_file}")
 
+    _ensure_schema_current(db_file)
+
     start_dt, end_dt = resolve_range(start, end)
     user_ids_list: Optional[List[int]] = list(user_ids) if user_ids else None
 
@@ -755,7 +781,16 @@ def downsample_activities(
                     # silently emit no rows.
                     raise RuntimeError(f"Unhandled downsample strategy: {strategy!r}")
                 cur.execute(sql, {"grain": time_grain_seconds, "name": name})
-                rows_inserted += cur.rowcount
+            # Count freshly inserted rows by querying the destination table.
+            # `cur.rowcount` is unreliable for `WITH ... INSERT INTO ...` in
+            # Python's sqlite3 binding (the LAST-strategy query uses a CTE
+            # and undercounts), so we compute the count from the truth on
+            # disk inside the same transaction.
+            rows_inserted = cur.execute(
+                "SELECT COUNT(*) FROM activity_ts_metric_downsampled "
+                "WHERE activity_id IN ("
+                "SELECT activity_id FROM _tmp_target_activities)"
+            ).fetchone()[0]
             conn.commit()
         except Exception:
             conn.rollback()

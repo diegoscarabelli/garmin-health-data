@@ -8,7 +8,7 @@ The SQL semantics are exhaustively covered by
 parameter parsing, prompt flow, output formatting, and flag-pairing rules.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -17,7 +17,12 @@ from sqlalchemy.orm import Session
 
 from garmin_health_data.cli import cli
 from garmin_health_data.db import create_tables, get_engine
-from garmin_health_data.models import Activity, ActivityTsMetric, User
+from garmin_health_data.models import (
+    Activity,
+    ActivityTsMetric,
+    ActivityTsMetricDownsampled,
+    User,
+)
 
 
 def _seed_minimal_db(db_path: str) -> None:
@@ -296,3 +301,128 @@ def test_extract_rejects_downsample_grain_without_older_than():
     )
     assert result.exit_code != 0
     assert "must be supplied together" in result.output
+
+
+def _seed_old_activity_db(db_path: Path) -> datetime:
+    """
+    Build a DB with one user and one activity dated ~400 days in the past plus a handful
+    of ts-metric rows. Returns the activity's start_ts.
+
+    :param db_path: Path to the SQLite database file.
+    :return: The activity start_ts for assertions.
+    """
+    create_tables(str(db_path))
+    engine = get_engine(str(db_path))
+    old_start = datetime.now(timezone.utc) - timedelta(days=400)
+    with Session(engine) as session:
+        session.add(User(user_id=99))
+        session.commit()
+        session.add(
+            Activity(
+                activity_id=999,
+                user_id=99,
+                activity_type_id=1,
+                activity_type_key="running",
+                event_type_id=1,
+                event_type_key="other",
+                start_ts=old_start,
+                end_ts=old_start + timedelta(minutes=10),
+                timezone_offset_hours=0.0,
+            )
+        )
+        session.commit()
+        session.execute(
+            insert(ActivityTsMetric),
+            [
+                {
+                    "activity_id": 999,
+                    "timestamp": old_start + timedelta(seconds=sec),
+                    "name": "heart_rate",
+                    "value": 140.0 + sec,
+                    "units": "bpm",
+                }
+                for sec in (5, 25, 55)
+            ],
+        )
+        session.commit()
+    engine.dispose()
+    return old_start
+
+
+def test_extract_auto_prune_actually_runs(tmp_path: Path):
+    """
+    `extract --process-only --prune-older-than` deletes activity_ts_metric rows for
+    activities older than today minus DURATION before any extraction work happens.
+
+    End-to-end coverage of the auto-flag wiring (the validation tests above only
+    exercise the error paths).
+    """
+    db = tmp_path / "garmin.db"
+    _seed_old_activity_db(db)
+    # Lifecycle dirs so --process-only does not crash on missing folders;
+    # ingest/ stays empty so the actual extraction step is a no-op.
+    (tmp_path / "garmin_files" / "ingest").mkdir(parents=True)
+    (tmp_path / "garmin_files" / "process").mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "extract",
+            "--process-only",
+            "--db-path",
+            str(db),
+            "--prune-older-than",
+            "30d",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Auto prune" in result.output
+    assert "Deleted" in result.output
+
+    engine = get_engine(str(db))
+    with Session(engine) as session:
+        assert session.query(ActivityTsMetric).count() == 0
+        # Activity itself is preserved.
+        assert session.query(Activity).count() == 1
+    engine.dispose()
+
+
+def test_extract_auto_downsample_actually_runs(tmp_path: Path):
+    """
+    `extract --process-only --downsample-older-than --downsample-grain` runs the
+    downsample before extraction and writes buckets to the new
+    activity_ts_metric_downsampled table.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_old_activity_db(db)
+    (tmp_path / "garmin_files" / "ingest").mkdir(parents=True)
+    (tmp_path / "garmin_files" / "process").mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "extract",
+            "--process-only",
+            "--db-path",
+            str(db),
+            "--downsample-older-than",
+            "30d",
+            "--downsample-grain",
+            "60s",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Auto downsample" in result.output
+
+    engine = get_engine(str(db))
+    with Session(engine) as session:
+        assert session.query(ActivityTsMetricDownsampled).count() == 1
+        bucket = session.query(ActivityTsMetricDownsampled).one()
+        assert bucket.name == "heart_rate"
+        assert bucket.bucket_seconds == 60
+        assert bucket.sample_count == 3
+    engine.dispose()

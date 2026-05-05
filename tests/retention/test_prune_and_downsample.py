@@ -587,3 +587,106 @@ def test_downsample_missing_db_raises():
             time_grain_seconds=60,
             end=date(2026, 1, 1),
         )
+
+
+def test_downsample_rows_inserted_count_matches_table_for_last_strategy(
+    temp_db_path, db_engine, db_session
+):
+    """
+    Regression: ``cur.rowcount`` is unreliable for ``WITH ...
+
+    INSERT INTO ...`` in Python's sqlite3 binding (the LAST-strategy query uses a CTE).
+
+    The reported ``rows_inserted`` must match the actual destination-table count even
+    when both AGGREGATE (no CTE) and LAST (with CTE) run together.
+    """
+    user_id = _seed_user(db_session)
+    start = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+    _seed_activity(db_session, 1, user_id, start, duration_minutes=30)
+    rows = []
+    for sec in range(0, 1800, 30):
+        rows.append(
+            (
+                datetime.fromtimestamp(start.timestamp() + sec, tz=timezone.utc),
+                "heart_rate",
+                140.0 + sec / 100,
+                "bpm",
+            )
+        )
+        rows.append(
+            (
+                datetime.fromtimestamp(start.timestamp() + sec, tz=timezone.utc),
+                "distance",
+                float(sec),
+                "m",
+            )
+        )
+    _seed_ts_metrics(db_session, 1, rows)
+
+    result = downsample_activities(
+        temp_db_path,
+        time_grain_seconds=60,
+        start=date(2026, 1, 5),
+        end=date(2026, 1, 5),
+    )
+
+    actual = db_session.query(ActivityTsMetricDownsampled).count()
+    assert result["rows_inserted"] == actual, (
+        f"rows_inserted={result['rows_inserted']} disagrees with table "
+        f"count={actual}; CTE INSERT rowcount is being miscounted."
+    )
+
+
+def test_downsample_creates_new_table_on_pre_2_8_db(tmp_path):
+    """
+    Regression: a pre-2.8 database has no ``activity_ts_metric_downsampled`` table.
+
+    Calling :func:`downsample_activities` must materialize the table on the fly via
+    ``CREATE TABLE IF NOT EXISTS`` so users who run ``garmin migrate-cascade`` then
+    ``garmin downsample`` directly (without an intervening ``garmin extract``) do not
+    hit "no such table".
+    """
+    import sqlite3
+
+    db_path = str(tmp_path / "garmin.db")
+    # Construct a minimal pre-2.8 DB by hand: just the three tables the
+    # downsample SQL touches, no downsampled table.
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        "CREATE TABLE user (user_id BIGINT PRIMARY KEY); "
+        "CREATE TABLE activity ("
+        "activity_id BIGINT PRIMARY KEY, user_id BIGINT NOT NULL, "
+        "activity_type_id INTEGER NOT NULL, activity_type_key TEXT NOT NULL, "
+        "event_type_id INTEGER NOT NULL, event_type_key TEXT NOT NULL, "
+        "start_ts DATETIME NOT NULL, end_ts DATETIME NOT NULL, "
+        "timezone_offset_hours FLOAT NOT NULL); "
+        "CREATE TABLE activity_ts_metric ("
+        "activity_id BIGINT NOT NULL, timestamp DATETIME NOT NULL, "
+        "name TEXT NOT NULL, value FLOAT, units TEXT, "
+        "PRIMARY KEY (activity_id, timestamp, name));"
+    )
+    conn.commit()
+    conn.close()
+
+    pre_tables = (
+        sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
+    )
+    assert ("activity_ts_metric_downsampled",) not in pre_tables
+
+    result = downsample_activities(
+        db_path,
+        time_grain_seconds=60,
+        end=date(2026, 1, 1),
+    )
+
+    # Empty result is fine; the assertion is that the call did not raise
+    # OperationalError("no such table") and the table now exists.
+    assert result["activity_count"] == 0
+    post_tables = (
+        sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
+    )
+    assert ("activity_ts_metric_downsampled",) in post_tables
