@@ -19,7 +19,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 ## Requirements
 
 - Python 3.10 or higher
-- SQLite 3.35.0 or higher (released March 2021). The bulk upsert helper relies on `INSERT ... ON CONFLICT ... RETURNING`, added in this version. Python 3.10+ on standard CPython builds and current Linux distros ships with a sufficiently recent SQLite; `garmin init` and `garmin extract` will fail fast with a clear error if the linked SQLite library is too old.
+- SQLite 3.35.0 or higher (released March 2021). The bulk upsert helper relies on `INSERT ... ON CONFLICT ... RETURNING`, added in this version. Python 3.10+ on standard CPython builds and current Linux distros ship with a sufficiently recent SQLite; `garmin init` and `garmin extract` will fail fast with a clear error if the linked SQLite library is too old.
 - Garmin Connect account
 - Internet connection for data extraction
 
