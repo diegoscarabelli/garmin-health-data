@@ -31,23 +31,37 @@ from garmin_health_data.retention.strategies import Strategy, strategy_for
 
 def _ensure_schema_current(db_path: Path) -> None:
     """
-    Run the packaged DDL against the database so any tables added in this release exist
-    before the calling operation reads or writes them.
+    Create any 2.8-new tables on a database that predates them.
 
-    This matters for users who run ``garmin migrate-cascade`` and then ``garmin
-    downsample`` directly without an intervening ``garmin extract``: the
-    ``activity_ts_metric_downsampled`` table was introduced in 2.8 and is not present in
-    pre-2.8 databases. The DDL uses ``CREATE TABLE IF NOT EXISTS`` so this is a no-op
-    for already-current schemas.
+    Only the ``activity_ts_metric_downsampled`` table is new in 2.8; older tables and
+    indexes already exist in any database that has been touched by this codebase. We
+    deliberately do NOT re-run the full DDL here: indexes in the full DDL reference
+    columns on parent tables, and pre-2.8 fixtures that strip those parent tables down
+    (e.g., in unit tests or hand-edited databases) would fail with ``no such column``.
+    Materializing only the genuinely-new table keeps this helper safe to call from any
+    retention entry point on any vintage of database.
+
+    The CREATE statement is sourced from ``tables.ddl`` (single source of truth) and
+    runs idempotently via ``CREATE TABLE IF NOT EXISTS``.
 
     :param db_path: Path to the SQLite database file.
+    :raises RuntimeError: when the schema source is missing the new table definition
+        (would indicate a packaging bug).
     """
-    # Local import to avoid a cycle: db.py imports models, which imports
-    # nothing from retention; retention.operations only needs db.create_tables
-    # at call time.
-    from garmin_health_data.db import create_tables
-
-    create_tables(str(db_path))
+    new_table_ddl = _extract_table_ddl(
+        _load_ddl_text(), "activity_ts_metric_downsampled"
+    )
+    if new_table_ddl is None:
+        raise RuntimeError(
+            "tables.ddl does not contain CREATE TABLE for "
+            "activity_ts_metric_downsampled; schema source is broken."
+        )
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(new_table_ddl)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # Handle importlib.resources for different Python versions, mirroring the
@@ -238,13 +252,29 @@ def _migrate_one_table(
     cur.execute("BEGIN")
     try:
         cur.execute(f"ALTER TABLE {table} RENAME TO {old_name}")
-        cur.executescript(new_create)
+        # NEVER use cur.executescript() here. executescript() issues an
+        # implicit COMMIT before running and ignores the surrounding BEGIN,
+        # which would leave the rename committed even when the subsequent
+        # CREATE/INSERT/DROP fails. We use cur.execute() per statement so
+        # the explicit BEGIN/COMMIT actually wraps the whole 12-step dance.
+        # The DDL extracted from tables.ddl is a single CREATE TABLE
+        # statement and the index extracts are single CREATE INDEX
+        # statements, so cur.execute() suffices for all of them; if the
+        # extractor ever returned multi-statement strings, the assertion
+        # below would surface that mismatch loudly rather than silently
+        # break atomicity again.
+        assert ";" not in new_create.rstrip().rstrip(";"), (
+            "_extract_table_ddl returned a multi-statement string; "
+            "_migrate_one_table would silently lose transactional safety. "
+            "See operations.py for the executescript footgun explanation."
+        )
+        cur.execute(new_create.rstrip().rstrip(";"))
         # Column lists are identical between old and new, so a positional
         # ``SELECT *`` copy is safe.
         cur.execute(f"INSERT INTO {table} SELECT * FROM {old_name}")
         cur.execute(f"DROP TABLE {old_name}")
         for index_sql in indexes:
-            cur.executescript(index_sql)
+            cur.execute(index_sql.rstrip().rstrip(";"))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -373,6 +403,14 @@ def migrate_cascade(
             )
     finally:
         conn.close()
+
+    # Bring the schema fully up to date so any new-in-this-release tables
+    # (e.g. activity_ts_metric_downsampled) exist after the migration. This
+    # only runs on a real (non-dry-run) migration; the dry-run path returns
+    # earlier and leaves the database untouched. Without this, a user could
+    # follow `garmin migrate-cascade` with `garmin downsample` and hit
+    # `no such table` until some unrelated extract bootstrapped the schema.
+    _ensure_schema_current(db_file)
 
     return {
         "migrated": migrated,

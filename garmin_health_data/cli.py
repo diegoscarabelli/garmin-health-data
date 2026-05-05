@@ -215,6 +215,31 @@ def extract(
         )
         raise click.Abort()
 
+    # Validate auto retention flag pairings: downsample requires both flags.
+    # Single missing flag is a user error and aborts before any work.
+    if (downsample_older_than is None) != (downsample_grain is None):
+        click.secho(
+            "❌ --downsample-older-than and --downsample-grain must be "
+            "supplied together (or both omitted).",
+            fg="red",
+        )
+        raise click.Abort()
+
+    # --extract-only promises "download files and stop, no DB writes". Auto
+    # retention is a DB write, so combining the two is incoherent and would
+    # silently mutate the database the user just asked us to leave alone.
+    # Reject the combination up front.
+    if extract_only and (
+        downsample_older_than is not None or prune_older_than is not None
+    ):
+        click.secho(
+            "❌ --extract-only is incompatible with --prune-older-than and "
+            "--downsample-older-than (those flags write to the database; "
+            "--extract-only is for download-only runs).",
+            fg="red",
+        )
+        raise click.Abort()
+
     # Authentication is only required when we will hit the Garmin API.
     if not process_only:
         ensure_authenticated()
@@ -230,55 +255,6 @@ def extract(
         # updated, existing tables are untouched.
         create_tables(db_path)
 
-    # Validate auto retention flag pairings: downsample requires both flags.
-    # Single missing flag is a user error and aborts before any work.
-    if (downsample_older_than is None) != (downsample_grain is None):
-        click.secho(
-            "❌ --downsample-older-than and --downsample-grain must be "
-            "supplied together (or both omitted).",
-            fg="red",
-        )
-        raise click.Abort()
-
-    # Auto retention runs against the freshly-migrated schema, before the
-    # extraction lock is acquired (retention only touches the database, not
-    # the file lifecycle, so the lock is not needed). Downsample runs first:
-    # if the user asked for both, today's prune must not strand the bucket
-    # aggregation that needed the source rows.
-    today = datetime.now().date()
-    if downsample_older_than is not None:
-        cutoff = today - downsample_older_than
-        click.secho(
-            f"📉 Auto downsample: activities with start_ts < "
-            f"{format_date(cutoff)} at {downsample_grain}s grain.",
-            fg="cyan",
-        )
-        ds_result = downsample_activities(
-            db_path,
-            time_grain_seconds=downsample_grain,
-            end=cutoff,
-        )
-        click.echo(
-            f"   {ds_result['activity_count']} activit"
-            f"{'y' if ds_result['activity_count'] == 1 else 'ies'} processed; "
-            f"replaced {format_count(ds_result['rows_deleted'])} prior rows "
-            f"with {format_count(ds_result['rows_inserted'])} new bucket rows."
-        )
-
-    if prune_older_than is not None:
-        cutoff = today - prune_older_than
-        click.secho(
-            f"🗑️  Auto prune: activity_ts_metric with start_ts < "
-            f"{format_date(cutoff)}.",
-            fg="cyan",
-        )
-        pr_result = prune_ts_metrics(db_path, end=cutoff)
-        click.echo(
-            f"   Deleted {format_count(pr_result['rows_affected'])} rows "
-            f"across {pr_result['activity_count']} activit"
-            f"{'y' if pr_result['activity_count'] == 1 else 'ies'}."
-        )
-
     # Date auto-detection and extract-only logging are skipped when running
     # in --process-only mode (no API calls, dates would be unused).
     data_types_list = list(data_types) if data_types else None
@@ -287,6 +263,18 @@ def extract(
         if accounts
         else None
     )
+    # Auto retention scopes to the same accounts the extract run targets.
+    # The retention helpers expect integer user_ids while the extractor
+    # surface uses strings, so do the conversion here. Invalid values are
+    # surfaced as a Click usage error rather than silently dropped.
+    retention_user_ids: Optional[list] = None
+    if accounts_list:
+        try:
+            retention_user_ids = [int(a) for a in accounts_list]
+        except ValueError as exc:
+            raise click.BadParameter(
+                f"--accounts contains a non-integer user_id: {exc}"
+            ) from exc
 
     if not process_only:
         # Auto-detect start date if not provided.
@@ -358,6 +346,61 @@ def extract(
                     f"♻️  Recovered {recovered} file(s) from a previous run "
                     f"(process/ → ingest/).",
                     fg="cyan",
+                )
+
+            # Auto retention runs INSIDE the lifecycle lock so two concurrent
+            # `garmin extract` runs cannot both start mutating the database
+            # before one of them loses the lock. Downsample runs first: if the
+            # user asked for both, today's prune must not strand the bucket
+            # aggregation that needed the source rows.
+            today = datetime.now().date()
+            if downsample_older_than is not None:
+                cutoff = today - downsample_older_than
+                click.secho(
+                    f"📉 Auto downsample: activities with start_ts < "
+                    f"{format_date(cutoff)} at {downsample_grain}s grain.",
+                    fg="cyan",
+                )
+                ds_result = downsample_activities(
+                    db_path,
+                    time_grain_seconds=downsample_grain,
+                    end=cutoff,
+                    user_ids=retention_user_ids,
+                )
+                # Print the strategy table so users see the per-metric
+                # classification a cron run is about to commit. A misclassified
+                # future metric can be patched in a follow-up release; the
+                # source rows are preserved until prune, so re-running
+                # downsample with the corrected registry recovers cleanly.
+                if ds_result["metric_strategies"]:
+                    click.echo(
+                        format_strategy_table(
+                            [name for name, _ in ds_result["metric_strategies"]]
+                        )
+                    )
+                click.echo(
+                    f"   {ds_result['activity_count']} activit"
+                    f"{'y' if ds_result['activity_count'] == 1 else 'ies'} "
+                    f"processed; replaced "
+                    f"{format_count(ds_result['rows_deleted'])} prior rows "
+                    f"with {format_count(ds_result['rows_inserted'])} new "
+                    f"bucket rows."
+                )
+
+            if prune_older_than is not None:
+                cutoff = today - prune_older_than
+                click.secho(
+                    f"🗑️  Auto prune: activity_ts_metric with start_ts < "
+                    f"{format_date(cutoff)}.",
+                    fg="cyan",
+                )
+                pr_result = prune_ts_metrics(
+                    db_path, end=cutoff, user_ids=retention_user_ids
+                )
+                click.echo(
+                    f"   Deleted {format_count(pr_result['rows_affected'])} "
+                    f"rows across {pr_result['activity_count']} activit"
+                    f"{'y' if pr_result['activity_count'] == 1 else 'ies'}."
                 )
 
             # ---------------------------------------------------------------- Step 1: Extract.

@@ -389,6 +389,103 @@ def test_extract_auto_prune_actually_runs(tmp_path: Path):
     engine.dispose()
 
 
+def test_extract_rejects_extract_only_with_retention_flags(tmp_path: Path):
+    """
+    `--extract-only` promises "download files, no DB writes".
+
+    Combining it with `--prune-older-than` or `--downsample-older-than` is incoherent
+    and would silently mutate the database; reject the combination up front.
+    """
+    db = tmp_path / "garmin.db"
+    create_tables(str(db))
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "extract",
+            "--db-path",
+            str(db),
+            "--extract-only",
+            "--prune-older-than",
+            "30d",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "extract-only is incompatible" in result.output
+
+
+def test_extract_auto_prune_scopes_to_accounts(tmp_path: Path):
+    """
+    `--accounts X --prune-older-than ...` must scope the auto-prune to only the listed
+    users, not all users in the database.
+    """
+    db = tmp_path / "garmin.db"
+    create_tables(str(db))
+    engine = get_engine(str(db))
+    old_start = datetime.now(timezone.utc) - timedelta(days=400)
+    with Session(engine) as session:
+        session.add(User(user_id=10))
+        session.add(User(user_id=20))
+        session.commit()
+        # Two activities in the past, one per user.
+        for activity_id, user_id in ((1, 10), (2, 20)):
+            session.add(
+                Activity(
+                    activity_id=activity_id,
+                    user_id=user_id,
+                    activity_type_id=1,
+                    activity_type_key="running",
+                    event_type_id=1,
+                    event_type_key="other",
+                    start_ts=old_start,
+                    end_ts=old_start + timedelta(minutes=10),
+                    timezone_offset_hours=0.0,
+                )
+            )
+        session.commit()
+        for activity_id in (1, 2):
+            session.execute(
+                insert(ActivityTsMetric),
+                [
+                    {
+                        "activity_id": activity_id,
+                        "timestamp": old_start,
+                        "name": "heart_rate",
+                        "value": 140.0,
+                        "units": "bpm",
+                    }
+                ],
+            )
+        session.commit()
+    engine.dispose()
+
+    (tmp_path / "garmin_files" / "ingest").mkdir(parents=True)
+    (tmp_path / "garmin_files" / "process").mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "extract",
+            "--process-only",
+            "--db-path",
+            str(db),
+            "--accounts",
+            "10",
+            "--prune-older-than",
+            "30d",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    engine = get_engine(str(db))
+    with Session(engine) as session:
+        # Only user 10's activity should have its ts-metric rows pruned.
+        assert session.query(ActivityTsMetric).filter_by(activity_id=1).count() == 0
+        assert session.query(ActivityTsMetric).filter_by(activity_id=2).count() == 1
+    engine.dispose()
+
+
 def test_extract_auto_downsample_actually_runs(tmp_path: Path):
     """
     `extract --process-only --downsample-older-than --downsample-grain` runs the
