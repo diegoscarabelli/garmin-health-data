@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import click
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 # Handle importlib.resources for different Python versions
@@ -36,9 +36,31 @@ from garmin_health_data.models import (
 )
 
 
+def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    """
+    Enable SQLite foreign-key enforcement on every new connection.
+
+    SQLite defaults `PRAGMA foreign_keys` to OFF per connection, so `ON DELETE CASCADE`
+    clauses in the schema are silently inert without this. Registered as a SQLAlchemy
+    `connect` event listener on engines created by :func:`get_engine`.
+
+    :param dbapi_connection: DB-API connection instance (sqlite3.Connection).
+    :param _connection_record: SQLAlchemy connection record (unused).
+    """
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
 def get_engine(db_path: str = "garmin_data.db"):
     """
     Create SQLAlchemy engine for SQLite database.
+
+    Attaches a `connect` event listener that runs `PRAGMA foreign_keys=ON` on every new
+    connection so `ON DELETE CASCADE` clauses in the schema actually fire.
 
     :param db_path: Path to SQLite database file.
     :return: SQLAlchemy engine.
@@ -54,6 +76,7 @@ def get_engine(db_path: str = "garmin_data.db"):
         echo=False,  # Set to True for SQL debugging.
         connect_args={"check_same_thread": False},  # Allow multi-threading.
     )
+    event.listen(engine, "connect", _enable_sqlite_foreign_keys)
 
     return engine
 

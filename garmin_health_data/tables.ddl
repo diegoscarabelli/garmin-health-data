@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS swimming_agg_metrics (
     , avg_swolf FLOAT                      -- Average SWOLF score (strokes + time in seconds to cover pool length).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Cycling-specific metrics including power zones, cadence, and performance analysis. Each record corresponds to a specific cycling activity.
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS cycling_agg_metrics (
     , avg_respiration_rate FLOAT           -- Average respiration rate during the activity in breaths per minute.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Running-specific metrics including running form, cadence, and split times. Each record corresponds to a specific running activity.
@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS running_agg_metrics (
     , avg_respiration_rate FLOAT           -- Average respiration rate during the activity in breaths per minute.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Supplemental activity metrics with flexible key-value storage. Allows for additional metrics not captured in the main tables.
@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS supplemental_activity_metric (
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (activity_id, metric)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Sleep session data from Garmin Connect including sleep scores, duration, and quality metrics. Each record represents a single sleep session.
@@ -311,7 +311,7 @@ CREATE TABLE IF NOT EXISTS sleep_level (
     , stage_label TEXT NOT NULL            -- Human-readable sleep stage label (DEEP, LIGHT, REM, AWAKE) denormalized for query convenience.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, start_ts)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS sleep_level_stage_idx
@@ -324,7 +324,7 @@ CREATE TABLE IF NOT EXISTS sleep_movement (
     , activity_level FLOAT                 -- Movement activity level (higher values indicate more movement).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 -- Sleep restless moments count capturing periods of restlessness or movement during sleep sessions.
@@ -334,7 +334,7 @@ CREATE TABLE IF NOT EXISTS sleep_restless_moment (
     , value INTEGER                        -- Restless moments count.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 -- Blood oxygen saturation (SpO2) measurements at regular 1-minute intervals during sleep sessions.
@@ -344,7 +344,7 @@ CREATE TABLE IF NOT EXISTS spo2 (
     , value INTEGER                        -- SpO2 reading as percentage (typically 85-100).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 -- Heart rate variability (HRV) measurements at regular 5-minute intervals throughout sleep periods indicating autonomic nervous system recovery.
@@ -354,7 +354,7 @@ CREATE TABLE IF NOT EXISTS hrv (
     , value FLOAT                          -- HRV value in milliseconds.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 -- Breathing disruption events and their severity during sleep periods indicating potential sleep apnea or breathing irregularities.
@@ -364,7 +364,7 @@ CREATE TABLE IF NOT EXISTS breathing_disruption (
     , value INTEGER                        -- Breathing disruption severity or type indicator.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (sleep_id, timestamp)
-    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)
+    , FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id) ON DELETE CASCADE
 );
 
 -- VO2 max measurements from Garmin training status data including both generic and cycling-specific values.
@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS activity_ts_metric (
     , units TEXT                           -- Units of measurement for the metric value (e.g., bpm, rpm, watts).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, timestamp, name)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Split metrics extracted from activity FIT files representing Garmin''s algorithmic breakdown of activities into intervals (e.g., run/walk detection, active intervals). Each record represents a single metric for a specific split segment.
@@ -637,7 +637,7 @@ CREATE TABLE IF NOT EXISTS activity_split_metric (
     , units TEXT                           -- Units of measurement for the metric value (e.g., s, km, km/h).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, split_idx, name)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Lap metrics extracted from activity FIT files representing device-triggered lap segments (manual button press, auto distance/time triggers). Each record represents a single metric for a specific lap segment.
@@ -649,7 +649,7 @@ CREATE TABLE IF NOT EXISTS activity_lap_metric (
     , units TEXT                           -- Units of measurement for the metric value (e.g., s, m, deg).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id, lap_idx, name)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 -- Eagerly materialized GPS path for activities, populated during FIT file processing. Stores per-activity ordered coordinate sequences as a JSON array of [longitude, latitude] pairs in decimal degrees, sorted ascending by timestamp. One row per activity with GPS data; activities without GPS samples (e.g., indoor workouts) have no row.
@@ -659,7 +659,7 @@ CREATE TABLE IF NOT EXISTS activity_path (
     , point_count INTEGER NOT NULL         -- Number of GPS coordinate pairs in path_json. Denormalized for cheap filtering without parsing JSON.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , PRIMARY KEY (activity_id)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
     , CONSTRAINT activity_path_path_json_valid CHECK (JSON_VALID(path_json))
     , CONSTRAINT activity_path_path_json_is_array CHECK (JSON_TYPE(path_json) = 'array')
     , CONSTRAINT activity_path_point_count_matches CHECK (
@@ -683,7 +683,7 @@ CREATE TABLE IF NOT EXISTS strength_exercise (
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (activity_id, exercise_category, exercise_name)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS strength_exercise_exercise_category_idx
@@ -707,7 +707,7 @@ CREATE TABLE IF NOT EXISTS strength_set (
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (activity_id, set_idx)
-    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS strength_set_set_type_idx
@@ -716,3 +716,19 @@ CREATE INDEX IF NOT EXISTS strength_set_exercise_category_idx
 ON strength_set (exercise_category);
 CREATE INDEX IF NOT EXISTS strength_set_exercise_name_idx
 ON strength_set (exercise_name);
+
+-- Per-activity time-bucketed aggregates of activity_ts_metric for long-term retention. Populated by 'garmin downsample'. Activity-level replace semantics: a re-run of downsample for an activity wipes its existing rows here and re-inserts the freshly computed buckets, so only one bucket grain coexists per activity at a time. bucket_seconds records which grain was used and is metadata, not part of the row identity.
+CREATE TABLE IF NOT EXISTS activity_ts_metric_downsampled (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id).
+    , bucket_ts DATETIME NOT NULL          -- Bucket start timestamp (UTC), aligned to multiples of bucket_seconds from activity.start_ts.
+    , name TEXT NOT NULL                   -- Metric name carried over from activity_ts_metric.
+    , bucket_seconds INTEGER NOT NULL      -- Bucket width in seconds (the grain used by the downsample run that produced this row). Metadata, not part of identity.
+    , value FLOAT                          -- Bucket value: avg for AGGREGATE strategy, last-in-bucket for LAST strategy.
+    , min_value FLOAT                      -- Bucket minimum for AGGREGATE strategy. NULL for LAST strategy.
+    , max_value FLOAT                      -- Bucket maximum for AGGREGATE strategy. NULL for LAST strategy.
+    , sample_count INTEGER NOT NULL        -- Number of source rows that contributed to this bucket.
+    , units TEXT                           -- Units of measurement carried over from activity_ts_metric.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this bucket row was last (re)computed.
+    , PRIMARY KEY (activity_id, bucket_ts, name)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+);

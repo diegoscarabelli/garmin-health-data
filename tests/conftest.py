@@ -10,10 +10,10 @@ from typing import Generator
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from garmin_health_data.db import get_engine
 from garmin_health_data.models import Base
 
 
@@ -34,10 +34,13 @@ def db_engine(temp_db_path: str) -> Generator[Engine, None, None]:
     """
     Create a test database engine with all tables.
 
+    Uses :func:`get_engine` so the foreign-key pragma listener is attached, matching
+    production engine behavior. Tests that assert on cascade-delete rely on this.
+
     :param temp_db_path: Path to temporary database.
     :return: SQLAlchemy engine instance.
     """
-    engine = create_engine(f"sqlite:///{temp_db_path}")
+    engine = get_engine(temp_db_path)
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)

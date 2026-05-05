@@ -218,7 +218,9 @@ class SwimmingAggMetrics(Base, UpsertBase):
     __tablename__ = "swimming_agg_metrics"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     pool_length = Column(Float)
     active_lengths = Column(Integer)
@@ -237,7 +239,9 @@ class CyclingAggMetrics(Base, UpsertBase):
     __tablename__ = "cycling_agg_metrics"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     training_stress_score = Column(Float)
     intensity_factor = Column(Float)
@@ -304,7 +308,9 @@ class RunningAggMetrics(Base, UpsertBase):
     __tablename__ = "running_agg_metrics"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     steps = Column(Integer)
     vo2_max_value = Column(Float)
@@ -360,7 +366,9 @@ class SupplementalActivityMetric(Base, UpsertBase):
     __tablename__ = "supplemental_activity_metric"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     metric = Column(String, primary_key=True)
     value = Column(Float)
@@ -487,7 +495,9 @@ class SleepLevel(Base, InsertBase):
 
     __tablename__ = "sleep_level"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     start_ts = Column(DateTime(timezone=True), primary_key=True)
     end_ts = Column(DateTime(timezone=True), nullable=False)
     stage = Column(Integer, nullable=False)
@@ -503,7 +513,9 @@ class SleepMovement(Base, InsertBase):
 
     __tablename__ = "sleep_movement"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     activity_level = Column(Float)
 
@@ -518,7 +530,9 @@ class SleepRestlessMoment(Base, InsertBase):
 
     __tablename__ = "sleep_restless_moment"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     value = Column(Integer)
 
@@ -532,7 +546,9 @@ class SpO2(Base, InsertBase):
 
     __tablename__ = "spo2"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     value = Column(Integer)
 
@@ -547,7 +563,9 @@ class HRV(Base, InsertBase):
 
     __tablename__ = "hrv"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     value = Column(Float)
 
@@ -563,7 +581,9 @@ class BreathingDisruption(Base, InsertBase):
 
     __tablename__ = "breathing_disruption"
 
-    sleep_id = Column(Integer, ForeignKey("sleep.sleep_id"), primary_key=True)
+    sleep_id = Column(
+        Integer, ForeignKey("sleep.sleep_id", ondelete="CASCADE"), primary_key=True
+    )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     value = Column(Integer)
 
@@ -849,7 +869,7 @@ class StrengthExercise(Base, UpsertBase):
 
     activity_id = Column(
         BigInteger,
-        ForeignKey("activity.activity_id"),
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
         primary_key=True,
     )
     exercise_category = Column(Text, primary_key=True)
@@ -875,7 +895,7 @@ class StrengthSet(Base, UpsertBase):
 
     activity_id = Column(
         BigInteger,
-        ForeignKey("activity.activity_id"),
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
         primary_key=True,
     )
     set_idx = Column(Integer, primary_key=True)
@@ -907,7 +927,9 @@ class ActivityTsMetric(Base, InsertBase):
     __tablename__ = "activity_ts_metric"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     timestamp = Column(DateTime(timezone=True), primary_key=True)
     name = Column(Text, primary_key=True)
@@ -927,7 +949,9 @@ class ActivitySplitMetric(Base, InsertBase):
     __tablename__ = "activity_split_metric"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     split_idx = Column(Integer, primary_key=True)
     name = Column(Text, primary_key=True)
@@ -947,7 +971,9 @@ class ActivityLapMetric(Base, InsertBase):
     __tablename__ = "activity_lap_metric"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     lap_idx = Column(Integer, primary_key=True)
     name = Column(Text, primary_key=True)
@@ -973,7 +999,9 @@ class ActivityPath(Base, InsertBase):
     __tablename__ = "activity_path"
 
     activity_id = Column(
-        BigInteger, ForeignKey("activity.activity_id"), primary_key=True
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
     )
     path_json = Column(JSON, nullable=False)
     point_count = Column(Integer, nullable=False)
@@ -993,3 +1021,30 @@ class ActivityPath(Base, InsertBase):
         ),
         Index("activity_path_point_count_idx", "point_count"),
     )
+
+
+class ActivityTsMetricDownsampled(Base, InsertBase):
+    """
+    Per-activity time-bucketed aggregates of `activity_ts_metric`.
+
+    Populated by `garmin downsample`. Activity-level replace semantics: re-running
+    downsample for an activity wipes its existing rows here and re-inserts the freshly
+    computed buckets, so only one bucket grain coexists per activity at a time.
+    `bucket_seconds` records which grain was used and is metadata, not part of identity.
+    """
+
+    __tablename__ = "activity_ts_metric_downsampled"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    bucket_ts = Column(DateTime(timezone=True), primary_key=True)
+    name = Column(Text, primary_key=True)
+    bucket_seconds = Column(Integer, nullable=False)
+    value = Column(Float)
+    min_value = Column(Float)
+    max_value = Column(Float)
+    sample_count = Column(Integer, nullable=False)
+    units = Column(Text)
