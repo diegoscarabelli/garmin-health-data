@@ -327,7 +327,7 @@ The database schema has been adapted from the original PostgreSQL/TimescaleDB [s
 - **Converted SERIAL to AUTOINCREMENT** — PostgreSQL `SERIAL` types converted to SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`.
 - **Replaced TimescaleDB hypertables** — time-series tables use regular SQLite tables with indexes on timestamp columns for efficient queries.
 - **SQLite-compatible upsert syntax** — uses SQLite's `INSERT ... ON CONFLICT` for handling duplicate records.
-- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`), which are commonly available in SQLite 3.9+ but depend on the SQLite library bundled with your Python/runtime environment. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support first:
+- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`), which are bundled with SQLite by default and well covered by the global SQLite >= 3.35 requirement listed under [Requirements](#requirements). If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support:
 
   ```bash
   python - <<'PY'
