@@ -829,7 +829,7 @@ class TestProcessSleepOrchestrator:
     @staticmethod
     def _minimal_sleep_payload() -> dict:
         """
-        Build a SLEEP JSON containing one entry per per-night detail array.
+        Build a SLEEP JSON containing one entry in each per-night detail array.
 
         :return: SLEEP-shaped dict with dailySleepDTO plus all six detail arrays.
         """
