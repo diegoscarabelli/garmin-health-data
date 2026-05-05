@@ -1316,7 +1316,7 @@ class GarminProcessor(Processor):
                 for col in Sleep.__table__.columns
                 if col.name not in ["user_id", "start_ts", "sleep_id", "create_ts"]
             ]
-            persisted_sleep = upsert_model_instances(
+            upsert_model_instances(
                 session=session,
                 model_instances=[sleep],
                 conflict_columns=["user_id", "start_ts"],
@@ -1324,7 +1324,15 @@ class GarminProcessor(Processor):
                 on_conflict_update=True,
             )
             click.echo("Processed main sleep data.")
-            return persisted_sleep[0].sleep_id
+            # `upsert_model_instances` returns the input list, so the
+            # auto-generated `sleep_id` is never populated on the instance.
+            # Read it back via the unique (user_id, start_ts) key.
+            return session.execute(
+                select(Sleep.sleep_id).where(
+                    Sleep.user_id == int(self.user_id),
+                    Sleep.start_ts == start_ts,
+                )
+            ).scalar_one()
         else:
             click.secho("⚠️ No main sleep data found.", fg="yellow")
             return None
