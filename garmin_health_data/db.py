@@ -88,6 +88,11 @@ def create_tables(db_path: str = "garmin_data.db") -> None:
 
     :param db_path: Path to SQLite database file.
     """
+    # Fail fast if the linked SQLite library can't support the bulk upsert
+    # helper's RETURNING-based path. Mirrors the gate in `get_engine` so
+    # `garmin init` surfaces the same clear error as the read/write path.
+    check_sqlite_version()
+
     # Execute DDL file to create all tables with inline comments.
     # Use importlib.resources to read the packaged resource file.
     try:

@@ -96,20 +96,32 @@ def upsert_model_instances(
     if not model_instances:
         return []
 
+    model_class = type(model_instances[0])
+    model_columns = model_class.__table__.columns.keys()
+
     # Validate `returning_columns` and surface the SQLite version requirement
     # at the call boundary so callers that build a Session outside `get_engine`
     # (and therefore skip its version gate) still get a clear error instead of
-    # an opaque SQL syntax failure on `RETURNING`.
+    # an opaque SQL syntax / IndexError failure further down.
     if returning_columns is not None:
         if not returning_columns:
             raise ValueError(
                 "`returning_columns` must be a non-empty list when provided. "
                 "Pass None to opt out of the RETURNING path."
             )
+        if not conflict_columns:
+            raise ValueError(
+                "`conflict_columns` must be a non-empty list when "
+                "`returning_columns` is provided."
+            )
+        unknown = [col for col in returning_columns if col not in model_columns]
+        if unknown:
+            raise ValueError(
+                f"`returning_columns` references column(s) not present on "
+                f"{model_class.__name__}: {unknown}. Valid columns: "
+                f"{sorted(model_columns)}"
+            )
         check_sqlite_version()
-
-    model_class = type(model_instances[0])
-    model_columns = model_class.__table__.columns.keys()
 
     # Convert all instances to dictionaries (bulk preparation).
     values = []

@@ -699,6 +699,17 @@ class TestUpsertModelInstancesReturning:
         )
         session.commit()
 
+    def _sample_sleep(self) -> Sleep:
+        """
+        Build one Sleep instance shared by the validation tests.
+        """
+        return Sleep(
+            user_id=1,
+            start_ts=datetime(2025, 1, 2, 0, 0, 0, tzinfo=timezone.utc),
+            end_ts=datetime(2025, 1, 2, 8, 0, 0, tzinfo=timezone.utc),
+            timezone_offset_hours=0.0,
+        )
+
     def test_returning_columns_empty_list_raises(self, temp_db):
         """
         Passing ``returning_columns=[]`` is a programming error: it skips the RETURNING
@@ -711,17 +722,48 @@ class TestUpsertModelInstancesReturning:
             with pytest.raises(ValueError, match="non-empty"):
                 upsert_model_instances(
                     session=session,
-                    model_instances=[
-                        Sleep(
-                            user_id=1,
-                            start_ts=datetime(2025, 1, 2, 0, 0, 0, tzinfo=timezone.utc),
-                            end_ts=datetime(2025, 1, 2, 8, 0, 0, tzinfo=timezone.utc),
-                            timezone_offset_hours=0.0,
-                        )
-                    ],
+                    model_instances=[self._sample_sleep()],
                     conflict_columns=["user_id", "start_ts"],
                     on_conflict_update=True,
                     returning_columns=[],
+                )
+
+    def test_returning_columns_unknown_column_raises(self, temp_db):
+        """
+        Passing an unknown column name in ``returning_columns`` should raise a
+        ``ValueError`` listing the offending columns, not a bare ``AttributeError`` from
+        ``getattr(model_class, col)`` deep in the helper.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="not_a_column"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "start_ts"],
+                    on_conflict_update=True,
+                    returning_columns=["sleep_id", "not_a_column"],
+                )
+
+    def test_returning_with_empty_conflict_columns_raises(self, temp_db):
+        """
+        ``conflict_columns=[]`` combined with ``returning_columns`` would otherwise
+        raise an opaque ``IndexError`` from ``conflict_columns[0]`` in the no-op ``DO
+        UPDATE`` path.
+
+        Surface it as a clear ``ValueError`` up front.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="conflict_columns"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=[],
+                    on_conflict_update=False,
+                    returning_columns=["sleep_id"],
                 )
 
     def test_returning_columns_none_returns_input_list(self, temp_db):
@@ -864,8 +906,11 @@ class TestUpsertModelInstancesReturning:
 
         Locks in the contract that the no-op ``DO UPDATE`` trick (only assigning a
         conflict column to itself) does not accidentally refresh audit timestamps.
+        Forces the original ``update_ts`` to a fixed past value via direct UPDATE so any
+        spurious refresh by the helper would be unambiguously detectable without relying
+        on SQLite's 1-second ``CURRENT_TIMESTAMP`` resolution.
         """
-        import time
+        from sqlalchemy import update
 
         from garmin_health_data.models import Activity
 
@@ -900,6 +945,14 @@ class TestUpsertModelInstancesReturning:
                 conflict_columns=["activity_id"],
                 on_conflict_update=False,
             )
+            # Pin update_ts to a known past value so any helper-side refresh
+            # would produce a strictly newer (current_timestamp) value.
+            past_ts = datetime(2000, 1, 1, 0, 0, 0)
+            session.execute(
+                update(Activity)
+                .where(Activity.activity_id == 1)
+                .values(update_ts=past_ts)
+            )
             session.commit()
 
             original_ts = (
@@ -907,10 +960,7 @@ class TestUpsertModelInstancesReturning:
                 .scalar_one()
                 .update_ts
             )
-
-        # SQLite's CURRENT_TIMESTAMP has second precision; ensure any spurious
-        # refresh would produce a different value.
-        time.sleep(1.1)
+            assert original_ts == past_ts
 
         with Session(engine) as session:
             upsert_model_instances(
