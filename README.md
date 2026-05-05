@@ -141,6 +141,23 @@ $ garmin extract
 ✅ Extracted 156 files  # Automatically fills the gap
 ```
 
+**Managing disk usage** — `activity_ts_metric` (per-second sensor data from FIT files) accounts for ~93% of typical database size. Two commands let you control its long-tail growth:
+
+```bash
+# Aggregate older per-second sensor data into 60s buckets, preserving trends.
+$ garmin downsample --end-date 2025-01-01 --time-grain 60s
+
+# Then drop the per-second source rows, keeping the buckets for analysis.
+$ garmin prune --end-date 2025-01-01
+
+# Or do both automatically before each extraction (cron-friendly).
+$ garmin extract \
+    --downsample-older-than 90d --downsample-grain 60s \
+    --prune-older-than 1y
+```
+
+`downsample` writes to a separate `activity_ts_metric_downsampled` table; `prune` only deletes from `activity_ts_metric`. Activity rows, splits, laps, agg metrics, paths, sleep, and biometric series are never touched. See the [retention reference](#retention-prune-downsample-migrate-cascade) for full flag details.
+
 ### Inspecting your data
 
 ```bash
@@ -179,6 +196,9 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 | `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
 | `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
+| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | Before extracting, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
+| `--downsample-grain GRAIN` | Required when `--downsample-older-than` is set | Bucket grain for the auto downsample (e.g., `60s`, `5m`). |
+| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. |
 
 <details>
 <summary><strong>File lifecycle</strong></summary>
@@ -279,6 +299,72 @@ This means you can safely:
 - **Retry failed extractions** without manual cleanup.
 
 </details>
+
+### Retention: `prune`, `downsample`, `migrate-cascade`
+
+`activity_ts_metric` (per-second sensor data from FIT files) is the only table whose long-run growth typically matters; on a representative database it accounts for ~93% of disk usage. The retention commands target it directly and leave every other table untouched.
+
+#### Time-range conventions
+
+Both `prune` and `downsample` use the same date-range semantics as `extract`:
+
+- `--end-date YYYY-MM-DD`: **required**, **exclusive** (activities on this date are not affected).
+- `--start-date YYYY-MM-DD`: **optional**, **inclusive**. Omit to operate on everything before `--end-date`.
+- **Same-day special case**: when start and end are the same calendar day, that day is included.
+- Range is interpreted against `activity.start_ts`.
+
+#### `garmin prune`
+
+Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--end-date YYYY-MM-DD` | Required, exclusive | End of the range. |
+| `--start-date YYYY-MM-DD` | Optional, inclusive | Omit for "everything before `--end-date`". |
+| `--accounts ID` | Repeatable or comma-separated | Scope to specific Garmin user IDs. |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Report row count without deleting. |
+| `--yes` / `-y` | Flag | Skip the confirmation prompt. |
+
+#### `garmin downsample`
+
+Aggregates `activity_ts_metric` rows into time-bucketed records in `activity_ts_metric_downsampled` (a separate table). Source rows are not modified, so `downsample` and `prune` compose: downsample first to preserve trends, then prune to reclaim disk.
+
+**Bucket alignment** is activity-start-relative, so buckets never span activity boundaries. **Activity-level replace semantics**: re-running for an activity with a different `--time-grain` cleanly replaces its prior buckets; activities whose source rows have been pruned are excluded from the replace set so their existing buckets survive untouched.
+
+**Per-metric strategy** is decided automatically based on the metric name:
+
+| Strategy | Applies to | Storage |
+| --- | --- | --- |
+| `AGGREGATE` (default) | Instantaneous numeric metrics: `heart_rate`, `power`, `cadence`, `speed`, `enhanced_altitude`, `temperature`, all left/right pedal-balance metrics, etc. | avg in `value`, plus `min_value` / `max_value` |
+| `LAST` | Cumulative metrics: `distance`, `accumulated_power`, plus future `accumulated_*` / `total_*` (heuristic). | last-in-bucket value; min/max NULL |
+| `SKIP` | GPS coordinates: `position_lat`, `position_long` (already materialized in `activity_path`). | not downsampled |
+
+The strategy table is printed before any write so you can verify the classification.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--end-date YYYY-MM-DD` | Required, exclusive | End of the range. |
+| `--start-date YYYY-MM-DD` | Optional, inclusive | Omit for "everything before `--end-date`". |
+| `--time-grain GRAIN` | Required, format `^([1-9][0-9]*)(s\|m)$` | Bucket width. Examples: `30s`, `60s`, `1m`, `5m`, `15m`, `60m`. Hours intentionally not supported (use minutes). |
+| `--accounts ID` | Repeatable or comma-separated | Scope to specific Garmin user IDs. |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Print the strategy table and counts without writing. |
+| `--yes` / `-y` | Flag | Skip the confirmation prompt. |
+
+#### `garmin migrate-cascade`
+
+One-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.8 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance.
+
+The 2.8 retention features only delete from one childless table (`activity_ts_metric`), so cascade is not required for them. Cascade ships now as an enabler for future expansion to multi-table retention; running this migration on an existing DB is optional but recommended.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Plan the migration without modifying the database. |
+| `--no-backup` | Flag | Skip the pre-migration backup. Default copies the DB to `<db>.bak.<timestamp>`. |
+
+The command is **idempotent** (skips tables that already have cascade), runs a pre-flight `PRAGMA foreign_key_check` (refuses to migrate a database with existing FK violations), and is marked for removal in a future major version once enough users have run it.
 
 ## Data Catalog
 

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-05-05
+
+### Added
+
+- **`garmin prune` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): deletes rows from `activity_ts_metric` for activities whose `start_ts` falls in `[--start-date, --end-date)`, with the same-day inclusion rule the `extract` command uses. Activity rows themselves, splits, laps, agg metrics, paths, and downsampled buckets are preserved. Supports `--dry-run`, `--accounts`, `--yes`, and a confirmation prompt by default. The per-second FIT-derived sensor table is ~93% of typical disk usage; pruning it solves the long-tail growth problem with no schema changes for existing users.
+- **`garmin downsample` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): aggregates `activity_ts_metric` rows into time-bucketed records in a new `activity_ts_metric_downsampled` table. `--time-grain` accepts `^([1-9][0-9]*)(s|m)$` (e.g., `30s`, `60s`, `5m`, `15m`, `60m`); hours are intentionally not supported. Bucket alignment is activity-start-relative so buckets never span activity boundaries. Three-strategy registry covers all 28 currently observed metric names: `AGGREGATE` (default; avg + min + max for instantaneous numeric metrics), `LAST` (cumulative metrics like `distance` and `accumulated_power`, plus `accumulated_*`/`total_*` heuristic), and `SKIP` (GPS coordinates, since `activity_path` already materializes the polyline). Activity-level replace semantics: re-running for an activity with a different `--time-grain` cleanly wipes its prior buckets; activities whose source rows have been pruned are excluded from the replace set entirely so their existing buckets survive.
+- **`garmin migrate-cascade` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): one-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.8 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance. Idempotent (skips tables that already have cascade), pre-flight `PRAGMA foreign_key_check` refuses to migrate a database with existing FK violations, backup file written next to the database unless `--no-backup`, marked for removal in a future major version.
+- **`extract` automation flags**: `--prune-older-than DURATION` and `--downsample-older-than DURATION --downsample-grain GRAIN` for cron use. `DURATION` accepts `90d`, `6m`, `1y`. Computes the effective `--end-date` as `today - DURATION`. Default `extract` behavior is unchanged when these flags are absent.
+- **New `activity_ts_metric_downsampled` table** keyed on `(activity_id, bucket_ts, name)` with `bucket_seconds` recorded as metadata.
+
+### Changed
+
+- **Schema: `ON DELETE CASCADE` added to all 16 activity-child and sleep-child FKs** in `tables.ddl` and `models.py`. v2.8 retention features only delete from one childless table (`activity_ts_metric`), but shipping cascade now means future expansion to full multi-table retention is code-only, not another schema migration.
+- **`garmin_health_data.db.get_engine` now attaches a `connect` event listener** that runs `PRAGMA foreign_keys = ON` on every new connection. SQLite's per-connection default is OFF, so cascade clauses defined in the schema would otherwise be silently inert.
+
+### Migration notes
+
+Existing databases keep their pre-2.8 cascade-less FK definitions even after upgrading the package; SQLite has no in-place way to retrofit cascade. Run `garmin migrate-cascade` once to rebuild the affected child tables. The migration is safe to run on a 2.8-fresh database (it's idempotent and skips tables already correct), runs inside per-table transactions, and writes a backup file by default.
+
 ## [2.7.4] - 2026-04-30
 
 ### Fixed

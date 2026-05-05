@@ -1,24 +1,32 @@
 """
 Retention operations for the garmin-health-data SQLite database.
 
-This module currently exposes a single public entry point, :func:`migrate_cascade`,
-which retrofits ``ON DELETE CASCADE`` onto the 16 child foreign keys that were declared
-without an explicit FK action in older versions of ``tables.ddl``. SQLite has no ``ALTER
-TABLE`` mechanism for changing FK actions, so each affected child table is rebuilt via
-the standard recreate dance: rename, ``CREATE TABLE`` with the new DDL, ``INSERT ...
-SELECT``, drop the old table, and recreate any indexes.
+Public entry points:
 
-The ``prune_ts_metrics`` and ``downsample_activities`` operations land in follow-up
-commits.
+- :func:`migrate_cascade` retrofits ``ON DELETE CASCADE`` onto the 16 child foreign
+  keys that were declared without an explicit FK action in older versions of
+  ``tables.ddl``. SQLite has no ``ALTER TABLE`` mechanism for changing FK actions,
+  so each affected child table is rebuilt via the standard recreate dance.
+- :func:`prune_ts_metrics` deletes rows from ``activity_ts_metric`` whose parent
+  activity ``start_ts`` falls in a half-open ``[start, end)`` range matching the
+  ``extract`` command's date conventions (with the same-day special case).
+- :func:`downsample_activities` aggregates ``activity_ts_metric`` rows into
+  per-bucket records in ``activity_ts_metric_downsampled``, with activity-level
+  replace semantics (target activities have their existing downsampled rows wiped
+  and rewritten in a single transaction; activities with no source rows are
+  excluded from the replace set so their pre-existing buckets are preserved).
 """
 
 import re
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
+
+from garmin_health_data.retention.parsers import resolve_range
+from garmin_health_data.retention.strategies import Strategy, strategy_for
 
 # Handle importlib.resources for different Python versions, mirroring the
 # pattern in :mod:`garmin_health_data.db`.
@@ -349,4 +357,417 @@ def migrate_cascade(
         "skipped": skipped,
         "backup_path": backup_path,
         "dry_run": dry_run,
+    }
+
+
+def _open_with_fk(db_path: Path) -> sqlite3.Connection:
+    """
+    Open a SQLite connection with foreign-key enforcement enabled.
+
+    The connection is opened with ``isolation_level=None`` (autocommit mode) so
+    that DML executed for setup (creating/populating the temp scoping table)
+    does not start an implicit transaction that would collide with the explicit
+    ``BEGIN`` we issue around the destructive DELETE/INSERT block.
+
+    :param db_path: Path to the SQLite database file.
+    :return: Open connection in autocommit mode with foreign keys enabled.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _populate_target_activities(
+    conn: sqlite3.Connection,
+    start_dt: datetime,
+    end_dt: datetime,
+    user_ids: Optional[Sequence[int]],
+    *,
+    require_source: bool,
+) -> int:
+    """
+    Build a temp table ``_tmp_target_activities(activity_id)`` with activities in scope.
+
+    Using a temp table sidesteps SQLite's parameter limit on large ``IN (...)`` lists
+    and lets every downstream query share a clean ``JOIN _tmp_target_activities``.
+
+    :param conn: Open SQLite connection. The caller owns the transaction lifecycle.
+    :param start_dt: Inclusive start datetime (UTC, naive midnight).
+    :param end_dt: Exclusive end datetime (UTC, naive midnight).
+    :param user_ids: Optional iterable of user_ids to scope to. ``None`` means all users
+        in range.
+    :param require_source: When True, restrict to activities with at least one row in
+        ``activity_ts_metric`` (the downsample replace-set rule). When False, include
+        every in-range activity (the prune scope).
+    :return: Number of rows inserted into the temp table.
+    """
+    conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _tmp_target_activities ("
+        "activity_id INTEGER PRIMARY KEY)"
+    )
+    conn.execute("DELETE FROM _tmp_target_activities")
+
+    user_clause = ""
+    params: List[Any] = [start_dt.isoformat(sep=" "), end_dt.isoformat(sep=" ")]
+    if user_ids:
+        user_ids = list(user_ids)
+        placeholders = ",".join("?" * len(user_ids))
+        user_clause = f" AND a.user_id IN ({placeholders})"
+        params.extend(user_ids)
+
+    if require_source:
+        # Intersection with activity_ts_metric: only activities that still have
+        # source rows are downsampled. Activities whose source was pruned are
+        # excluded entirely so their pre-existing downsampled rows survive.
+        select_sql = (
+            "INSERT INTO _tmp_target_activities (activity_id) "
+            "SELECT DISTINCT a.activity_id FROM activity a "
+            "WHERE a.start_ts >= ? AND a.start_ts < ?" + user_clause + " AND EXISTS ("
+            "SELECT 1 FROM activity_ts_metric m WHERE m.activity_id = a.activity_id"
+            ")"
+        )
+    else:
+        select_sql = (
+            "INSERT INTO _tmp_target_activities (activity_id) "
+            "SELECT a.activity_id FROM activity a "
+            "WHERE a.start_ts >= ? AND a.start_ts < ?" + user_clause
+        )
+
+    cur = conn.execute(select_sql, params)
+    return cur.rowcount
+
+
+def _drop_target_temp(conn: sqlite3.Connection) -> None:
+    """
+    Drop the temp table used for activity scoping if it exists.
+
+    :param conn: Open SQLite connection.
+    """
+    conn.execute("DROP TABLE IF EXISTS _tmp_target_activities")
+
+
+def prune_ts_metrics(
+    db_path: str,
+    *,
+    end: date,
+    start: Optional[date] = None,
+    user_ids: Optional[Iterable[int]] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Delete rows from ``activity_ts_metric`` for activities whose ``start_ts`` is in
+    range.
+
+    Range semantics match the ``extract`` command exactly: ``end`` is required and
+    exclusive, ``start`` is optional (``None`` means ``-infinity``) and inclusive,
+    with the same-day special case (``start == end`` includes that single day).
+    See :func:`garmin_health_data.retention.parsers.resolve_range`.
+
+    Does NOT touch ``activity``, ``activity_ts_metric_downsampled``, splits, laps,
+    paths, sport-specific aggregates, or any other table. Only the high-volume
+    per-second source rows are removed.
+
+    :param db_path: Path to the SQLite database file.
+    :param end: Required exclusive end date.
+    :param start: Optional inclusive start date. ``None`` means everything before
+        ``end``.
+    :param user_ids: Optional iterable of user_ids to scope to. ``None`` means
+        every user.
+    :param dry_run: When True, count matching rows without deleting.
+    :return: Summary dict with keys ``"activity_count"`` (number of in-range
+        activities), ``"rows_affected"`` (rows deleted, or counted when dry_run),
+        and ``"dry_run"`` (echo of the input).
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    """
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+
+    start_dt, end_dt = resolve_range(start, end)
+    user_ids_list: Optional[List[int]] = list(user_ids) if user_ids else None
+
+    conn = _open_with_fk(db_file)
+    try:
+        activity_count = _populate_target_activities(
+            conn,
+            start_dt,
+            end_dt,
+            user_ids_list,
+            require_source=False,
+        )
+
+        if activity_count == 0:
+            return {
+                "activity_count": 0,
+                "rows_affected": 0,
+                "dry_run": dry_run,
+            }
+
+        if dry_run:
+            count_sql = (
+                "SELECT COUNT(*) FROM activity_ts_metric m "
+                "WHERE m.activity_id IN ("
+                "SELECT activity_id FROM _tmp_target_activities)"
+            )
+            rows_affected = conn.execute(count_sql).fetchone()[0]
+        else:
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            try:
+                delete_sql = (
+                    "DELETE FROM activity_ts_metric "
+                    "WHERE activity_id IN ("
+                    "SELECT activity_id FROM _tmp_target_activities)"
+                )
+                cur.execute(delete_sql)
+                rows_affected = cur.rowcount
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        _drop_target_temp(conn)
+        conn.close()
+
+    return {
+        "activity_count": activity_count,
+        "rows_affected": rows_affected,
+        "dry_run": dry_run,
+    }
+
+
+def _bucket_ts_expr() -> str:
+    """
+    Build the SQL fragment that aligns a source timestamp to its bucket start.
+
+    Uses ``strftime('%s', ...)`` to convert each timestamp to integer Unix seconds
+    (truncating any sub-second component, which is irrelevant for bucket grains coarser
+    than 1s) and does the bucket math purely in integers, then converts back via
+    ``datetime(N, 'unixepoch')``. The julianday-based alternative drifts at minute
+    boundaries due to IEEE 754 rounding when multiplying day fractions by 86400, which
+    causes off-by-one bucket assignments at exact minute marks. ``strftime`` and
+    ``unixepoch`` are available on every SQLite version Python 3.10+ ships with.
+
+    The bucket boundary is anchored to ``a.start_ts`` so buckets never span activity
+    boundaries.
+
+    :return: SQL fragment producing a ``DATETIME`` value as ``bucket_ts``.
+    """
+    # Implicit concatenation, never a triple-quoted string (docformatter would
+    # treat that as a docstring and append a period, corrupting the SQL).
+    return (
+        "datetime("
+        "CAST(strftime('%s', a.start_ts) AS INTEGER) + "
+        "((CAST(strftime('%s', m.timestamp) AS INTEGER) - "
+        "CAST(strftime('%s', a.start_ts) AS INTEGER)) / :grain) * :grain, "
+        "'unixepoch')"
+    )
+
+
+def _aggregate_insert_sql(grain: int) -> str:
+    """
+    Build the INSERT...SELECT for the AGGREGATE strategy (avg + min + max).
+
+    :param grain: Bucket width in seconds; embedded as a literal so the same SQL can be
+        reused with named parameters.
+    :return: Full SQL statement to ``execute``.
+    """
+    bucket_ts = _bucket_ts_expr()
+    return (
+        "INSERT INTO activity_ts_metric_downsampled "
+        "(activity_id, bucket_ts, name, bucket_seconds, "
+        "value, min_value, max_value, sample_count, units) "
+        "SELECT a.activity_id, "
+        f"{bucket_ts} AS bucket_ts, "
+        "m.name, :grain, "
+        "AVG(m.value), MIN(m.value), MAX(m.value), COUNT(*), MIN(m.units) "
+        "FROM activity_ts_metric m "
+        "JOIN activity a ON a.activity_id = m.activity_id "
+        "JOIN _tmp_target_activities t ON t.activity_id = a.activity_id "
+        "WHERE m.name = :name "
+        "GROUP BY a.activity_id, bucket_ts, m.name"
+    )
+
+
+def _last_insert_sql(grain: int) -> str:
+    """
+    Build the INSERT...SELECT for the LAST strategy (last-in-bucket).
+
+    Uses a CTE plus ``ROW_NUMBER()`` partitioned by ``(activity_id, name, bucket_ts)``
+    ordered by source ``timestamp`` descending, then keeps only rank 1 per bucket.
+    ``min_value`` and ``max_value`` are NULL for LAST since a single representative
+    value is the whole point of the strategy.
+
+    :param grain: Bucket width in seconds.
+    :return: Full SQL statement to ``execute``.
+    """
+    bucket_ts = _bucket_ts_expr()
+    return (
+        "WITH bucketed AS ("
+        "SELECT a.activity_id, "
+        f"{bucket_ts} AS bucket_ts, "
+        "m.name, m.value, m.units, m.timestamp, "
+        "ROW_NUMBER() OVER ("
+        f"PARTITION BY a.activity_id, m.name, {bucket_ts} "
+        "ORDER BY m.timestamp DESC) AS rn, "
+        "COUNT(*) OVER ("
+        f"PARTITION BY a.activity_id, m.name, {bucket_ts}) AS sample_count "
+        "FROM activity_ts_metric m "
+        "JOIN activity a ON a.activity_id = m.activity_id "
+        "JOIN _tmp_target_activities t ON t.activity_id = a.activity_id "
+        "WHERE m.name = :name"
+        ") "
+        "INSERT INTO activity_ts_metric_downsampled "
+        "(activity_id, bucket_ts, name, bucket_seconds, "
+        "value, min_value, max_value, sample_count, units) "
+        "SELECT activity_id, bucket_ts, name, :grain, "
+        "value, NULL, NULL, sample_count, units "
+        "FROM bucketed WHERE rn = 1"
+    )
+
+
+def downsample_activities(
+    db_path: str,
+    *,
+    time_grain_seconds: int,
+    end: date,
+    start: Optional[date] = None,
+    user_ids: Optional[Iterable[int]] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Aggregate ``activity_ts_metric`` rows into per-bucket records.
+
+    Activity-level replace semantics: the set of activities affected is the
+    intersection of (a) activities whose ``start_ts`` is in range and (b)
+    activities with at least one source row in ``activity_ts_metric``. For each
+    such activity, all of its existing rows in ``activity_ts_metric_downsampled``
+    are deleted before the freshly computed buckets are inserted; activities
+    whose source was previously pruned are excluded from the replace set so
+    their pre-existing downsampled buckets survive untouched.
+
+    The whole DELETE + INSERT(s) sequence runs inside a single transaction.
+    Bucket alignment is activity-start-relative, so buckets never span activity
+    boundaries.
+
+    :param db_path: Path to the SQLite database file.
+    :param time_grain_seconds: Bucket width in seconds (must be > 0). Embedded
+        as ``bucket_seconds`` on every emitted row.
+    :param end: Required exclusive end date.
+    :param start: Optional inclusive start date. ``None`` means everything
+        before ``end``.
+    :param user_ids: Optional iterable of user_ids to scope to. ``None`` means
+        every user.
+    :param dry_run: When True, classify metrics and report counts without
+        modifying any tables.
+    :return: Summary dict with keys:
+
+        - ``"activity_count"``: number of activities in the replace set.
+        - ``"rows_deleted"``: number of pre-existing downsampled rows removed
+          (0 in dry-run; the count of rows that would have been removed).
+        - ``"rows_inserted"``: number of bucket rows inserted (0 in dry-run).
+        - ``"metric_strategies"``: list of ``(name, Strategy)`` tuples sorted
+          by name, covering the distinct metric names present in the source
+          rows for the replace set.
+        - ``"dry_run"``: bool echoing the input.
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    :raises ValueError: when ``time_grain_seconds`` is not positive.
+    """
+    if time_grain_seconds <= 0:
+        raise ValueError(
+            f"time_grain_seconds must be positive; got {time_grain_seconds}"
+        )
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+
+    start_dt, end_dt = resolve_range(start, end)
+    user_ids_list: Optional[List[int]] = list(user_ids) if user_ids else None
+
+    conn = _open_with_fk(db_file)
+    try:
+        activity_count = _populate_target_activities(
+            conn,
+            start_dt,
+            end_dt,
+            user_ids_list,
+            require_source=True,
+        )
+
+        # Distinct metric names in source for the replace set; classification
+        # is computed even on an empty result so callers can still print an
+        # informative empty-strategy table.
+        names_sql = (
+            "SELECT DISTINCT m.name FROM activity_ts_metric m "
+            "JOIN _tmp_target_activities t ON t.activity_id = m.activity_id"
+        )
+        metric_names = [row[0] for row in conn.execute(names_sql).fetchall()]
+        metric_strategies: List[Tuple[str, Strategy]] = sorted(
+            ((n, strategy_for(n)) for n in metric_names),
+            key=lambda pair: pair[0],
+        )
+
+        if activity_count == 0:
+            return {
+                "activity_count": 0,
+                "rows_deleted": 0,
+                "rows_inserted": 0,
+                "metric_strategies": metric_strategies,
+                "dry_run": dry_run,
+            }
+
+        existing_count_sql = (
+            "SELECT COUNT(*) FROM activity_ts_metric_downsampled d "
+            "JOIN _tmp_target_activities t ON t.activity_id = d.activity_id"
+        )
+
+        if dry_run:
+            rows_deleted = conn.execute(existing_count_sql).fetchone()[0]
+            return {
+                "activity_count": activity_count,
+                "rows_deleted": rows_deleted,
+                "rows_inserted": 0,
+                "metric_strategies": metric_strategies,
+                "dry_run": True,
+            }
+
+        rows_deleted = 0
+        rows_inserted = 0
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        try:
+            cur.execute(
+                "DELETE FROM activity_ts_metric_downsampled "
+                "WHERE activity_id IN ("
+                "SELECT activity_id FROM _tmp_target_activities)"
+            )
+            rows_deleted = cur.rowcount
+
+            for name, strategy in metric_strategies:
+                if strategy is Strategy.SKIP:
+                    continue
+                if strategy is Strategy.AGGREGATE:
+                    sql = _aggregate_insert_sql(time_grain_seconds)
+                elif strategy is Strategy.LAST:
+                    sql = _last_insert_sql(time_grain_seconds)
+                else:
+                    # Defensive: future enum value with no handler should not
+                    # silently emit no rows.
+                    raise RuntimeError(f"Unhandled downsample strategy: {strategy!r}")
+                cur.execute(sql, {"grain": time_grain_seconds, "name": name})
+                rows_inserted += cur.rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        _drop_target_temp(conn)
+        conn.close()
+
+    return {
+        "activity_count": activity_count,
+        "rows_deleted": rows_deleted,
+        "rows_inserted": rows_inserted,
+        "metric_strategies": metric_strategies,
+        "dry_run": False,
     }
