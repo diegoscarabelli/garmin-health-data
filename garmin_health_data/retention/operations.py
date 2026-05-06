@@ -31,37 +31,29 @@ from garmin_health_data.retention.strategies import Strategy, strategy_for
 
 def _ensure_schema_current(db_path: Path) -> None:
     """
-    Create any 2.9-new tables on a database that predates them.
+    Bring the database schema up to date by re-running the packaged DDL.
 
-    Only the ``activity_ts_metric_downsampled`` table is new in 2.9; older tables and
-    indexes already exist in any database that has been touched by this codebase. We
-    deliberately do NOT re-run the full DDL here: indexes in the full DDL reference
-    columns on parent tables, and pre-2.9 fixtures that strip those parent tables down
-    (e.g., in unit tests or hand-edited databases) would fail with ``no such column``.
-    Materializing only the genuinely-new table keeps this helper safe to call from any
-    retention entry point on any vintage of database.
+    Real-world upgrade paths can skip multiple versions: a user on 2.7.x who
+    runs ``garmin migrate-cascade`` after upgrading directly to 2.9 needs both
+    the 2.8 ``body_composition`` table and the 2.9 ``activity_ts_metric_downsampled``
+    table to land. Hardcoding "the new tables in this release" here would drop
+    the 2.8 additions for the cross-version skipper. Re-running ``create_tables``
+    (which executes ``tables.ddl`` with ``CREATE TABLE IF NOT EXISTS`` everywhere)
+    gives us "fast-forward to whatever the DDL declares" semantics for free, no
+    per-release maintenance.
 
-    The CREATE statement is sourced from ``tables.ddl`` (single source of truth) and
-    runs idempotently via ``CREATE TABLE IF NOT EXISTS``.
+    Idempotent on already-current schemas: each statement is a no-op when the
+    target object already exists.
 
-    :param db_path: Path to the SQLite database file.
-    :raises RuntimeError: when the schema source is missing the new table definition
-        (would indicate a packaging bug).
+    :param db_path: Path to the SQLite database file. Must already exist with
+        at least the schema of whatever prior version the user is upgrading
+        from; this helper does not boot a brand-new database.
     """
-    new_table_ddl = _extract_table_ddl(
-        _load_ddl_text(), "activity_ts_metric_downsampled"
-    )
-    if new_table_ddl is None:
-        raise RuntimeError(
-            "tables.ddl does not contain CREATE TABLE for "
-            "activity_ts_metric_downsampled; schema source is broken."
-        )
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(new_table_ddl)
-        conn.commit()
-    finally:
-        conn.close()
+    # Local import to avoid a circular import at module load: db.py only
+    # needs to be reachable at call time.
+    from garmin_health_data.db import create_tables
+
+    create_tables(str(db_path))
 
 
 # Handle importlib.resources for different Python versions, mirroring the
@@ -367,11 +359,27 @@ def migrate_cascade(
 
     backup_path: Optional[str] = None
 
-    if dry_run or not plans:
-        # Dry-run never writes, and a no-op (everything already cascade)
-        # also skips backup creation.
+    if dry_run:
+        # Dry-run never writes; backup_path stays None.
         return {
-            "migrated": migrated if not dry_run else migrated,
+            "migrated": migrated,
+            "skipped": skipped,
+            "backup_path": backup_path,
+            "dry_run": dry_run,
+        }
+
+    if not plans:
+        # No FK rebuilds needed (everything already cascade), but the
+        # database may still predate tables added in newer releases. A
+        # user upgrading from 2.8.x has cascade everywhere already but
+        # is missing activity_ts_metric_downsampled; a user on 2.9.0
+        # already has both. Run the schema-current step unconditionally
+        # so migrate-cascade is "fast-forward to whatever the DDL says"
+        # for every upgrade path, not just the one with cascade work to
+        # do.
+        _ensure_schema_current(db_file)
+        return {
+            "migrated": migrated,
             "skipped": skipped,
             "backup_path": backup_path,
             "dry_run": dry_run,

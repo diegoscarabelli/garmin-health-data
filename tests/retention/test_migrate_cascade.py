@@ -49,83 +49,60 @@ def _has_cascade(db_path: str, table: str) -> bool:
 
 def _make_old_style_db(db_path: str, tables: List[str]) -> None:
     """
-    Build a minimal database with action-less FKs for the listed tables.
+    Build a realistic pre-cascade database for the listed child tables.
 
-    Only ``user``, ``activity``, ``sleep`` parents and the requested child tables are
-    created. The child schemas are intentionally simplified (only the columns we need
-    for FK propagation) but match the production column layout for the columns we touch,
-    so an ``INSERT SELECT *`` copy in the migration step is sane.
+    The fixture starts from the current packaged schema (via
+    :func:`create_tables`) so every parent table, every index, and every
+    sibling child table is exactly as a real user's database would be at
+    upgrade time. We then surgically strip ``ON DELETE CASCADE`` off the
+    requested child tables, simulating a database that predates the
+    cascade introduction. Stripping uses the standard SQLite recreate
+    dance (rename, CREATE without cascade, INSERT SELECT, DROP) so the
+    resulting ``sqlite_master.sql`` for each rewritten table looks exactly
+    like an action-less FK declared by hand.
+
+    Sourcing parents from production DDL (instead of the prior approach
+    of hand-rolling stripped column lists) keeps the fixture honest as
+    the schema evolves: a future migration that introduces a new index
+    referencing a real column won't surprise these tests with "no such
+    column" errors that are an artifact of the fixture, not the code.
 
     :param db_path: Path where the new database should be created.
-    :param tables: Subset of child-table names to create. Must be drawn from
-        :data:`ALL_TARGETS`.
+    :param tables: Child tables that should end up without cascade. Must
+        be a subset of :data:`ALL_TARGETS`.
     """
-    # The production tables.ddl is the source of truth, but we cannot use
-    # it here because the new DDL already has cascade and the whole point
-    # of this fixture is to construct the old, action-less variant. So we
-    # reproduce just enough columns by hand.
-    parent_ddl = [
-        "CREATE TABLE user (user_id BIGINT PRIMARY KEY);",
-        (
-            "CREATE TABLE activity ("
-            "activity_id BIGINT PRIMARY KEY"
-            ", user_id BIGINT NOT NULL"
-            ", FOREIGN KEY (user_id) REFERENCES user (user_id)"
-            ");"
-        ),
-        (
-            "CREATE TABLE sleep ("
-            "sleep_id INTEGER PRIMARY KEY"
-            ", user_id BIGINT NOT NULL"
-            ", FOREIGN KEY (user_id) REFERENCES user (user_id)"
-            ");"
-        ),
-    ]
-
-    # Old-style child DDL for the subset we exercise in tests. Each entry
-    # mirrors the production schema closely enough for ``INSERT SELECT *``
-    # to round-trip after the migration recreates the table from
-    # ``tables.ddl``.
-    child_ddl_by_table = {
-        "swimming_agg_metrics": (
-            "CREATE TABLE swimming_agg_metrics ("
-            "activity_id BIGINT PRIMARY KEY"
-            ", pool_length FLOAT"
-            ", active_lengths INTEGER"
-            ", strokes FLOAT"
-            ", avg_stroke_distance FLOAT"
-            ", avg_strokes FLOAT"
-            ", avg_swim_cadence FLOAT"
-            ", avg_swolf FLOAT"
-            ", create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ", update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ", FOREIGN KEY (activity_id) REFERENCES activity (activity_id)"
-            ");"
-        ),
-        "sleep_level": (
-            "CREATE TABLE sleep_level ("
-            "sleep_id INTEGER NOT NULL"
-            ", start_ts DATETIME NOT NULL"
-            ", end_ts DATETIME NOT NULL"
-            ", stage INTEGER NOT NULL"
-            ", stage_label TEXT NOT NULL"
-            ", create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
-            ", PRIMARY KEY (sleep_id, start_ts)"
-            ", FOREIGN KEY (sleep_id) REFERENCES sleep (sleep_id)"
-            ");"
-        ),
-    }
-
+    create_tables(db_path)
     conn = sqlite3.connect(db_path)
     try:
-        for stmt in parent_ddl:
-            conn.execute(stmt)
+        # Disable enforcement around the rename/insert/drop dance so the
+        # transient renamed table does not trigger constraint checks.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        cur = conn.cursor()
         for table in tables:
-            if table not in child_ddl_by_table:
-                raise KeyError(
-                    f"Test fixture lacks an old-style DDL for table {table!r}."
+            row = cur.execute(
+                "SELECT sql FROM sqlite_master " "WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if row is None or row[0] is None:
+                raise KeyError(f"Table {table!r} not present in fresh schema.")
+            sql_with_cascade = row[0]
+            sql_without_cascade = re.sub(
+                r"\s+ON\s+DELETE\s+CASCADE",
+                "",
+                sql_with_cascade,
+                flags=re.IGNORECASE,
+            )
+            if sql_without_cascade == sql_with_cascade:
+                raise AssertionError(
+                    f"Table {table!r} did not have ON DELETE CASCADE in "
+                    "the freshly created schema; the fixture cannot "
+                    "strip what is not there."
                 )
-            conn.execute(child_ddl_by_table[table])
+            old_name = f"{table}__strip"
+            cur.execute(f"ALTER TABLE {table} RENAME TO {old_name}")
+            cur.execute(sql_without_cascade)
+            cur.execute(f"INSERT INTO {table} SELECT * FROM {old_name}")
+            cur.execute(f"DROP TABLE {old_name}")
         conn.commit()
     finally:
         conn.close()
@@ -159,12 +136,22 @@ def test_old_style_db_gets_migrated(tmp_path: Path) -> None:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("INSERT INTO user (user_id) VALUES (1)")
-        conn.execute("INSERT INTO activity (activity_id, user_id) VALUES (100, 1)")
+        conn.execute(
+            "INSERT INTO activity (activity_id, user_id, activity_type_id, "
+            "activity_type_key, event_type_id, event_type_key, start_ts, "
+            "end_ts, timezone_offset_hours) "
+            "VALUES (100, 1, 1, 'running', 1, 'other', "
+            "'2026-01-01 12:00:00', '2026-01-01 12:30:00', 0.0)"
+        )
         conn.execute(
             "INSERT INTO swimming_agg_metrics (activity_id, pool_length) "
             "VALUES (100, 25.0)"
         )
-        conn.execute("INSERT INTO sleep (sleep_id, user_id) VALUES (200, 1)")
+        conn.execute(
+            "INSERT INTO sleep (sleep_id, user_id, start_ts, end_ts, "
+            "timezone_offset_hours) VALUES "
+            "(200, 1, '2026-01-01 22:00:00', '2026-01-01 23:00:00', 0.0)"
+        )
         conn.execute(
             "INSERT INTO sleep_level "
             "(sleep_id, start_ts, end_ts, stage, stage_label) "
@@ -226,7 +213,13 @@ def test_idempotent_second_run_is_noop(tmp_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("INSERT INTO user (user_id) VALUES (1)")
-        conn.execute("INSERT INTO activity (activity_id, user_id) VALUES (100, 1)")
+        conn.execute(
+            "INSERT INTO activity (activity_id, user_id, activity_type_id, "
+            "activity_type_key, event_type_id, event_type_key, start_ts, "
+            "end_ts, timezone_offset_hours) "
+            "VALUES (100, 1, 1, 'running', 1, 'other', "
+            "'2026-01-01 12:00:00', '2026-01-01 12:30:00', 0.0)"
+        )
         conn.execute(
             "INSERT INTO swimming_agg_metrics (activity_id, pool_length) "
             "VALUES (100, 25.0)"
@@ -379,3 +372,48 @@ def test_missing_database_raises(tmp_path: Path) -> None:
     db_path = str(tmp_path / "does_not_exist.db")
     with pytest.raises(FileNotFoundError):
         migrate_cascade(db_path)
+
+
+def test_cross_version_skip_creates_all_new_tables(tmp_path: Path) -> None:
+    """
+    Regression: a user upgrading from a pre-2.8 release straight to 2.9 must end up with
+    BOTH the 2.8-new ``body_composition`` table and the 2.9-new
+    ``activity_ts_metric_downsampled`` table after running ``migrate-cascade``.
+
+    A previous narrowing of ``_ensure_schema_current`` only created the
+    2.9-new table, leaving the cross-version skipper missing
+    ``body_composition`` until they next ran ``garmin extract``.
+    """
+    db_path = str(tmp_path / "old.db")
+    # Build a fresh schema, then drop the two tables that "didn't exist
+    # yet" in the version we're simulating an upgrade from. The point of
+    # the test is to prove migrate-cascade backfills BOTH on its own.
+    create_tables(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DROP TABLE body_composition")
+        conn.execute("DROP TABLE activity_ts_metric_downsampled")
+        conn.commit()
+    finally:
+        conn.close()
+
+    pre = (
+        sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
+    )
+    assert ("body_composition",) not in pre
+    assert ("activity_ts_metric_downsampled",) not in pre
+
+    migrate_cascade(db_path, backup=False)
+
+    post = (
+        sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
+    )
+    assert ("body_composition",) in post, (
+        "body_composition (added in 2.8) was not created by migrate-cascade; "
+        "pre-2.8 -> 2.9 upgraders would be missing the table."
+    )
+    assert ("activity_ts_metric_downsampled",) in post
