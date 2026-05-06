@@ -680,6 +680,103 @@ class TestUpsertModelInstances:
             assert activity1.update_ts > original_update_ts
             assert activity1.favorite is True  # Verify the update worked.
 
+    def test_update_ts_refreshes_when_explicitly_in_update_columns(self, temp_db):
+        """
+        ``update_ts`` must auto-refresh on conflict even when the caller explicitly
+        includes it in ``update_columns``.
+
+        This pins the production-caller pattern in
+        ``processor.py::_process_main_activity_metrics``, which builds
+        ``update_columns`` from ``Activity.__table__.columns`` (so
+        ``update_ts`` is in the list). Without the unconditional auto-refresh,
+        ``update_dict[update_ts]`` would resolve to ``excluded.update_ts``,
+        which is whatever the input row carried (typically ``None`` since
+        callers don't set it explicitly), silently regressing the audit
+        timestamp.
+        """
+        import time
+
+        from garmin_health_data.models import Activity
+
+        engine = get_engine(temp_db)
+
+        with Session(engine) as session:
+            user = User(user_id=1, full_name="User 1", birth_date=date(1990, 1, 1))
+            upsert_model_instances(
+                session=session,
+                model_instances=[user],
+                conflict_columns=["user_id"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+        def _activity(favorite: bool) -> Activity:
+            return Activity(
+                activity_id=1,
+                user_id=1,
+                start_ts=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                end_ts=datetime(2024, 1, 1, 13, 0, 0, tzinfo=timezone.utc),
+                timezone_offset_hours=0.0,
+                activity_type_id=1,
+                activity_type_key="running",
+                event_type_id=1,
+                event_type_key="uncategorized",
+                parent=False,
+                purposeful=True,
+                favorite=favorite,
+                pr=False,
+                auto_calc_calories=True,
+                has_polyline=False,
+                has_images=False,
+                has_video=False,
+                has_heat_map=False,
+                manual_activity=False,
+            )
+
+        # Mirror the production caller: explicit update_columns built from
+        # __table__.columns, including update_ts.
+        explicit_update_columns = [
+            col.name
+            for col in Activity.__table__.columns
+            if col.name not in ("activity_id", "create_ts")
+        ]
+        assert "update_ts" in explicit_update_columns
+
+        with Session(engine) as session:
+            upsert_model_instances(
+                session=session,
+                model_instances=[_activity(favorite=False)],
+                conflict_columns=["activity_id"],
+                update_columns=explicit_update_columns,
+                on_conflict_update=True,
+            )
+            session.commit()
+            original_update_ts = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
+                .update_ts
+            )
+
+        time.sleep(1)  # SQLite CURRENT_TIMESTAMP has second precision.
+
+        with Session(engine) as session:
+            upsert_model_instances(
+                session=session,
+                model_instances=[_activity(favorite=True)],
+                conflict_columns=["activity_id"],
+                update_columns=explicit_update_columns,
+                on_conflict_update=True,
+            )
+            session.commit()
+            updated = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
+            )
+            assert updated.update_ts > original_update_ts
+            assert updated.favorite is True
+
 
 class TestUpsertModelInstancesReturning:
     """

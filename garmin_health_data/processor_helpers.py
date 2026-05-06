@@ -235,11 +235,17 @@ def upsert_model_instances(
             # matches `update_columns` per the public contract.
             update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
 
-            # Automatically update update_ts column if it exists in the
-            # model. SQLite's DEFAULT CURRENT_TIMESTAMP only applies on
-            # INSERT, not UPDATE. We must explicitly set update_ts to the
-            # current timestamp on updates.
-            if hasattr(model_class, "update_ts") and "update_ts" not in update_dict:
+            # Automatically refresh update_ts on every conflict update.
+            # SQLite's DEFAULT CURRENT_TIMESTAMP only applies on INSERT, not
+            # UPDATE. We unconditionally overwrite any update_ts entry
+            # already in update_dict (e.g. when callers pass
+            # `update_columns` derived from `__table__.columns`, which
+            # includes update_ts and would otherwise resolve to
+            # `excluded.update_ts`, propagating whatever was on the input
+            # row instead of refreshing it). Audit semantics > caller
+            # control here: the row was just updated, so its update_ts
+            # should reflect that.
+            if hasattr(model_class, "update_ts"):
                 update_dict["update_ts"] = func.current_timestamp()
 
             # Defensive fallback: if update_dict is empty (e.g. a table with
