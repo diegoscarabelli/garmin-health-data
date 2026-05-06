@@ -177,22 +177,47 @@ $ garmin extract
 ✅ Extracted 156 files  # Automatically fills the gap
 ```
 
-**Managing disk usage** — `activity_ts_metric` (per-second sensor data from FIT files) accounts for ~93% of typical database size. Two commands let you control its long-tail growth:
+### Managing disk usage
+
+`activity_ts_metric` (per-second sensor data from FIT files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
+
+- **`garmin downsample`** aggregates per-second readings into time buckets and writes them to a separate `activity_ts_metric_downsampled` table. Source rows are never modified by this command.
+- **`garmin prune`** deletes per-second source rows for activities in a date range. The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
+
+#### Manual one-off run
 
 ```bash
-# Aggregate older per-second sensor data into 60s buckets, preserving trends.
-$ garmin downsample --end-date 2025-01-01 --time-grain 60s
+# Bucket older per-second data into 60-second averages.
+garmin downsample --end-date 2025-01-01 --time-grain 60s
 
 # Then drop the per-second source rows, keeping the buckets for analysis.
-$ garmin prune --end-date 2025-01-01
+garmin prune --end-date 2025-01-01
+```
 
-# Or do both automatically before each extraction (cron-friendly).
-$ garmin extract \
+The same date-range conventions as `extract` apply: `--end-date` is required and exclusive, `--start-date` is optional and inclusive (omit to operate on everything before `--end-date`); when start and end are the same day, that single day is included. Both commands accept `--accounts` to scope to specific Garmin user IDs.
+
+#### Cron-friendly automation
+
+For unattended runs, `extract` accepts opt-in retention flags that act on the post-extraction database state:
+
+```bash
+# Daily cron entry: extract new data, downsample anything older than 90 days,
+# delete per-second rows older than 1 year.
+garmin extract \
     --downsample-older-than 90d --downsample-grain 60s \
     --prune-older-than 1y
 ```
 
-`downsample` writes to a separate `activity_ts_metric_downsampled` table; `prune` only deletes from `activity_ts_metric`. Activity rows, splits, laps, agg metrics, paths, sleep, and biometric series are never touched. See the [retention reference](#retention-prune-downsample-migrate-cascade) for full flag details.
+The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race.
+
+#### Safety rails
+
+Both standalone commands print a row-count preview before any write. `garmin downsample` also prints a per-metric strategy table so you can verify how each metric will be handled (averaged, last-in-bucket, or skipped) before committing.
+
+- `--dry-run` reports what would change and exits without writing.
+- `--yes` / `-y` skips the interactive confirmation prompt for scripted use.
+
+> Full flag tables, the per-metric strategy registry, bucket alignment rules: see [Retention reference](#retention-prune-downsample-migrate-cascade).
 
 ### Inspecting your data
 
