@@ -24,6 +24,14 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 - Garmin Connect account
 - Internet connection for data extraction
 
+Verify the Python/SQLite versions:
+
+```bash
+python3 -c "import sys, sqlite3; print(sys.version.split()[0], sqlite3.sqlite_version)"
+```
+
+If SQLite is below 3.35.0, install a newer Python via [pyenv](https://github.com/pyenv/pyenv), [conda](https://docs.conda.io/), or [python.org](https://www.python.org/downloads/) — they all bundle a recent SQLite.
+
 ## Quick Start
 
 ### Installation
