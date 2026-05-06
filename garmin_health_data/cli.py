@@ -41,6 +41,13 @@ from garmin_health_data.lifecycle import (
 )
 from garmin_health_data.processor import GarminProcessor
 from garmin_health_data.processor_helpers import FileSet
+from garmin_health_data.retention.operations import (
+    downsample_activities,
+    migrate_cascade,
+    prune_ts_metrics,
+)
+from garmin_health_data.retention.parsers import DURATION, TIME_GRAIN
+from garmin_health_data.retention.strategies import format_strategy_table
 from garmin_health_data.utils import format_count, format_date, format_file_size
 from garmin_health_data.version_check import check_for_newer_version
 
@@ -157,6 +164,30 @@ def auth(email: Optional[str], password: Optional[str]):
     default=False,
     help="Skip extraction. Process whatever files are currently in ingest/.",
 )
+@click.option(
+    "--downsample-older-than",
+    "downsample_older_than",
+    type=DURATION,
+    help="Before extracting, downsample activity_ts_metric rows for activities "
+    "older than DURATION (e.g., 90d, 6m, 1y). Requires --downsample-grain. The "
+    "cutoff date is computed as `today - DURATION` and used as an exclusive "
+    "end date for the downsample run.",
+)
+@click.option(
+    "--downsample-grain",
+    "downsample_grain",
+    type=TIME_GRAIN,
+    help="Bucket grain used by --downsample-older-than. Same format as the "
+    "standalone `garmin downsample` command (e.g., 60s, 5m, 15m).",
+)
+@click.option(
+    "--prune-older-than",
+    "prune_older_than",
+    type=DURATION,
+    help="Before extracting, delete activity_ts_metric rows for activities "
+    "older than DURATION (e.g., 90d, 6m, 1y). Runs after --downsample-older-than "
+    "if both are given, so today's prune does not strand a bucket aggregation.",
+)
 def extract(
     start_date: Optional[datetime],
     end_date: Optional[datetime],
@@ -165,6 +196,9 @@ def extract(
     accounts: tuple,
     extract_only: bool,
     process_only: bool,
+    downsample_older_than,
+    downsample_grain: Optional[int],
+    prune_older_than,
 ):
     """
     Extract Garmin Connect data and save to SQLite database.
@@ -177,6 +211,31 @@ def extract(
     if extract_only and process_only:
         click.secho(
             "❌ --extract-only and --process-only are mutually exclusive.",
+            fg="red",
+        )
+        raise click.Abort()
+
+    # Validate auto retention flag pairings: downsample requires both flags.
+    # Single missing flag is a user error and aborts before any work.
+    if (downsample_older_than is None) != (downsample_grain is None):
+        click.secho(
+            "❌ --downsample-older-than and --downsample-grain must be "
+            "supplied together (or both omitted).",
+            fg="red",
+        )
+        raise click.Abort()
+
+    # --extract-only promises "download files and stop, no DB writes". Auto
+    # retention is a DB write, so combining the two is incoherent and would
+    # silently mutate the database the user just asked us to leave alone.
+    # Reject the combination up front.
+    if extract_only and (
+        downsample_older_than is not None or prune_older_than is not None
+    ):
+        click.secho(
+            "❌ --extract-only is incompatible with --prune-older-than and "
+            "--downsample-older-than (those flags write to the database; "
+            "--extract-only is for download-only runs).",
             fg="red",
         )
         raise click.Abort()
@@ -204,6 +263,18 @@ def extract(
         if accounts
         else None
     )
+    # Auto retention scopes to the same accounts the extract run targets.
+    # The retention helpers expect integer user_ids while the extractor
+    # surface uses strings, so do the conversion here. Invalid values are
+    # surfaced as a Click usage error rather than silently dropped.
+    retention_user_ids: Optional[list] = None
+    if accounts_list:
+        try:
+            retention_user_ids = [int(a) for a in accounts_list]
+        except ValueError as exc:
+            raise click.BadParameter(
+                f"--accounts contains a non-integer user_id: {exc}"
+            ) from exc
 
     if not process_only:
         # Auto-detect start date if not provided.
@@ -457,6 +528,67 @@ def extract(
                 click.secho("⚠️  No files to process", fg="yellow")
 
             click.echo()
+
+            # Auto retention runs AFTER Step 2 (file processing) so it acts
+            # on the database's final post-extraction state. Running it
+            # before processing would let a `--process-only` run, or any
+            # extract whose date window overlaps the retention cutoff,
+            # immediately re-import the same old activity FIT files and
+            # recreate the activity_ts_metric rows the prune just deleted.
+            # Still INSIDE the lifecycle lock, so two concurrent extract
+            # runs cannot race on the database.
+            today = datetime.now().date()
+            if downsample_older_than is not None:
+                cutoff = today - downsample_older_than
+                click.secho(
+                    f"📉 Auto downsample: activities with start_ts < "
+                    f"{format_date(cutoff)} at {downsample_grain}s grain.",
+                    fg="cyan",
+                )
+                ds_result = downsample_activities(
+                    db_path,
+                    time_grain_seconds=downsample_grain,
+                    end=cutoff,
+                    user_ids=retention_user_ids,
+                )
+                # Print the strategy table so users see the per-metric
+                # classification a cron run is about to commit. A
+                # misclassified future metric can be patched in a follow-up
+                # release; the source rows are preserved until prune, so
+                # re-running downsample with the corrected registry
+                # recovers cleanly.
+                if ds_result["metric_strategies"]:
+                    click.echo(
+                        format_strategy_table(
+                            [name for name, _ in ds_result["metric_strategies"]]
+                        )
+                    )
+                click.echo(
+                    f"   {ds_result['activity_count']} activit"
+                    f"{'y' if ds_result['activity_count'] == 1 else 'ies'} "
+                    f"processed; replaced "
+                    f"{format_count(ds_result['rows_deleted'])} prior rows "
+                    f"with {format_count(ds_result['rows_inserted'])} new "
+                    f"bucket rows."
+                )
+
+            if prune_older_than is not None:
+                cutoff = today - prune_older_than
+                click.secho(
+                    f"🗑️  Auto prune: activity_ts_metric with start_ts < "
+                    f"{format_date(cutoff)}.",
+                    fg="cyan",
+                )
+                pr_result = prune_ts_metrics(
+                    db_path, end=cutoff, user_ids=retention_user_ids
+                )
+                click.echo(
+                    f"   Deleted {format_count(pr_result['rows_affected'])} "
+                    f"rows across {pr_result['activity_count']} activit"
+                    f"{'y' if pr_result['activity_count'] == 1 else 'ies'}."
+                )
+            if downsample_older_than is not None or prune_older_than is not None:
+                click.echo()
 
             # ---------------------------------------------------------------- Step 3: Summary.
             click.echo(click.style("📊 Step 3/3: Summary", fg="cyan", bold=True))
@@ -719,6 +851,415 @@ def verify(ctx: click.Context, db_path: str):
             click.secho(f"❌ Database integrity check failed: {result[0]}", fg="red")
 
     click.echo()
+
+
+def _parse_accounts_option(accounts: tuple) -> Optional[list]:
+    """
+    Normalize a Click ``--accounts`` value into a list of integer user_ids.
+
+    The flag accepts comma-separated or repeated values (mirroring ``extract``):
+    ``--accounts 123,456`` or ``--accounts 123 --accounts 456``. ``None`` is returned
+    when no accounts were given so callers can scope to "all users".
+
+    :param accounts: Raw Click tuple from a ``multiple=True`` option.
+    :return: List of integer user_ids, or None when the option was not used.
+    """
+    if not accounts:
+        return None
+    flat = [a.strip() for raw in accounts for a in raw.split(",") if a.strip()]
+    if not flat:
+        return None
+    parsed: list = []
+    for token in flat:
+        try:
+            parsed.append(int(token))
+        except ValueError as exc:
+            raise click.BadParameter(
+                f"--accounts value {token!r} is not an integer user_id."
+            ) from exc
+    return parsed
+
+
+def _run_under_db_lock(db_path: str, fn):
+    """
+    Run a database-mutating retention helper under the lifecycle lock.
+
+    Three jobs in one wrapper, shared by ``prune``, ``downsample``, and
+    ``migrate-cascade``:
+
+    - Surface a missing/invalid ``--db-path`` as a clean Click ``Abort`` with
+      a "run `garmin extract`" hint, instead of letting the underlying
+      ``FileNotFoundError`` bubble up as a traceback.
+    - Acquire the same advisory lock (``garmin_files/.lock``) that ``extract``
+      uses, so a concurrent extract or another retention command on the same
+      database fails fast instead of producing ``database is locked`` errors
+      or stale preview-vs-actual counts.
+    - Print a clean abort message if the lock is already held.
+
+    :param db_path: Path to the SQLite database file (validated here).
+    :param fn: Callable that runs the actual retention work; receives no
+        arguments and is invoked once inside the lock.
+    :return: Whatever ``fn`` returns.
+    """
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        click.secho(f"❌ Database not found: {db_file}", fg="red")
+        click.echo("Run `garmin extract` to create one.")
+        raise click.Abort()
+    files_root = db_file.parent / "garmin_files"
+    setup_lifecycle_dirs(files_root)
+    try:
+        with acquire_lock(files_root):
+            return fn()
+    except LockHeldError as e:
+        click.secho(f"❌ {e}", fg="red")
+        raise click.Abort() from e
+
+
+def _print_range_banner(start_date, end_date) -> None:
+    """
+    Echo the same date-range banner ``extract`` prints, for UX consistency.
+
+    :param start_date: Inclusive start date or None.
+    :param end_date: Exclusive end date.
+    """
+    start_label = format_date(start_date) if start_date else "(beginning)"
+    click.echo(
+        f"📆 Date range: {start_label} (inclusive) "
+        f"to {format_date(end_date)} (exclusive)"
+    )
+
+
+@cli.command(name="prune")
+@click.option(
+    "--end-date",
+    "end_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="End date (YYYY-MM-DD), EXCLUSIVE — activities on this date are not "
+    "pruned (except when start and end are the same day, in which case that "
+    "single day is included).",
+)
+@click.option(
+    "--start-date",
+    "start_date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Start date (YYYY-MM-DD), inclusive. Omit to prune everything before "
+    "--end-date.",
+)
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default="garmin_data.db",
+    help="Path to SQLite database file.",
+)
+@click.option(
+    "--accounts",
+    multiple=True,
+    help="Garmin user IDs to scope to (comma-separated or repeated). Prunes "
+    "all users if not specified.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report row counts without deleting.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt.",
+)
+def prune(
+    end_date: datetime,
+    start_date: Optional[datetime],
+    db_path: str,
+    accounts: tuple,
+    dry_run: bool,
+    yes: bool,
+):
+    """
+    Delete per-second sensor rows from activity_ts_metric for activities in range.
+
+    Activity rows themselves, splits, laps, agg metrics, paths, and downsampled buckets
+    are preserved. Range semantics match ``extract``: --end-date is exclusive, --start-
+    date is inclusive, with the same-day special case.
+    """
+    accounts_list = _parse_accounts_option(accounts)
+    start_d = start_date.date() if start_date else None
+    end_d = end_date.date()
+
+    _print_range_banner(start_d, end_d)
+    if accounts_list:
+        click.echo(f"👤 Scoping to accounts: {', '.join(map(str, accounts_list))}")
+
+    def _run():
+        if dry_run:
+            result = prune_ts_metrics(
+                db_path,
+                start=start_d,
+                end=end_d,
+                user_ids=accounts_list,
+                dry_run=True,
+            )
+            click.secho(
+                f"🔍 Dry run: {format_count(result['rows_affected'])} "
+                f"activity_ts_metric rows would be deleted across "
+                f"{result['activity_count']} activit"
+                f"{'y' if result['activity_count'] == 1 else 'ies'}.",
+                fg="cyan",
+            )
+            return
+
+        # Real run: preview row count first, then prompt unless --yes. Both
+        # the preview and the destructive call run under the same lock, so
+        # the count cannot drift between the prompt and the actual write.
+        preview = prune_ts_metrics(
+            db_path,
+            start=start_d,
+            end=end_d,
+            user_ids=accounts_list,
+            dry_run=True,
+        )
+        if preview["rows_affected"] == 0:
+            click.secho("Nothing to prune in this range.", fg="cyan")
+            return
+        click.echo(
+            f"About to delete {format_count(preview['rows_affected'])} "
+            f"activity_ts_metric rows across {preview['activity_count']} "
+            f"activities."
+        )
+        if not yes and not click.confirm("Proceed?", default=False):
+            click.secho("Aborted.", fg="yellow")
+            return
+
+        result = prune_ts_metrics(
+            db_path,
+            start=start_d,
+            end=end_d,
+            user_ids=accounts_list,
+            dry_run=False,
+        )
+        click.secho(
+            f"✅ Deleted {format_count(result['rows_affected'])} "
+            f"activity_ts_metric rows across {result['activity_count']} "
+            f"activities.",
+            fg="green",
+        )
+
+    _run_under_db_lock(db_path, _run)
+
+
+@cli.command(name="downsample")
+@click.option(
+    "--end-date",
+    "end_date",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="End date (YYYY-MM-DD), EXCLUSIVE — activities on this date are not "
+    "downsampled (except when start and end are the same day, in which case "
+    "that single day is included).",
+)
+@click.option(
+    "--start-date",
+    "start_date",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Start date (YYYY-MM-DD), inclusive. Omit to downsample everything "
+    "before --end-date.",
+)
+@click.option(
+    "--time-grain",
+    "time_grain",
+    required=True,
+    type=TIME_GRAIN,
+    help="Bucket grain. Format: integer + unit, where unit is 's' (seconds) "
+    "or 'm' (minutes). Examples: 30s, 60s, 1m, 5m, 15m. Hours are not "
+    "supported (use minutes instead).",
+)
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default="garmin_data.db",
+    help="Path to SQLite database file.",
+)
+@click.option(
+    "--accounts",
+    multiple=True,
+    help="Garmin user IDs to scope to (comma-separated or repeated). "
+    "Downsamples all users if not specified.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Report the strategy table and counts without writing.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt.",
+)
+def downsample(
+    end_date: datetime,
+    start_date: Optional[datetime],
+    time_grain: int,
+    db_path: str,
+    accounts: tuple,
+    dry_run: bool,
+    yes: bool,
+):
+    """
+    Aggregate activity_ts_metric rows into time-bucketed downsampled records.
+
+    Source rows in activity_ts_metric are NOT modified. Activity-level replace
+    semantics: re-running for an activity with a different --time-grain wipes
+    the prior buckets and inserts new ones; activities with no source rows are
+    skipped entirely (their existing downsampled rows are preserved).
+    """
+    accounts_list = _parse_accounts_option(accounts)
+    start_d = start_date.date() if start_date else None
+    end_d = end_date.date()
+
+    _print_range_banner(start_d, end_d)
+    click.echo(f"⏱️  Bucket grain: {time_grain}s")
+    if accounts_list:
+        click.echo(f"👤 Scoping to accounts: {', '.join(map(str, accounts_list))}")
+
+    def _run():
+        # Preview first: print the strategy table and counts before any write.
+        # Both the preview and the destructive call run under the same lock,
+        # so source rows can't change between the prompt and the write.
+        preview = downsample_activities(
+            db_path,
+            time_grain_seconds=time_grain,
+            start=start_d,
+            end=end_d,
+            user_ids=accounts_list,
+            dry_run=True,
+        )
+
+        if preview["activity_count"] == 0:
+            click.secho("Nothing to downsample in this range.", fg="cyan")
+            return
+
+        metric_names = [name for name, _ in preview["metric_strategies"]]
+        click.echo()
+        click.echo(format_strategy_table(metric_names))
+        click.echo()
+        click.echo(
+            f"Would replace {format_count(preview['rows_deleted'])} existing "
+            f"downsampled rows with newly computed buckets for "
+            f"{preview['activity_count']} activit"
+            f"{'y' if preview['activity_count'] == 1 else 'ies'}."
+        )
+
+        if dry_run:
+            click.secho("🔍 Dry run: no changes written.", fg="cyan")
+            return
+
+        if not yes and not click.confirm("Proceed?", default=False):
+            click.secho("Aborted.", fg="yellow")
+            return
+
+        result = downsample_activities(
+            db_path,
+            time_grain_seconds=time_grain,
+            start=start_d,
+            end=end_d,
+            user_ids=accounts_list,
+            dry_run=False,
+        )
+        click.secho(
+            f"✅ Downsampled {result['activity_count']} activit"
+            f"{'y' if result['activity_count'] == 1 else 'ies'}: "
+            f"removed {format_count(result['rows_deleted'])} prior bucket rows, "
+            f"inserted {format_count(result['rows_inserted'])} new bucket rows.",
+            fg="green",
+        )
+
+    _run_under_db_lock(db_path, _run)
+
+
+@cli.command(name="migrate-cascade")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default="garmin_data.db",
+    help="Path to SQLite database file.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Plan the migration without modifying the database.",
+)
+@click.option(
+    "--no-backup",
+    is_flag=True,
+    default=False,
+    help="Skip the pre-migration backup file. Default behavior copies the "
+    "database to <db>.bak.<timestamp> before any writes.",
+)
+def migrate_cascade_cmd(db_path: str, dry_run: bool, no_backup: bool):
+    """
+    Retrofit ON DELETE CASCADE onto child FKs in an existing database.
+
+    Pre-upgrade SQLite databases have no FK action on activity-child and
+    sleep-child tables, so cascade clauses defined in the new schema are
+    silently inert against them. This one-shot migration recreates each
+    affected child table via the standard 12-step recreate dance.
+
+    Idempotent: tables that already have cascade are skipped. Pre-flight
+    PRAGMA foreign_key_check refuses to migrate a database with existing
+    FK violations. Marked for removal in a future major version once enough
+    users have run it.
+    """
+    click.secho(
+        "ℹ️  migrate-cascade is intended for one-time migration of pre-2.9 "
+        "databases and will be removed in a future major version.",
+        fg="cyan",
+    )
+
+    def _run():
+        try:
+            return migrate_cascade(
+                db_path,
+                dry_run=dry_run,
+                backup=not no_backup,
+            )
+        except RuntimeError as e:
+            click.secho(f"❌ {e}", fg="red")
+            raise click.Abort() from e
+
+    # Acquire the lifecycle lock so the in-place table rewrites cannot race
+    # with a concurrent extract or another retention command. Missing-DB and
+    # LockHeldError are both surfaced as clean Click aborts.
+    result = _run_under_db_lock(db_path, _run)
+
+    if result["dry_run"]:
+        click.secho(
+            f"🔍 Dry run: would migrate "
+            f"{format_count(len(result['migrated']))} table(s), "
+            f"skip {format_count(len(result['skipped']))} (already cascade).",
+            fg="cyan",
+        )
+    else:
+        click.secho(
+            f"✅ Migrated {format_count(len(result['migrated']))} table(s); "
+            f"skipped {format_count(len(result['skipped']))} (already cascade).",
+            fg="green",
+        )
+        if result["backup_path"]:
+            click.echo(f"💾 Backup: {result['backup_path']}")
+
+    if result["migrated"]:
+        click.echo("Migrated:")
+        for name in result["migrated"]:
+            click.echo(f"  • {name}")
 
 
 if __name__ == "__main__":

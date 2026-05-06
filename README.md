@@ -13,6 +13,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 - 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
+- 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
 - 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, with no third-party Garmin Connect client library dependency.
 - 🖥️ **Cross-platform**: macOS, Linux, Windows. Python 3.10+.
 
@@ -51,6 +52,42 @@ garmin info
 ```
 
 That's it! `garmin extract` saved your raw downloaded files under `garmin_files/storage/` (kept on disk as an offline backup) and loaded them into a local SQLite database (`garmin_data.db`) for analysis.
+
+## Upgrading from 2.8.x or earlier
+
+> **Skip this section if you just installed `garmin-health-data` for the first time.** New installs get the current schema automatically when `garmin extract` (or `garmin init`) creates the database, so neither action below is needed. This section is only for users who installed an earlier version, ran `garmin extract` against it, and are now upgrading the package on top of that existing `garmin_data.db`.
+
+Two one-time actions for upgrading users. Both are independent; you can skip either if it doesn't apply.
+
+### Retrofit cascade FKs (recommended for everyone)
+
+Pre-2.9 databases have no `ON DELETE CASCADE` action on the activity-child or sleep-child foreign keys. The 2.9 retention features still work without cascade (they only delete from one childless table), but cascade ships now as an enabler for future expansion to multi-table retention. Run once after upgrading:
+
+```bash
+garmin migrate-cascade
+```
+
+The command writes a backup file (`garmin_data.db.bak.<timestamp>`) by default, runs a pre-flight `PRAGMA foreign_key_check` to refuse to migrate a corrupted DB, and is idempotent (safe to run twice). Pass `--dry-run` first if you want to preview, or `--no-backup` for a backup-managed-elsewhere setup.
+
+### Backfill empty sleep detail tables (recommended if you tracked sleep)
+
+A bug from 2.7.0 through 2.8.0 left the per-night detail tables (`sleep_level`, `sleep_movement`, `sleep_restless_moment`, `spo2`, `hrv`, `breathing_disruption`) **silently empty for every user** ([#52](https://github.com/diegoscarabelli/garmin-health-data/issues/52), fixed in 2.9). The `sleep` summary table was always populated correctly. Once on 2.9, repopulate the detail tables with one of:
+
+**Option A — replay the SLEEP files you already have on disk** (fastest, offline, no API calls):
+
+```bash
+# Move the SLEEP JSONs from the storage archive back into ingest/.
+mv garmin_files/storage/*_SLEEP_*.json garmin_files/ingest/
+garmin extract --process-only
+```
+
+**Option B — re-extract from Garmin Connect** (use this if `storage/` was pruned or partial):
+
+```bash
+garmin extract --data-types SLEEP --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+```
+
+Both paths are idempotent: the `sleep` summary upsert will reuse existing rows, and the six detail tables will populate retroactively. Re-running over already-detail-loaded nights is a no-op.
 
 ## Usage
 
@@ -142,6 +179,48 @@ $ garmin extract
 ✅ Extracted 156 files  # Automatically fills the gap
 ```
 
+### Managing disk usage
+
+`activity_ts_metric` (per-second sensor data from FIT files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
+
+- **`garmin downsample`** aggregates per-second readings into time buckets and writes them to a separate `activity_ts_metric_downsampled` table. Source rows are never modified by this command.
+- **`garmin prune`** deletes per-second source rows for activities in a date range. The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
+
+#### Manual one-off run
+
+```bash
+# Bucket older per-second data into 60-second averages.
+garmin downsample --end-date 2025-01-01 --time-grain 60s
+
+# Then drop the per-second source rows, keeping the buckets for analysis.
+garmin prune --end-date 2025-01-01
+```
+
+The same date-range conventions as `extract` apply: `--end-date` is required and exclusive, `--start-date` is optional and inclusive (omit to operate on everything before `--end-date`); when start and end are the same day, that single day is included. Both commands accept `--accounts` to scope to specific Garmin user IDs.
+
+#### Cron-friendly automation
+
+For unattended runs, `extract` accepts opt-in retention flags that act on the post-extraction database state:
+
+```bash
+# Daily cron entry: extract new data, downsample anything older than 90 days,
+# delete per-second rows older than 1 year.
+garmin extract \
+    --downsample-older-than 90d --downsample-grain 60s \
+    --prune-older-than 1y
+```
+
+The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race.
+
+#### Safety rails
+
+Both standalone commands print a row-count preview before any write. `garmin downsample` also prints a per-metric strategy table so you can verify how each metric will be handled (averaged, last-in-bucket, or skipped) before committing.
+
+- `--dry-run` reports what would change and exits without writing.
+- `--yes` / `-y` skips the interactive confirmation prompt for scripted use.
+
+> Full flag tables, the per-metric strategy registry, bucket alignment rules: see [Retention reference](#retention-prune-downsample-migrate-cascade).
+
 ### Inspecting your data
 
 ```bash
@@ -169,7 +248,30 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 
 ## Reference
 
-### `extract` command flags
+### Commands at a glance
+
+| Command | What it does | Section |
+|---|---|---|
+| [`garmin auth`](#garmin-auth) | Log into Garmin Connect and store OAuth tokens. Run once per account. | [auth](#garmin-auth) |
+| [`garmin extract`](#garmin-extract) | Download data from Garmin Connect and load it into the SQLite database. The default workflow. Supports rolling-window auto retention via opt-in flags. | [extract](#garmin-extract) |
+| [`garmin info`](#garmin-info) | Show row counts, last-update dates, and DB size. Read-only. | [info](#garmin-info) |
+| [`garmin verify`](#garmin-verify) | Check schema integrity and run SQLite's `PRAGMA integrity_check`. Read-only. | [verify](#garmin-verify) |
+| [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-downsample-migrate-cascade) |
+
+All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
+
+### `garmin auth`
+
+```bash
+garmin auth
+garmin auth --email user@example.com --password '...'
+```
+
+Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/<user_id>/`. Run once per Garmin Connect account; tokens auto-refresh as long as you extract at least once every 30 days. The `--email` / `--password` flags can also be supplied via the `GARMIN_EMAIL` / `GARMIN_PASSWORD` environment variables. See the [Authentication internals](#authentication-internals) collapsible below for the login-strategy waterfall and the 30-45s anti-rate-limit pause explanation.
+
+### `garmin extract`
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
@@ -180,6 +282,9 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 | `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
 | `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
+| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | Before extracting, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
+| `--downsample-grain GRAIN` | Required when `--downsample-older-than` is set | Bucket grain for the auto downsample (e.g., `60s`, `5m`). |
+| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. |
 
 <details>
 <summary><strong>File lifecycle</strong></summary>
@@ -281,6 +386,102 @@ This means you can safely:
 
 </details>
 
+### `garmin info`
+
+```bash
+garmin info
+garmin info --db-path ~/my-garmin-data.db
+```
+
+Read-only. Prints database file path and size, per-table row counts for the major tables, and the latest update date observed across the 10 core time-series tables. Useful to confirm an extraction landed and to spot tables that haven't been refreshed recently.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+
+Exits with code 1 and a "run `garmin extract`" hint if the database file does not exist.
+
+### `garmin verify`
+
+```bash
+garmin verify
+garmin verify --db-path ~/my-garmin-data.db
+```
+
+Read-only. Counts the tables present in the database, compares against the expected schema count, and runs SQLite's `PRAGMA integrity_check`. Useful as a smoke test after a manual schema change, a backup restore, or a `garmin migrate-cascade` run.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
+
+Exits with code 1 if the schema integrity check fails or the database does not exist.
+
+### Retention: `prune`, `downsample`, `migrate-cascade`
+
+`activity_ts_metric` (per-second sensor data from FIT files) is the only table whose long-run growth typically matters; on a representative database it accounts for ~93% of disk usage. The retention commands target it directly and leave every other table untouched.
+
+#### Time-range conventions
+
+Both `prune` and `downsample` use the same date-range semantics as `extract`:
+
+- `--end-date YYYY-MM-DD`: **required**, **exclusive** (activities on this date are not affected).
+- `--start-date YYYY-MM-DD`: **optional**, **inclusive**. Omit to operate on everything before `--end-date`.
+- **Same-day special case**: when start and end are the same calendar day, that day is included.
+- Range is interpreted against `activity.start_ts`.
+
+#### `garmin prune`
+
+Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--end-date YYYY-MM-DD` | Required, exclusive | End of the range. |
+| `--start-date YYYY-MM-DD` | Optional, inclusive | Omit for "everything before `--end-date`". |
+| `--accounts ID` | Repeatable or comma-separated | Scope to specific Garmin user IDs. |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Report row count without deleting. |
+| `--yes` / `-y` | Flag | Skip the confirmation prompt. |
+
+#### `garmin downsample`
+
+Aggregates `activity_ts_metric` rows into time-bucketed records in `activity_ts_metric_downsampled` (a separate table). Source rows are not modified, so `downsample` and `prune` compose: downsample first to preserve trends, then prune to reclaim disk.
+
+**Bucket alignment** is activity-start-relative, so buckets never span activity boundaries. **Activity-level replace semantics**: re-running for an activity with a different `--time-grain` cleanly replaces its prior buckets; activities whose source rows have been pruned are excluded from the replace set so their existing buckets survive untouched.
+
+**Per-metric strategy** is decided automatically based on the metric name:
+
+| Strategy | Applies to | Storage |
+| --- | --- | --- |
+| `AGGREGATE` (default) | Instantaneous numeric metrics: `heart_rate`, `power`, `cadence`, `speed`, `enhanced_altitude`, `temperature`, all left/right pedal-balance metrics, etc. | avg in `value`, plus `min_value` / `max_value` |
+| `LAST` | Cumulative metrics: `distance`, `accumulated_power`, plus future `accumulated_*` / `total_*` (heuristic). | last-in-bucket value; min/max NULL |
+| `SKIP` | GPS coordinates: `position_lat`, `position_long` (already materialized in `activity_path`). | not downsampled |
+
+The strategy table is printed before any write so you can verify the classification.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--end-date YYYY-MM-DD` | Required, exclusive | End of the range. |
+| `--start-date YYYY-MM-DD` | Optional, inclusive | Omit for "everything before `--end-date`". |
+| `--time-grain GRAIN` | Required, format `^([1-9][0-9]*)(s\|m)$` | Bucket width. Examples: `30s`, `60s`, `1m`, `5m`, `15m`, `60m`. Hours intentionally not supported (use minutes). |
+| `--accounts ID` | Repeatable or comma-separated | Scope to specific Garmin user IDs. |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Print the strategy table and counts without writing. |
+| `--yes` / `-y` | Flag | Skip the confirmation prompt. |
+
+#### `garmin migrate-cascade`
+
+One-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.9 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance.
+
+The 2.9 retention features only delete from one childless table (`activity_ts_metric`), so cascade is not required for them. Cascade ships now as an enabler for future expansion to multi-table retention; running this migration on an existing DB is optional but recommended.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Plan the migration without modifying the database. |
+| `--no-backup` | Flag | Skip the pre-migration backup. Default copies the DB to `<db>.bak.<timestamp>`. |
+
+The command is **idempotent** (skips tables that already have cascade), runs a pre-flight `PRAGMA foreign_key_check` (refuses to migrate a database with existing FK violations), and is marked for removal in a future major version once enough users have run it.
+
 ## Data Catalog
 
 ### Data Types
@@ -306,7 +507,7 @@ This means you can safely:
 
 ### Database Schema
 
-The SQLite database contains 34 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 35 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -356,14 +557,15 @@ user (root table)
 
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (11 tables)**
+**Activities (12 tables)**
 
 ```
 activity (main activity records)
 ├── activity_lap_metric (lap-by-lap metrics)
 ├── activity_path (eagerly materialized GPS path as JSON array)
 ├── activity_split_metric (split data)
-├── activity_ts_metric (time-series sensor data)
+├── activity_ts_metric (time-series sensor data, per-second)
+├── activity_ts_metric_downsampled (time-bucketed aggregates of activity_ts_metric, populated by `garmin downsample`)
 ├── cycling_agg_metrics (cycling-specific aggregates)
 ├── running_agg_metrics (running-specific aggregates)
 ├── strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
@@ -452,7 +654,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 34 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 35 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |
