@@ -7,24 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.8.0] - 2026-05-05
+## [2.9.0] - 2026-05-05
 
 ### Added
 
 - **`garmin prune` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): deletes rows from `activity_ts_metric` for activities whose `start_ts` falls in `[--start-date, --end-date)`, with the same-day inclusion rule the `extract` command uses. Activity rows themselves, splits, laps, agg metrics, paths, and downsampled buckets are preserved. Supports `--dry-run`, `--accounts`, `--yes`, and a confirmation prompt by default. The per-second FIT-derived sensor table is ~93% of typical disk usage; pruning it solves the long-tail growth problem with no schema changes for existing users.
 - **`garmin downsample` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): aggregates `activity_ts_metric` rows into time-bucketed records in a new `activity_ts_metric_downsampled` table. `--time-grain` accepts `^([1-9][0-9]*)(s|m)$` (e.g., `30s`, `60s`, `5m`, `15m`, `60m`); hours are intentionally not supported. Bucket alignment is activity-start-relative so buckets never span activity boundaries. Three-strategy registry covers all 28 currently observed metric names: `AGGREGATE` (default; avg + min + max for instantaneous numeric metrics), `LAST` (cumulative metrics like `distance` and `accumulated_power`, plus `accumulated_*`/`total_*` heuristic), and `SKIP` (GPS coordinates, since `activity_path` already materializes the polyline). Activity-level replace semantics: re-running for an activity with a different `--time-grain` cleanly wipes its prior buckets; activities whose source rows have been pruned are excluded from the replace set entirely so their existing buckets survive.
-- **`garmin migrate-cascade` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): one-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.8 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance. Idempotent (skips tables that already have cascade), pre-flight `PRAGMA foreign_key_check` refuses to migrate a database with existing FK violations, backup file written next to the database unless `--no-backup`, marked for removal in a future major version.
+- **`garmin migrate-cascade` command** ([#51](https://github.com/diegoscarabelli/garmin-health-data/issues/51)): one-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.9 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance. Idempotent (skips tables that already have cascade), pre-flight `PRAGMA foreign_key_check` refuses to migrate a database with existing FK violations, backup file written next to the database unless `--no-backup`, marked for removal in a future major version.
 - **`extract` automation flags**: `--prune-older-than DURATION` and `--downsample-older-than DURATION --downsample-grain GRAIN` for cron use. `DURATION` accepts `90d`, `6m`, `1y`. Computes the effective `--end-date` as `today - DURATION`. Default `extract` behavior is unchanged when these flags are absent.
 - **New `activity_ts_metric_downsampled` table** keyed on `(activity_id, bucket_ts, name)` with `bucket_seconds` recorded as metadata.
 
+### Fixed
+
+- **Sleep detail tables silently empty since the feature shipped** ([#52](https://github.com/diegoscarabelli/garmin-health-data/issues/52)): `_process_sleep_base` returned `None` and short-circuited the orchestrator before any of the six per-night detail extractors (`sleep_level`, `sleep_movement`, `sleep_restless_moment`, `spo2`, `hrv`, `breathing_disruption`) ran. The bulk-upsert helper was returning the input ORM instances (with `sleep_id=None`) instead of the rows actually persisted to SQLite. `_process_sleep_base` now reads the auto-generated `sleep_id` back via SQLite `RETURNING`, so the detail extractors receive a real foreign key and the six tables are populated as designed. Helper refactor (`upsert_model_instances` gains an opt-in `returning_columns` parameter, SQLite >= 3.35 required for `INSERT ... ON CONFLICT ... RETURNING`) makes the same class of bug structurally impossible. Re-running extraction over existing `storage/` SLEEP JSONs is safe (idempotent) and will backfill the detail tables. Fixed in #54.
+
 ### Changed
 
-- **Schema: `ON DELETE CASCADE` added to all 16 activity-child and sleep-child FKs** in `tables.ddl` and `models.py`. v2.8 retention features only delete from one childless table (`activity_ts_metric`), but shipping cascade now means future expansion to full multi-table retention is code-only, not another schema migration.
+- **Schema: `ON DELETE CASCADE` added to all 16 activity-child and sleep-child FKs** in `tables.ddl` and `models.py`. v2.9 retention features only delete from one childless table (`activity_ts_metric`), but shipping cascade now means future expansion to full multi-table retention is code-only, not another schema migration.
 - **`garmin_health_data.db.get_engine` now attaches a `connect` event listener** that runs `PRAGMA foreign_keys = ON` on every new connection. SQLite's per-connection default is OFF, so cascade clauses defined in the schema would otherwise be silently inert.
 
 ### Migration notes
 
-Existing databases keep their pre-2.8 cascade-less FK definitions even after upgrading the package; SQLite has no in-place way to retrofit cascade. Run `garmin migrate-cascade` once to rebuild the affected child tables. The migration is safe to run on a 2.8-fresh database (it's idempotent and skips tables already correct), runs inside per-table transactions, and writes a backup file by default.
+Existing databases keep their pre-2.9 cascade-less FK definitions even after upgrading the package; SQLite has no in-place way to retrofit cascade. Run `garmin migrate-cascade` once to rebuild the affected child tables. The migration is safe to run on a 2.9-fresh database (it's idempotent and skips tables already correct), runs inside per-table transactions, and writes a backup file by default.
+
+## [2.8.0] - 2026-05-02
+
+### Added
+
+- **`BODY_COMPOSITION` data type**: scale weigh-ins from a connected smart scale (e.g. Index S2) or manual weight entries. Captures weight, BMI, body fat %, body water %, bone mass, muscle mass, physique rating, visceral fat, metabolic age, and `source_type` (e.g. `INDEX_SCALE`, `MANUAL`). Persisted to a new `body_composition` table keyed by `(user_id, timestamp)` so multiple weigh-ins per day are preserved; weight and bone/muscle mass stored in grams to match the existing `user_profile.weight` convention. Insert-only with `ON CONFLICT DO NOTHING` (measurements are immutable). Contributed by @amanusk in #49.
+- **`sample_pk` column on `body_composition`**: nullable `BIGINT` capturing Garmin's stable per-sample identifier (`samplePk` from the API), with a non-unique index. Provides a stable handle for reconciling rows against deletions made in Garmin Connect (e.g. user removes a bad weigh-in). Nullable because manual entries lack the field.
+
+### Fixed
+
+- **`get_body_composition` saved one useless JSON file per day for users with no scale data**. The Garmin `/weight-service/weight/daterangesnapshot` endpoint returns a populated wrapper dict on no-data days (`startDate`, `endDate`, an empty `dateWeightList`, and a `totalAverage` of nulls) rather than an empty response. The extractor's generic `if data:` truthiness check saw the wrapper as truthy and wrote a file. The API client now collapses the empty-wrapper shape to `None` so the extractor short-circuits, matching the contract of other RANGE-typed endpoints (e.g. `ACTIVITIES_LIST`).
+
+### Changed
+
+- **`_process_body_composition` now warns when an entry has neither `timestampGMT` nor `date`**: previously such entries were silently skipped. A yellow `⚠️ Skipping body composition entry with no timestamp` warning matches the convention in `_process_training_readiness` / `_process_floors` and surfaces silent data loss in the run log.
+- **API module docstring** (`garmin_client/api.py`): bumped endpoint count from 15 to 16 and renamed the "Range activities" bucket to "Range data" to accurately describe both activity-related and wellness range endpoints.
+- **README**: added `BODY_COMPOSITION` to the data types table and the Health Time-Series table-structure section (now 8 tables); bumped the total table count from 33 to 34 across the schema overview, project pitch, and comparison matrix.
 
 ## [2.7.4] - 2026-04-30
 

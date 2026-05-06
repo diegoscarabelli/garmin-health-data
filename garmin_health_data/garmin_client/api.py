@@ -1,7 +1,7 @@
 """
 API method implementations for the vendored Garmin Connect client.
 
-Each function here corresponds to one of the 15 Garmin Connect endpoints the
+Each function here corresponds to one of the 16 Garmin Connect endpoints the
 openetl pipeline consumes. The functions are written as plain functions taking
 the ``GarminClient`` instance as their first argument so that the client class
 can stay slim, and so that the file is testable in isolation.
@@ -9,11 +9,12 @@ can stay slim, and so that the file is testable in isolation.
 Method-to-endpoint mapping is inherited from the upstream ``python-garminconnect``
 library; URL templates live in :mod:`.constants`.
 
-The 15 supported endpoints:
+The 16 supported endpoints:
 
 - Daily wellness:        sleep, stress, respiration, heart_rates, training_readiness,
                          training_status, steps, floors, intensity_minutes
-- Range activities:      activities_by_date (paginated), activity_exercise_sets
+- Range data:            activities_by_date (paginated), activity_exercise_sets,
+                         body_composition
 - No-date metadata:      personal_records, race_predictions, user_profile
 - Binary download:       download_activity (FIT/TCX/GPX/KML/CSV)
 """
@@ -43,6 +44,7 @@ from .constants import (
     TRAINING_STATUS_URL,
     USER_SETTINGS_URL,
     USER_SUMMARY_CHART_URL,
+    WEIGHT_DATERANGE_URL,
 )
 
 if TYPE_CHECKING:
@@ -229,6 +231,40 @@ def get_intensity_minutes_data(client: "GarminClient", cdate: str) -> Dict[str, 
     cdate = _validate_date_format(cdate, "cdate")
     url = f"{DAILY_INTENSITY_MINUTES_URL}/{cdate}"
     return client._connectapi(url)
+
+
+def get_body_composition(
+    client: "GarminClient", startdate: str, enddate: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch scale weigh-ins (weight and body composition) for a date range.
+
+    Each entry in ``dateWeightList`` corresponds to a single weigh-in. A user may weigh
+    more than once per day, in which case the API returns multiple entries.
+
+    On days with no weigh-in the Garmin endpoint returns a populated wrapper dict
+    (``startDate``, ``endDate``, an empty ``dateWeightList``, and a ``totalAverage`` of
+    nulls) rather than an empty response. This function normalizes that shape to
+    ``None`` so the extractor's ``if data:`` truthiness check skips the file write,
+    matching the behavior of other RANGE-typed endpoints (e.g. ``ACTIVITIES_LIST``).
+
+    :param client: GarminClient instance.
+    :param startdate: Start date in ``YYYY-MM-DD`` format.
+    :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
+        ``startdate``.
+    :return: Snapshot dictionary with ``dateWeightList`` (one entry per weigh-in) and
+        ``totalAverage`` aggregates, or ``None`` if no weigh-ins were recorded.
+    """
+    startdate = _validate_date_format(startdate, "startdate")
+    if enddate is None:
+        enddate = startdate
+    else:
+        enddate = _validate_date_format(enddate, "enddate")
+    params = {"startDate": startdate, "endDate": enddate}
+    result = client._connectapi(WEIGHT_DATERANGE_URL, params=params)
+    if result and result.get("dateWeightList"):
+        return result
+    return None
 
 
 # ----------------------------------------------------------------------------------------

@@ -552,6 +552,32 @@ CREATE TABLE IF NOT EXISTS intensity_minutes (
 CREATE INDEX IF NOT EXISTS intensity_minutes_user_id_timestamp_idx
 ON intensity_minutes (user_id, timestamp DESC);
 
+-- Scale weigh-ins from a connected smart scale (e.g. Index S2) or manual entry. One row per measurement keyed by (user_id, timestamp); a user may weigh more than once per day.
+CREATE TABLE IF NOT EXISTS body_composition (
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this weigh-in belongs to.
+    , timestamp DATETIME NOT NULL          -- UTC timestamp of the weigh-in (timestampGMT from the API).
+    , weight FLOAT                         -- Body weight in grams.
+    , bmi FLOAT                            -- Body Mass Index.
+    , body_fat FLOAT                       -- Body fat percentage (0-100).
+    , body_water FLOAT                     -- Body water percentage (0-100).
+    , bone_mass FLOAT                      -- Bone mass in grams.
+    , muscle_mass FLOAT                    -- Muscle mass in grams.
+    , physique_rating INTEGER              -- Garmin physique rating (1-9).
+    , visceral_fat INTEGER                 -- Visceral fat rating.
+    , metabolic_age INTEGER                -- Metabolic age in years.
+    , source_type TEXT                     -- Origin of the measurement (e.g., ''INDEX_SCALE'', ''MANUAL'').
+    , sample_pk BIGINT                     -- Garmin's stable per-sample ID (samplePk). Nullable for manual entries lacking the field. Use to reconcile deletions made in Garmin Connect.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (user_id, timestamp)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS body_composition_user_id_timestamp_idx
+ON body_composition (user_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS body_composition_sample_pk_idx
+ON body_composition (sample_pk);
+
 -- Floors climbed measurements from Garmin devices tracking floors ascended and descended throughout the day at 15-minute intervals. Records are available only when floor climbing activity is detected.
 CREATE TABLE IF NOT EXISTS floors (
     user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this floors measurement belongs to.
@@ -717,18 +743,25 @@ ON strength_set (exercise_category);
 CREATE INDEX IF NOT EXISTS strength_set_exercise_name_idx
 ON strength_set (exercise_name);
 
--- Per-activity time-bucketed aggregates of activity_ts_metric for long-term retention. Populated by 'garmin downsample'. Activity-level replace semantics: a re-run of downsample for an activity wipes its existing rows here and re-inserts the freshly computed buckets, so only one bucket grain coexists per activity at a time. bucket_seconds records which grain was used and is metadata, not part of the row identity.
+-- Per-activity time-bucketed aggregates of activity_ts_metric for long-term retention. Populated by 'garmin downsample'. Activity-level replace semantics: a re-run of downsample for an activity wipes its existing rows here and re-inserts the freshly computed buckets, so only one bucket grain coexists per activity at a time. bucket_seconds records which grain was used and is metadata, not part of the row identity. Decoupled from activity_ts_metric: rows here survive a 'garmin prune' that deletes the source per-second rows, so the downsampled buckets remain available as the long-term low-resolution archive.
 CREATE TABLE IF NOT EXISTS activity_ts_metric_downsampled (
-    activity_id BIGINT NOT NULL          -- References activity(activity_id).
-    , bucket_ts DATETIME NOT NULL          -- Bucket start timestamp (UTC), aligned to multiples of bucket_seconds from activity.start_ts.
-    , name TEXT NOT NULL                   -- Metric name carried over from activity_ts_metric.
-    , bucket_seconds INTEGER NOT NULL      -- Bucket width in seconds (the grain used by the downsample run that produced this row). Metadata, not part of identity.
-    , value FLOAT                          -- Bucket value: avg for AGGREGATE strategy, last-in-bucket for LAST strategy.
-    , min_value FLOAT                      -- Bucket minimum for AGGREGATE strategy. NULL for LAST strategy.
-    , max_value FLOAT                      -- Bucket maximum for AGGREGATE strategy. NULL for LAST strategy.
-    , sample_count INTEGER NOT NULL        -- Number of source rows that contributed to this bucket.
-    , units TEXT                           -- Units of measurement carried over from activity_ts_metric.
-    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this bucket row was last (re)computed.
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this bucket belongs to.
+    , bucket_ts DATETIME NOT NULL          -- Bucket start timestamp (UTC), aligned to multiples of bucket_seconds from activity.start_ts so buckets never span activity boundaries.
+    , name TEXT NOT NULL                   -- Metric name carried over from activity_ts_metric (e.g., heart_rate, cadence, power, distance, accumulated_power).
+    , bucket_seconds INTEGER NOT NULL      -- Bucket width in seconds. The grain used by the downsample run that produced this row (e.g., 60 for 1-minute buckets, 300 for 5-minute). Metadata, not part of row identity.
+    , value FLOAT                          -- Bucket value. For AGGREGATE strategy: arithmetic mean over the bucket window. For LAST strategy: last-in-bucket value (cumulative metrics like distance and accumulated_power).
+    , min_value FLOAT                      -- Bucket minimum value for AGGREGATE strategy. NULL for LAST strategy (a single representative value is the whole point).
+    , max_value FLOAT                      -- Bucket maximum value for AGGREGATE strategy. NULL for LAST strategy.
+    , sample_count INTEGER NOT NULL        -- Number of source rows from activity_ts_metric that contributed to this bucket. Useful for spotting sparse buckets (e.g., from intermittent sensor signals).
+    , units TEXT                           -- Units of measurement carried over from activity_ts_metric (e.g., bpm, rpm, watts, m).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when this bucket row was last (re)computed by 'garmin downsample'.
     , PRIMARY KEY (activity_id, bucket_ts, name)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
+
+-- Cross-activity metric-trend queries (e.g., "show heart_rate buckets across all
+-- activities for the last year") would otherwise full-scan the table because the
+-- PK leads with activity_id. The descending bucket_ts mirrors the convention on
+-- the wellness time-series tables (heart_rate, body_battery, etc.).
+CREATE INDEX IF NOT EXISTS activity_ts_metric_downsampled_name_bucket_ts_idx
+ON activity_ts_metric_downsampled (name, bucket_ts DESC);

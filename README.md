@@ -19,6 +19,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 ## Requirements
 
 - Python 3.10 or higher
+- SQLite 3.35.0 or higher (released March 2021). The bulk upsert helper relies on `INSERT ... ON CONFLICT ... RETURNING`, added in this version. Python 3.10+ on standard CPython builds and current Linux distros ship with a sufficiently recent SQLite; `garmin init` and `garmin extract` will fail fast with a clear error if the linked SQLite library is too old.
 - Garmin Connect account
 - Internet connection for data extraction
 
@@ -195,7 +196,7 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | [`garmin verify`](#garmin-verify) | Check schema integrity and run SQLite's `PRAGMA integrity_check`. Read-only. | [verify](#garmin-verify) |
 | [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
 | [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
-| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.8 databases. Run once after upgrading from 2.7.x. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-downsample-migrate-cascade) |
 
 All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
 
@@ -407,9 +408,9 @@ The strategy table is printed before any write so you can verify the classificat
 
 #### `garmin migrate-cascade`
 
-One-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.8 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance.
+One-shot retrofit of `ON DELETE CASCADE` onto the 16 child FKs (10 activity-children + 6 sleep-children) in pre-2.9 databases. SQLite has no `ALTER TABLE` for changing FK actions, so each affected child table is rebuilt via the standard 12-step recreate dance.
 
-The 2.8 retention features only delete from one childless table (`activity_ts_metric`), so cascade is not required for them. Cascade ships now as an enabler for future expansion to multi-table retention; running this migration on an existing DB is optional but recommended.
+The 2.9 retention features only delete from one childless table (`activity_ts_metric`), so cascade is not required for them. Cascade ships now as an enabler for future expansion to multi-table retention; running this migration on an existing DB is optional but recommended.
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
@@ -434,6 +435,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 | **STEPS** | Step counts and activity levels | 15-min intervals |
 | **FLOORS** | Floors climbed and descended | 15-min intervals |
 | **INTENSITY_MINUTES** | Moderate/vigorous activity minutes | 15-min intervals |
+| **BODY_COMPOSITION** | Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, muscle mass | Per weigh-in |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |
 | **EXERCISE_SETS** | Per-set strength training data: reps, weight, ML-classified exercise name | Per activity |
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |
@@ -443,7 +445,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 
 ### Database Schema
 
-The SQLite database contains 33 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 34 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -464,7 +466,7 @@ The database schema has been adapted from the original PostgreSQL/TimescaleDB [s
 - **Converted SERIAL to AUTOINCREMENT** — PostgreSQL `SERIAL` types converted to SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`.
 - **Replaced TimescaleDB hypertables** — time-series tables use regular SQLite tables with indexes on timestamp columns for efficient queries.
 - **SQLite-compatible upsert syntax** — uses SQLite's `INSERT ... ON CONFLICT` for handling duplicate records.
-- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`), which are commonly available in SQLite 3.9+ but depend on the SQLite library bundled with your Python/runtime environment. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support first:
+- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`). The global SQLite >= 3.35 requirement under [Requirements](#requirements) is necessary but not sufficient: JSON1 functions are enabled by default in modern CPython builds but can be omitted in some custom or stripped-down SQLite builds. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support:
 
   ```bash
   python - <<'PY'
@@ -525,7 +527,7 @@ sleep (main sleep sessions)
 
 *Foreign keys: `sleep` → `user.user_id`; all child tables → `sleep.sleep_id`*
 
-**Health Time-Series (7 tables)**
+**Health Time-Series (8 tables)**
 
 ```
 heart_rate (continuous heart rate measurements)
@@ -535,6 +537,7 @@ respiration (breathing rate data)
 steps (step counts and activity levels)
 floors (floors climbed/descended)
 intensity_minutes (activity intensity tracking)
+body_composition (scale weigh-ins: weight, BMI, body fat, etc.)
 ```
 
 *Foreign keys: all tables → `user.user_id`*
@@ -569,7 +572,7 @@ race_predictions (predicted race times)
 
 ## Comparison With Other Tools
 
-**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 33-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
+**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 34-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
 
 **[garmy](https://github.com/bes-dev/garmy)** is optimized for programmatic access to the Garmin Connect API, particularly useful for AI assistant integration via its built-in MCP (Model Context Protocol) server. It enables real-time interaction with Claude Desktop or custom chatbots for quick daily insights and summaries. However, it's limited to API-provided metrics (daily aggregates only, no FIT file access), making deep analytics or granular time-series analysis impossible. Best suited for lightweight health monitoring apps that prioritize AI integration over comprehensive data collection.
 
@@ -588,7 +591,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 33 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 34 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |

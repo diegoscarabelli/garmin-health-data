@@ -800,6 +800,32 @@ class IntensityMinutes(Base, InsertBase):
     value = Column(Float)
 
 
+class BodyComposition(Base, InsertBase):
+    """
+    Scale weigh-ins from a connected smart scale (e.g. Index S2) or manual entry.
+
+    One row per weigh-in keyed by ``(user_id, timestamp)``. A user may weigh more than
+    once per day. Weight and bone/muscle mass are stored in grams to match the Garmin
+    Connect API and the existing ``user_profile.weight`` convention.
+    """
+
+    __tablename__ = "body_composition"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    timestamp = Column(DateTime(timezone=True), primary_key=True)
+    weight = Column(Float)
+    bmi = Column(Float)
+    body_fat = Column(Float)
+    body_water = Column(Float)
+    bone_mass = Column(Float)
+    muscle_mass = Column(Float)
+    physique_rating = Column(Integer)
+    visceral_fat = Column(Integer)
+    metabolic_age = Column(Integer)
+    source_type = Column(String)
+    sample_pk = Column(BigInteger)
+
+
 class Floors(Base, InsertBase):
     """
     Timeseries floors data from Garmin devices.
@@ -1048,3 +1074,15 @@ class ActivityTsMetricDownsampled(Base, InsertBase):
     max_value = Column(Float)
     sample_count = Column(Integer, nullable=False)
     units = Column(Text)
+
+    # Cross-activity metric-trend index. The PK leads with activity_id, so a
+    # query like "all heart_rate buckets in the last year" would full-scan
+    # without a (name, bucket_ts) index. Descending order mirrors the
+    # wellness time-series tables (heart_rate, body_battery, etc.).
+    __table_args__ = (
+        Index(
+            "activity_ts_metric_downsampled_name_bucket_ts_idx",
+            "name",
+            bucket_ts.desc(),
+        ),
+    )

@@ -1219,7 +1219,7 @@ def migrate_cascade_cmd(db_path: str, dry_run: bool, no_backup: bool):
     users have run it.
     """
     click.secho(
-        "ℹ️  migrate-cascade is intended for one-time migration of pre-2.8 "
+        "ℹ️  migrate-cascade is intended for one-time migration of pre-2.9 "
         "databases and will be removed in a future major version.",
         fg="cyan",
     )

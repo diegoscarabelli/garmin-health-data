@@ -31,12 +31,12 @@ from garmin_health_data.retention.strategies import Strategy, strategy_for
 
 def _ensure_schema_current(db_path: Path) -> None:
     """
-    Create any 2.8-new tables on a database that predates them.
+    Create any 2.9-new tables on a database that predates them.
 
-    Only the ``activity_ts_metric_downsampled`` table is new in 2.8; older tables and
+    Only the ``activity_ts_metric_downsampled`` table is new in 2.9; older tables and
     indexes already exist in any database that has been touched by this codebase. We
     deliberately do NOT re-run the full DDL here: indexes in the full DDL reference
-    columns on parent tables, and pre-2.8 fixtures that strip those parent tables down
+    columns on parent tables, and pre-2.9 fixtures that strip those parent tables down
     (e.g., in unit tests or hand-edited databases) would fail with ``no such column``.
     Materializing only the genuinely-new table keeps this helper safe to call from any
     retention entry point on any vintage of database.

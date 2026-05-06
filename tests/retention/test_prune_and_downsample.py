@@ -637,9 +637,9 @@ def test_downsample_rows_inserted_count_matches_table_for_last_strategy(
     )
 
 
-def test_downsample_creates_new_table_on_pre_2_8_db(tmp_path):
+def test_downsample_creates_new_table_on_pre_2_9_db(tmp_path):
     """
-    Regression: a pre-2.8 database has no ``activity_ts_metric_downsampled`` table.
+    Regression: a pre-2.9 database has no ``activity_ts_metric_downsampled`` table.
 
     Calling :func:`downsample_activities` must materialize the table on the fly via
     ``CREATE TABLE IF NOT EXISTS`` so users who run ``garmin migrate-cascade`` then
@@ -649,7 +649,7 @@ def test_downsample_creates_new_table_on_pre_2_8_db(tmp_path):
     import sqlite3
 
     db_path = str(tmp_path / "garmin.db")
-    # Construct a minimal pre-2.8 DB by hand: just the three tables the
+    # Construct a minimal pre-2.9 DB by hand: just the three tables the
     # downsample SQL touches, no downsampled table.
     conn = sqlite3.connect(db_path)
     conn.executescript(
