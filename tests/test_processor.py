@@ -1940,3 +1940,459 @@ class TestProcessBodyComposition:
 
         rows = db_session.execute(select(BodyComposition)).scalars().all()
         assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# TCX helpers
+# ---------------------------------------------------------------------------
+
+TCX_FILENAME = "1_ACTIVITY_12345_2024-01-01T08-00-00Z.tcx"
+
+# Two trackpoints: first has GPS + all scalar fields + Garmin extensions,
+# second has GPS + a subset of fields.  One lap summarises both.
+_MINIMAL_TCX = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase
+  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
+  xmlns:ax="http://www.garmin.com/xmlschemas/ActivityExtension/v2">
+  <Activities>
+    <Activity Sport="Running">
+      <Lap StartTime="2024-01-01T08:00:00Z">
+        <TotalTimeSeconds>300.0</TotalTimeSeconds>
+        <DistanceMeters>1000.0</DistanceMeters>
+        <MaximumSpeed>3.5</MaximumSpeed>
+        <Calories>50</Calories>
+        <AverageHeartRateBpm><Value>150</Value></AverageHeartRateBpm>
+        <MaximumHeartRateBpm><Value>165</Value></MaximumHeartRateBpm>
+        <Cadence>85</Cadence>
+        <Track>
+          <Trackpoint>
+            <Time>2024-01-01T08:00:01Z</Time>
+            <Position>
+              <LatitudeDegrees>47.6062</LatitudeDegrees>
+              <LongitudeDegrees>-122.3321</LongitudeDegrees>
+            </Position>
+            <AltitudeMeters>56.0</AltitudeMeters>
+            <DistanceMeters>10.0</DistanceMeters>
+            <HeartRateBpm><Value>145</Value></HeartRateBpm>
+            <Cadence>80</Cadence>
+            <Extensions>
+              <ax:TPX>
+                <ax:Speed>2.8</ax:Speed>
+                <ax:RunCadence>160</ax:RunCadence>
+              </ax:TPX>
+            </Extensions>
+          </Trackpoint>
+          <Trackpoint>
+            <Time>2024-01-01T08:00:02Z</Time>
+            <Position>
+              <LatitudeDegrees>47.6065</LatitudeDegrees>
+              <LongitudeDegrees>-122.3318</LongitudeDegrees>
+            </Position>
+            <AltitudeMeters>57.5</AltitudeMeters>
+            <DistanceMeters>13.0</DistanceMeters>
+            <HeartRateBpm><Value>148</Value></HeartRateBpm>
+          </Trackpoint>
+        </Track>
+      </Lap>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>
+"""
+
+_NO_GPS_TCX = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase
+  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+  <Activities>
+    <Activity Sport="Running">
+      <Lap StartTime="2024-01-01T08:00:00Z">
+        <TotalTimeSeconds>300.0</TotalTimeSeconds>
+        <Track>
+          <Trackpoint>
+            <Time>2024-01-01T08:00:01Z</Time>
+            <HeartRateBpm><Value>145</Value></HeartRateBpm>
+          </Trackpoint>
+        </Track>
+      </Lap>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>
+"""
+
+_EMPTY_LAPS_TCX = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase
+  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+  <Activities>
+    <Activity Sport="Running">
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>
+"""
+
+
+def _write_tcx(tmp_path: Path, content: str, filename: str = TCX_FILENAME) -> Path:
+    """Write TCX content to a temp file and return the path."""
+    p = tmp_path / filename
+    p.write_text(content, encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# TestProcessTcxFile
+# ---------------------------------------------------------------------------
+
+
+class TestProcessTcxFile:
+    """Tests for _process_tcx_file."""
+
+    def _make_processor(self) -> GarminProcessor:
+        return GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+
+    def test_success_inserts_ts_lap_and_path(self, db_session: Session, tmp_path: Path):
+        """
+        Full TCX parse: correct ts_metric, lap_metric, and activity_path row counts.
+        """
+        _seed_activity(db_session)
+        path = _write_tcx(tmp_path, _MINIMAL_TCX)
+
+        self._make_processor()._process_tcx_file(path, db_session)
+        db_session.commit()
+
+        # tp1: position_lat, position_long, altitude, distance, cadence,
+        #      heart_rate, speed, run_cadence  = 8
+        # tp2: position_lat, position_long, altitude, distance, heart_rate = 5
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 13
+        )
+        # 7 lap summary fields
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 7
+        )
+        # 2 GPS trackpoints
+        path_row = db_session.execute(select(ActivityPath)).scalars().first()
+        assert path_row is not None
+        assert path_row.point_count == 2
+
+    def test_ts_data_available_set_true(self, db_session: Session, tmp_path: Path):
+        """
+        ts_data_available is True after a TCX with trackpoints is processed.
+        """
+        activity = _seed_activity(db_session)
+        assert activity.ts_data_available is False
+
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
+        assert refreshed.ts_data_available is True
+
+    def test_no_trackpoints_ts_data_available_false(
+        self, db_session: Session, tmp_path: Path
+    ):
+        """
+        ts_data_available stays False when the TCX has no trackpoints.
+        """
+        _seed_activity(db_session)
+
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _EMPTY_LAPS_TCX), db_session
+        )
+        db_session.commit()
+
+        refreshed = (
+            db_session.execute(select(Activity).where(Activity.activity_id == 12345))
+            .scalars()
+            .first()
+        )
+        assert refreshed.ts_data_available is False
+
+    def test_ts_metric_values(self, db_session: Session, tmp_path: Path):
+        """
+        Spot-check specific metric values from both trackpoints.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+
+        def get(ts, name):
+            return db_session.scalar(
+                select(ActivityTsMetric.value).where(
+                    ActivityTsMetric.activity_id == 12345,
+                    ActivityTsMetric.timestamp == ts,
+                    ActivityTsMetric.name == name,
+                )
+            )
+
+        assert get(ts1, "heart_rate") == pytest.approx(145.0)
+        assert get(ts1, "altitude") == pytest.approx(56.0)
+        assert get(ts1, "distance") == pytest.approx(10.0)
+        assert get(ts1, "cadence") == pytest.approx(80.0)
+        assert get(ts1, "position_lat") == pytest.approx(47.6062)
+        assert get(ts1, "position_long") == pytest.approx(-122.3321)
+        assert get(ts2, "heart_rate") == pytest.approx(148.0)
+        assert get(ts2, "altitude") == pytest.approx(57.5)
+
+    def test_garmin_extension_fields(self, db_session: Session, tmp_path: Path):
+        """
+        ax:TPX Speed and RunCadence land in activity_ts_metric.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+
+        speed = db_session.scalar(
+            select(ActivityTsMetric.value).where(
+                ActivityTsMetric.activity_id == 12345,
+                ActivityTsMetric.timestamp == ts1,
+                ActivityTsMetric.name == "speed",
+            )
+        )
+        run_cadence = db_session.scalar(
+            select(ActivityTsMetric.value).where(
+                ActivityTsMetric.activity_id == 12345,
+                ActivityTsMetric.timestamp == ts1,
+                ActivityTsMetric.name == "run_cadence",
+            )
+        )
+        assert speed == pytest.approx(2.8)
+        assert run_cadence == pytest.approx(160.0)
+
+    def test_lap_metric_values(self, db_session: Session, tmp_path: Path):
+        """
+        Lap summary fields map to the correct metric names and values.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        def get_lap(name):
+            return db_session.scalar(
+                select(ActivityLapMetric.value).where(
+                    ActivityLapMetric.activity_id == 12345,
+                    ActivityLapMetric.lap_idx == 1,
+                    ActivityLapMetric.name == name,
+                )
+            )
+
+        assert get_lap("total_elapsed_time") == pytest.approx(300.0)
+        assert get_lap("total_distance") == pytest.approx(1000.0)
+        assert get_lap("max_speed") == pytest.approx(3.5)
+        assert get_lap("total_calories") == pytest.approx(50.0)
+        assert get_lap("avg_cadence") == pytest.approx(85.0)
+        assert get_lap("avg_heart_rate") == pytest.approx(150.0)
+        assert get_lap("max_heart_rate") == pytest.approx(165.0)
+
+    def test_gps_path_coords_and_order(self, db_session: Session, tmp_path: Path):
+        """
+        ActivityPath stores [lon, lat] pairs sorted ascending by timestamp.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        path_row = db_session.execute(select(ActivityPath)).scalars().first()
+        assert path_row.point_count == 2
+        coords = path_row.path_json
+        # First point: tp1 [lon, lat]
+        assert coords[0][0] == pytest.approx(-122.3321)
+        assert coords[0][1] == pytest.approx(47.6062)
+        # Second point: tp2 [lon, lat]
+        assert coords[1][0] == pytest.approx(-122.3318)
+        assert coords[1][1] == pytest.approx(47.6065)
+
+    def test_no_gps_skips_activity_path(self, db_session: Session, tmp_path: Path):
+        """
+        Indoor activity with no <Position> elements produces no ActivityPath row.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _NO_GPS_TCX), db_session
+        )
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
+        # Heart rate still lands in ts_metric.
+        assert db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+
+    def test_reprocessing_deletes_and_reinserts(
+        self, db_session: Session, tmp_path: Path
+    ):
+        """
+        Re-running _process_tcx_file replaces old rows rather than appending.
+        """
+        _seed_activity(db_session)
+        path = _write_tcx(tmp_path, _MINIMAL_TCX)
+        proc = self._make_processor()
+
+        proc._process_tcx_file(path, db_session)
+        db_session.commit()
+        first_count = db_session.scalar(
+            select(func.count()).select_from(ActivityTsMetric)
+        )
+
+        proc._process_tcx_file(path, db_session)
+        db_session.commit()
+        second_count = db_session.scalar(
+            select(func.count()).select_from(ActivityTsMetric)
+        )
+
+        assert second_count == first_count
+
+    def test_no_split_metrics_inserted(self, db_session: Session, tmp_path: Path):
+        """
+        TCX has no concept of splits; activity_split_metric stays empty.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+        )
+        db_session.commit()
+
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivitySplitMetric)) == 0
+        )
+
+    def test_activity_not_found_raises(self, db_session: Session, tmp_path: Path):
+        """
+        Raises ValueError when the parent activity record is missing.
+        """
+        upsert_model_instances(
+            session=db_session,
+            model_instances=[User(user_id=1, full_name="Test User")],
+            conflict_columns=["user_id"],
+            on_conflict_update=True,
+        )
+        db_session.commit()
+
+        with pytest.raises(ValueError, match="Activity 12345 not found"):
+            self._make_processor()._process_tcx_file(
+                _write_tcx(tmp_path, _MINIMAL_TCX), db_session
+            )
+
+    def test_invalid_filename_raises(self, db_session: Session, tmp_path: Path):
+        """
+        Raises ValueError for a filename that does not match the expected pattern.
+        """
+        bad_path = _write_tcx(tmp_path, _MINIMAL_TCX, filename="bad_name.tcx")
+        with pytest.raises(ValueError, match="Cannot extract activity_id"):
+            self._make_processor()._process_tcx_file(bad_path, db_session)
+
+
+# ---------------------------------------------------------------------------
+# TestProcessActivityFileDispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProcessActivityFileDispatch:
+    """Tests for _process_activity_file routing."""
+
+    def _make_processor(self) -> GarminProcessor:
+        return GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+
+    def test_dispatches_fit_to_fit_processor(self, tmp_path: Path):
+        """
+        .fit files are forwarded to _process_fit_file.
+        """
+        proc = self._make_processor()
+        fit_path = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z.fit"
+        fit_path.touch()
+        session = MagicMock()
+
+        with patch.object(proc, "_process_fit_file") as mock_fit:
+            proc._process_activity_file(fit_path, session)
+
+        mock_fit.assert_called_once_with(fit_path, session)
+
+    def test_dispatches_tcx_to_tcx_processor(self, tmp_path: Path):
+        """
+        .tcx files are forwarded to _process_tcx_file.
+        """
+        proc = self._make_processor()
+        tcx_path = tmp_path / TCX_FILENAME
+        tcx_path.touch()
+        session = MagicMock()
+
+        with patch.object(proc, "_process_tcx_file") as mock_tcx:
+            proc._process_activity_file(tcx_path, session)
+
+        mock_tcx.assert_called_once_with(tcx_path, session)
+
+    def test_unknown_extension_logs_warning_and_does_not_raise(self, tmp_path: Path):
+        """
+        Unsupported extensions log a warning and return without raising.
+        """
+        proc = self._make_processor()
+        gpx_path = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z.gpx"
+        gpx_path.touch()
+        session = MagicMock()
+
+        with patch("garmin_health_data.processor.click") as mock_click:
+            proc._process_activity_file(gpx_path, session)
+            mock_click.secho.assert_called_once()
+            assert ".gpx" in mock_click.secho.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# TestGarminFileTypesActivityPattern
+# ---------------------------------------------------------------------------
+
+
+class TestGarminFileTypesActivityPattern:
+    """Tests for the GARMIN_FILE_TYPES pattern and _partition_processable_and_backup."""
+
+    def test_tcx_activity_file_is_processable(self, tmp_path: Path):
+        """
+        TCX activity filenames pass through _partition_processable_and_backup.
+        """
+        from garmin_health_data.cli import _partition_processable_and_backup
+
+        tcx = tmp_path / "5351450_ACTIVITY_629147134_2014-03-23T12-00-00Z.tcx"
+        tcx.touch()
+        processable, backup_only = _partition_processable_and_backup([tcx])
+        assert tcx in processable
+        assert tcx not in backup_only
+
+    def test_fit_activity_file_still_processable(self, tmp_path: Path):
+        """
+        FIT activity filenames are not regressed by the pattern change.
+        """
+        from garmin_health_data.cli import _partition_processable_and_backup
+
+        fit = tmp_path / "5351450_ACTIVITY_629147134_2014-03-23T12-00-00Z.fit"
+        fit.touch()
+        processable, backup_only = _partition_processable_and_backup([fit])
+        assert fit in processable
+        assert fit not in backup_only
+
+    def test_gpx_activity_file_is_backup_only(self, tmp_path: Path):
+        """
+        GPX files (no processor yet) remain in backup-only.
+        """
+        from garmin_health_data.cli import _partition_processable_and_backup
+
+        gpx = tmp_path / "5351450_ACTIVITY_629147134_2014-03-23T12-00-00Z.gpx"
+        gpx.touch()
+        processable, backup_only = _partition_processable_and_backup([gpx])
+        assert gpx in backup_only
+        assert gpx not in processable

@@ -571,8 +571,7 @@ class GarminExtractor:
         file_ext = _detect_format_from_magic(content)
 
         if file_ext is not None:
-            if file_ext != "fit":
-                # Non-FIT format: log so we can learn Garmin's conventions.
+            if file_ext not in ("fit", "tcx"):
                 click.secho(
                     f"⚠️  Activity {activity_id}: detected '{file_ext}' format "
                     f"(inner file: {inner_name!r}). "
