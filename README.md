@@ -13,6 +13,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 - 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
+- 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
 - 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, with no third-party Garmin Connect client library dependency.
 - 🖥️ **Cross-platform**: macOS, Linux, Windows. Python 3.10+.
 
@@ -51,6 +52,40 @@ garmin info
 ```
 
 That's it! `garmin extract` saved your raw downloaded files under `garmin_files/storage/` (kept on disk as an offline backup) and loaded them into a local SQLite database (`garmin_data.db`) for analysis.
+
+## Upgrading from 2.8.x or earlier
+
+Two one-time actions for users with an existing database. Both are independent; you can skip either if it doesn't apply.
+
+### Retrofit cascade FKs (recommended for everyone)
+
+Pre-2.9 databases have no `ON DELETE CASCADE` action on the activity-child or sleep-child foreign keys. The 2.9 retention features still work without cascade (they only delete from one childless table), but cascade ships now as an enabler for future expansion to multi-table retention. Run once after upgrading:
+
+```bash
+garmin migrate-cascade
+```
+
+The command writes a backup file (`garmin_data.db.bak.<timestamp>`) by default, runs a pre-flight `PRAGMA foreign_key_check` to refuse to migrate a corrupted DB, and is idempotent (safe to run twice). Pass `--dry-run` first if you want to preview, or `--no-backup` for a backup-managed-elsewhere setup.
+
+### Backfill empty sleep detail tables (recommended if you tracked sleep)
+
+A bug from 2.7.0 through 2.8.0 left the per-night detail tables (`sleep_level`, `sleep_movement`, `sleep_restless_moment`, `spo2`, `hrv`, `breathing_disruption`) **silently empty for every user** ([#52](https://github.com/diegoscarabelli/garmin-health-data/issues/52), fixed in 2.9). The `sleep` summary table was always populated correctly. Once on 2.9, repopulate the detail tables with one of:
+
+**Option A — replay the SLEEP files you already have on disk** (fastest, offline, no API calls):
+
+```bash
+# Move the SLEEP JSONs from the storage archive back into ingest/.
+mv garmin_files/storage/*_SLEEP_*.json garmin_files/ingest/
+garmin extract --process-only
+```
+
+**Option B — re-extract from Garmin Connect** (use this if `storage/` was pruned or partial):
+
+```bash
+garmin extract --data-types SLEEP --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+```
+
+Both paths are idempotent: the `sleep` summary upsert will reuse existing rows, and the six detail tables will populate retroactively. Re-running over already-detail-loaded nights is a no-op.
 
 ## Usage
 
@@ -445,7 +480,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 
 ### Database Schema
 
-The SQLite database contains 34 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 35 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -495,14 +530,15 @@ user (root table)
 
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (11 tables)**
+**Activities (12 tables)**
 
 ```
 activity (main activity records)
 ├── activity_lap_metric (lap-by-lap metrics)
 ├── activity_path (eagerly materialized GPS path as JSON array)
 ├── activity_split_metric (split data)
-├── activity_ts_metric (time-series sensor data)
+├── activity_ts_metric (time-series sensor data, per-second)
+├── activity_ts_metric_downsampled (time-bucketed aggregates of activity_ts_metric, populated by `garmin downsample`)
 ├── cycling_agg_metrics (cycling-specific aggregates)
 ├── running_agg_metrics (running-specific aggregates)
 ├── strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
@@ -591,7 +627,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 34 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 35 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |
