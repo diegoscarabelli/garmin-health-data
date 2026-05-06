@@ -55,7 +55,9 @@ That's it! `garmin extract` saved your raw downloaded files under `garmin_files/
 
 ## Upgrading from 2.8.x or earlier
 
-Two one-time actions for users with an existing database. Both are independent; you can skip either if it doesn't apply.
+> **Skip this section if you just installed `garmin-health-data` for the first time.** New installs get the current schema automatically when `garmin extract` (or `garmin init`) creates the database, so neither action below is needed. This section is only for users who installed an earlier version, ran `garmin extract` against it, and are now upgrading the package on top of that existing `garmin_data.db`.
+
+Two one-time actions for upgrading users. Both are independent; you can skip either if it doesn't apply.
 
 ### Retrofit cascade FKs (recommended for everyone)
 
