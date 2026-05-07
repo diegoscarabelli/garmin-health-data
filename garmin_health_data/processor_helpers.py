@@ -96,7 +96,12 @@ def upsert_model_instances(
     :param update_columns: Column **keys** (Python attribute names, matching
         ``Column.key``) to update on conflict. Defaults to all columns except
         the conflict columns, primary-key columns, ``create_ts``, and
-        ``update_ts``.
+        ``update_ts``. Note: ``update_ts`` cannot be preserved or backfilled
+        through this parameter. If the model has an ``update_ts`` column, the
+        helper unconditionally overwrites it with ``CURRENT_TIMESTAMP`` on
+        every conflict update (audit-column semantics), regardless of whether
+        ``update_ts`` appears in ``update_columns`` and regardless of the
+        value (or absence) of ``update_ts`` on the input instances.
     :param returning_columns: Column **keys** (Python attribute names, matching
         ``Column.key``) to populate on the returned instances. If None, the
         input ``model_instances`` list is returned unchanged.

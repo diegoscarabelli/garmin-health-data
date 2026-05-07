@@ -734,11 +734,15 @@ class TestUpsertModelInstances:
             )
 
         # Mirror the production caller: explicit update_columns built from
-        # __table__.columns, including update_ts.
+        # __table__.columns, including update_ts. Use `col.key` because the
+        # helper's `update_columns` contract is the KEYS namespace; for
+        # current models name == key so this is equivalent, but using key
+        # keeps the test correct if Activity ever introduces
+        # `Column(name=..., key=...)` divergence.
         explicit_update_columns = [
-            col.name
+            col.key
             for col in Activity.__table__.columns
-            if col.name not in ("activity_id", "create_ts")
+            if col.key not in ("activity_id", "create_ts")
         ]
         assert "update_ts" in explicit_update_columns
 
