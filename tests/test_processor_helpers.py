@@ -680,6 +680,107 @@ class TestUpsertModelInstances:
             assert activity1.update_ts > original_update_ts
             assert activity1.favorite is True  # Verify the update worked.
 
+    def test_update_ts_refreshes_when_explicitly_in_update_columns(self, temp_db):
+        """
+        ``update_ts`` must auto-refresh on conflict even when the caller explicitly
+        includes it in ``update_columns``.
+
+        This pins the production-caller pattern in
+        ``processor.py::_process_main_activity_metrics``, which builds
+        ``update_columns`` from ``Activity.__table__.columns`` (so
+        ``update_ts`` is in the list). Without the unconditional auto-refresh,
+        ``update_dict[update_ts]`` would resolve to ``excluded.update_ts``,
+        which is whatever the input row carried (typically ``None`` since
+        callers don't set it explicitly), silently regressing the audit
+        timestamp.
+        """
+        import time
+
+        from garmin_health_data.models import Activity
+
+        engine = get_engine(temp_db)
+
+        with Session(engine) as session:
+            user = User(user_id=1, full_name="User 1", birth_date=date(1990, 1, 1))
+            upsert_model_instances(
+                session=session,
+                model_instances=[user],
+                conflict_columns=["user_id"],
+                on_conflict_update=True,
+            )
+            session.commit()
+
+        def _activity(favorite: bool) -> Activity:
+            return Activity(
+                activity_id=1,
+                user_id=1,
+                start_ts=datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+                end_ts=datetime(2024, 1, 1, 13, 0, 0, tzinfo=timezone.utc),
+                timezone_offset_hours=0.0,
+                activity_type_id=1,
+                activity_type_key="running",
+                event_type_id=1,
+                event_type_key="uncategorized",
+                parent=False,
+                purposeful=True,
+                favorite=favorite,
+                pr=False,
+                auto_calc_calories=True,
+                has_polyline=False,
+                has_images=False,
+                has_video=False,
+                has_heat_map=False,
+                manual_activity=False,
+            )
+
+        # Mirror the production caller: explicit update_columns built from
+        # __table__.columns, including update_ts. Use `col.key` because the
+        # helper's `update_columns` contract is the KEYS namespace; for
+        # current models name == key so this is equivalent, but using key
+        # keeps the test correct if Activity ever introduces
+        # `Column(name=..., key=...)` divergence.
+        explicit_update_columns = [
+            col.key
+            for col in Activity.__table__.columns
+            if col.key not in ("activity_id", "create_ts")
+        ]
+        assert "update_ts" in explicit_update_columns
+
+        with Session(engine) as session:
+            upsert_model_instances(
+                session=session,
+                model_instances=[_activity(favorite=False)],
+                conflict_columns=["activity_id"],
+                update_columns=explicit_update_columns,
+                on_conflict_update=True,
+            )
+            session.commit()
+            original_update_ts = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
+                .update_ts
+            )
+
+        time.sleep(1)  # SQLite CURRENT_TIMESTAMP has second precision.
+
+        with Session(engine) as session:
+            upsert_model_instances(
+                session=session,
+                model_instances=[_activity(favorite=True)],
+                conflict_columns=["activity_id"],
+                update_columns=explicit_update_columns,
+                on_conflict_update=True,
+            )
+            session.commit()
+            updated = (
+                session.execute(select(Activity).where(Activity.activity_id == 1))
+                .scalars()
+                .first()
+            )
+            assert updated.update_ts > original_update_ts
+            assert updated.favorite is True
+
 
 class TestUpsertModelInstancesReturning:
     """
@@ -744,6 +845,99 @@ class TestUpsertModelInstancesReturning:
                     conflict_columns=["user_id", "start_ts"],
                     on_conflict_update=True,
                     returning_columns=["sleep_id", "not_a_column"],
+                )
+
+    def test_conflict_columns_unknown_name_raises(self, temp_db):
+        """
+        Passing an unknown column name in ``conflict_columns`` should raise a
+        ``ValueError`` listing the offending names, not surface as an opaque SQL error
+        from the ``ON CONFLICT`` clause.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="not_a_column"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "not_a_column"],
+                    on_conflict_update=True,
+                )
+
+    def test_update_columns_unknown_key_raises(self, temp_db):
+        """
+        Passing an unknown column key in ``update_columns`` should raise a
+        ``ValueError`` listing the offending keys, not a bare ``KeyError`` from
+        ``insert_stmt.excluded[col]`` deep in the helper.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="not_a_column"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "start_ts"],
+                    on_conflict_update=True,
+                    update_columns=["end_ts", "not_a_column"],
+                )
+
+    def test_conflict_columns_duplicates_raises(self, temp_db):
+        """
+        Duplicate entries in ``conflict_columns`` would emit malformed SQL via
+        SQLAlchemy's ``index_elements``.
+
+        Surface as a clear
+        ``ValueError`` instead.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="duplicate"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "user_id"],
+                    on_conflict_update=True,
+                )
+
+    def test_update_columns_duplicates_raises(self, temp_db):
+        """
+        Duplicate entries in ``update_columns`` would build a SET dict that looks like
+        it has more keys than it does (the second duplicate overwrites the first in the
+        dict comprehension), silently masking intent.
+
+        Surface as a clear ``ValueError`` instead.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="duplicate"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "start_ts"],
+                    on_conflict_update=True,
+                    update_columns=["end_ts", "end_ts"],
+                )
+
+    def test_returning_columns_duplicates_raises(self, temp_db):
+        """
+        Duplicate entries in ``returning_columns`` would silently collide in
+        ``row._asdict()`` (the second value overwrites the first).
+
+        Surface as a clear ``ValueError`` instead.
+        """
+        engine = get_engine(temp_db)
+        with Session(engine) as session:
+            self._seed_user(session)
+            with pytest.raises(ValueError, match="duplicate"):
+                upsert_model_instances(
+                    session=session,
+                    model_instances=[self._sample_sleep()],
+                    conflict_columns=["user_id", "start_ts"],
+                    on_conflict_update=True,
+                    returning_columns=["sleep_id", "sleep_id"],
                 )
 
     def test_returning_with_empty_conflict_columns_raises(self, temp_db):
@@ -1041,3 +1235,152 @@ class TestUpsertModelInstancesReturning:
 
             assert len(persisted) == 500
             assert session.scalar(select(func.count()).select_from(HeartRate)) == 500
+
+
+class TestUpsertModelInstancesNamespace:
+    """
+    Tests for the ``Column.name`` vs ``Column.key`` namespace handling in
+    ``upsert_model_instances``.
+
+    The helper accepts ``conflict_columns`` in the NAMES namespace (matching
+    SQLAlchemy's ``index_elements``) and ``update_columns`` / ``returning_columns`` in
+    the KEYS namespace (matching ``excluded[...]`` and ``getattr(model_class, ...)``).
+    These tests pin down the bug class that surfaces when ``Column.name != Column.key``
+    (i.e. a model declared as ``Column('db_name', key='attr_name')``).
+
+    The current production models all declare columns as ``Column(Type, ...)`` with no
+    explicit ``name=`` argument, so ``name == key`` everywhere and the bug is not
+    exploitable today. These tests guard against future regressions if a divergent model
+    is ever added.
+    """
+
+    def test_default_update_columns_excludes_pk_with_distinct_name_and_key(
+        self, temp_db
+    ):
+        """
+        Default-mode upsert (no explicit ``update_columns``) on a model whose PK has
+        ``Column.name != Column.key`` must still exclude the PK from the auto-generated
+        update list.
+
+        If the helper builds the exclusion
+        set from ``col.name`` instead of ``col.key``, the PK column key
+        leaks into ``update_columns``: the resulting ``SET pk = excluded.pk``
+        substitutes a fresh rowid on each conflict, silently renumbering the
+        PK and breaking any FK that points at it.
+        """
+        from sqlalchemy import Column, Integer, String, text
+        from sqlalchemy.orm import declarative_base
+
+        engine = get_engine(temp_db)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE namekey_pk ("
+                    " db_pk INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " db_uniq TEXT NOT NULL UNIQUE,"
+                    " payload TEXT)"
+                )
+            )
+
+        TempBase = declarative_base()
+
+        class NameKeyPk(TempBase):
+            __tablename__ = "namekey_pk"
+            pk_attr = Column(
+                "db_pk",
+                Integer,
+                key="pk_attr",
+                primary_key=True,
+                autoincrement=True,
+            )
+            uniq_attr = Column(
+                "db_uniq", String, key="uniq_attr", nullable=False, unique=True
+            )
+            payload = Column(String)
+
+        with Session(engine) as session:
+            persisted1 = upsert_model_instances(
+                session=session,
+                model_instances=[NameKeyPk(uniq_attr="A", payload="first")],
+                conflict_columns=["db_uniq"],
+                on_conflict_update=True,
+                returning_columns=["pk_attr"],
+            )
+            session.commit()
+            pk1 = persisted1[0].pk_attr
+            assert pk1 is not None
+
+            # Re-upsert same uniq → conflict path. PK must remain stable; if
+            # PK exclusion was built from col.name (which would not appear in
+            # the col.key-keyed model_columns set), pk_attr would NOT be
+            # excluded from update_columns and SQLite would assign a new
+            # rowid on the SET.
+            persisted2 = upsert_model_instances(
+                session=session,
+                model_instances=[NameKeyPk(uniq_attr="A", payload="second")],
+                conflict_columns=["db_uniq"],
+                on_conflict_update=True,
+                returning_columns=["pk_attr"],
+            )
+            session.commit()
+            assert persisted2[0].pk_attr == pk1
+
+            count = session.scalar(text("SELECT COUNT(*) FROM namekey_pk"))
+            assert count == 1
+            payload = session.scalar(text("SELECT payload FROM namekey_pk"))
+            assert payload == "second"
+
+    def test_insert_ignore_returning_with_name_key_divergent_conflict_column(
+        self, temp_db
+    ):
+        """
+        The ``on_conflict_update=False`` + ``returning_columns`` no-op DO UPDATE trick
+        must translate ``conflict_columns[0]`` (a NAME) to its key before indexing
+        ``excluded[...]`` and building ``set_``.
+
+        Without the translation this path would ``KeyError`` on any model with
+        ``Column.name != Column.key``.
+        """
+        from sqlalchemy import Column, Integer, String, text
+        from sqlalchemy.orm import declarative_base
+
+        engine = get_engine(temp_db)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE namekey_ignore ("
+                    " db_pk INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " db_uniq TEXT NOT NULL UNIQUE,"
+                    " payload TEXT)"
+                )
+            )
+
+        TempBase = declarative_base()
+
+        class NameKeyIgnore(TempBase):
+            __tablename__ = "namekey_ignore"
+            pk_attr = Column(
+                "db_pk",
+                Integer,
+                key="pk_attr",
+                primary_key=True,
+                autoincrement=True,
+            )
+            uniq_attr = Column(
+                "db_uniq", String, key="uniq_attr", nullable=False, unique=True
+            )
+            payload = Column(String)
+
+        with Session(engine) as session:
+            persisted = upsert_model_instances(
+                session=session,
+                model_instances=[NameKeyIgnore(uniq_attr="A", payload="x")],
+                conflict_columns=["db_uniq"],
+                on_conflict_update=False,
+                returning_columns=["pk_attr", "uniq_attr"],
+            )
+            session.commit()
+
+            assert len(persisted) == 1
+            assert persisted[0].uniq_attr == "A"
+            assert persisted[0].pk_attr is not None
