@@ -2032,6 +2032,31 @@ _EMPTY_LAPS_TCX = """\
 </TrainingCenterDatabase>
 """
 
+# Two trackpoints with single-digit fractional seconds. Python 3.10's strict
+# datetime.fromisoformat would reject these; _parse_garmin_gmt normalizes them.
+_FRACTIONAL_SECONDS_TCX = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<TrainingCenterDatabase
+  xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+  <Activities>
+    <Activity Sport="Running">
+      <Lap StartTime="2024-01-01T08:00:00Z">
+        <Track>
+          <Trackpoint>
+            <Time>2024-01-01T08:00:01.5Z</Time>
+            <HeartRateBpm><Value>145</Value></HeartRateBpm>
+          </Trackpoint>
+          <Trackpoint>
+            <Time>2024-01-01T08:00:02.25Z</Time>
+            <HeartRateBpm><Value>148</Value></HeartRateBpm>
+          </Trackpoint>
+        </Track>
+      </Lap>
+    </Activity>
+  </Activities>
+</TrainingCenterDatabase>
+"""
+
 
 def _write_tcx(tmp_path: Path, content: str, filename: str = TCX_FILENAME) -> Path:
     """
@@ -2322,6 +2347,39 @@ class TestProcessTcxFile:
         bad = _write_tcx(tmp_path, "<TrainingCenterDatabase><not closed")
         with pytest.raises(ValueError, match="Malformed TCX file"):
             self._make_processor()._process_tcx_file(bad, db_session)
+
+    def test_fractional_second_timestamps_parse_on_py310(
+        self, db_session: Session, tmp_path: Path
+    ):
+        """
+        Trackpoints with single-/two-digit fractional seconds are parsed correctly.
+
+        Python 3.10's ``datetime.fromisoformat`` rejects formats other than 0/3/6
+        fractional digits, so a raw parse would silently drop these trackpoints.
+        ``_parse_garmin_gmt`` normalizes them, so the heart_rate metrics land.
+        """
+        _seed_activity(db_session)
+        self._make_processor()._process_tcx_file(
+            _write_tcx(tmp_path, _FRACTIONAL_SECONDS_TCX), db_session
+        )
+        db_session.commit()
+
+        ts1 = datetime(2024, 1, 1, 8, 0, 1, 500000, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 2, 250000, tzinfo=timezone.utc)
+        assert db_session.scalar(
+            select(ActivityTsMetric.value).where(
+                ActivityTsMetric.activity_id == 12345,
+                ActivityTsMetric.timestamp == ts1,
+                ActivityTsMetric.name == "heart_rate",
+            )
+        ) == pytest.approx(145.0)
+        assert db_session.scalar(
+            select(ActivityTsMetric.value).where(
+                ActivityTsMetric.activity_id == 12345,
+                ActivityTsMetric.timestamp == ts2,
+                ActivityTsMetric.name == "heart_rate",
+            )
+        ) == pytest.approx(148.0)
 
 
 # ---------------------------------------------------------------------------

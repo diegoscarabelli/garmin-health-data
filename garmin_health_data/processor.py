@@ -3040,10 +3040,11 @@ class GarminProcessor(Processor):
                 if time_elem is None or not time_elem.text:
                     continue
 
+                # Use _parse_garmin_gmt rather than raw fromisoformat: Python
+                # 3.10's strict parser rejects single-digit fractional seconds
+                # (e.g. ``.5Z``), which the helper normalizes to 6 digits.
                 try:
-                    timestamp = datetime.fromisoformat(
-                        time_elem.text.replace("Z", "+00:00")
-                    )
+                    timestamp = self._parse_garmin_gmt(time_elem.text)
                 except ValueError:
                     continue
 
