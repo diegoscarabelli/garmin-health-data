@@ -2550,6 +2550,149 @@ class GarminProcessor(Processor):
             on_conflict_update=False,
         )
 
+    def _persist_activity_metrics(
+        self,
+        activity_id: int,
+        file_path: Path,
+        existing_activity: Activity,
+        ts_metrics: List[ActivityTsMetric],
+        lap_metrics: List[ActivityLapMetric],
+        gps_records_deg: List[tuple],
+        session: Session,
+        split_metrics: Optional[List[ActivitySplitMetric]] = None,
+    ) -> None:
+        """
+        Persist parsed activity metrics with idempotent delete+insert semantics.
+
+        Replaces all existing ts/split/lap/path rows for ``activity_id`` and bulk-
+        inserts the new ones. Coalesces duplicate ts_metrics by ``(timestamp, name)`` to
+        avoid UNIQUE-constraint collisions. Materializes ``activity_path`` from
+        ``gps_records_deg`` (sorted by timestamp before insert). Updates
+        ``existing_activity.ts_data_available``.
+
+        Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
+        pass an empty list for formats that have splits but found none in this file.
+
+        :param activity_id: Activity primary key.
+        :param file_path: Source file path, used in log messages only.
+        :param existing_activity: ORM-tracked Activity row whose ``ts_data_available``
+            flag is updated.
+        :param ts_metrics: Time-series metric instances to insert.
+        :param lap_metrics: Lap metric instances to insert.
+        :param gps_records_deg: GPS samples as ``(timestamp, lon_degrees, lat_degrees)``
+            tuples in decimal degrees.
+        :param session: SQLAlchemy session.
+        :param split_metrics: Split metric instances, or ``None`` if the source format
+            has no splits.
+        """
+        # Flush so any pending session state settles before bulk delete.
+        session.flush()
+
+        # Idempotent delete: drop all existing rows for this activity. Splits
+        # are deleted unconditionally so reprocessing as a different format
+        # (e.g. FIT → TCX) cleanly removes splits that no longer apply.
+        for model in (
+            ActivityTsMetric,
+            ActivitySplitMetric,
+            ActivityLapMetric,
+            ActivityPath,
+        ):
+            session.execute(
+                delete(model)
+                .where(model.activity_id == activity_id)
+                .execution_options(synchronize_session=False)
+            )
+
+        # Core-level bulk insert keys, computed once. Excludes server-default
+        # columns (e.g. create_ts) so the database applies the default rather
+        # than receiving a Python None.
+        ts_keys = [
+            c.key
+            for c in ActivityTsMetric.__table__.columns
+            if c.server_default is None
+        ]
+        lap_keys = [
+            c.key
+            for c in ActivityLapMetric.__table__.columns
+            if c.server_default is None
+        ]
+
+        if ts_metrics:
+            # Coalesce duplicate (timestamp, name) entries: some FIT devices
+            # emit multiple record frames per second without
+            # fractional_timestamp; some TCX trackpoints repeat. Last-seen wins.
+            ts_metrics_by_key: Dict = {}
+            for m in ts_metrics:
+                ts_metrics_by_key[(m.timestamp, m.name)] = m
+            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
+            if deduped_count > 0:
+                click.secho(
+                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
+                    f"row(s) for activity_id={activity_id} from "
+                    f"{file_path.name} (same timestamp + metric name).",
+                    fg="yellow",
+                )
+            ts_metrics = list(ts_metrics_by_key.values())
+
+            session.execute(
+                insert(ActivityTsMetric),
+                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
+            )
+            click.echo(f"Processed {len(ts_metrics)} time-series records.")
+        else:
+            click.secho("⚠️ No time-series data found.", fg="yellow")
+
+        existing_activity.ts_data_available = bool(ts_metrics)
+
+        if split_metrics is not None:
+            if split_metrics:
+                split_keys = [
+                    c.key
+                    for c in ActivitySplitMetric.__table__.columns
+                    if c.server_default is None
+                ]
+                session.execute(
+                    insert(ActivitySplitMetric),
+                    [{k: getattr(m, k) for k in split_keys} for m in split_metrics],
+                )
+                click.echo(f"Processed {len(split_metrics)} split records.")
+            else:
+                click.secho("⚠️ No split data found.", fg="yellow")
+
+        if lap_metrics:
+            session.execute(
+                insert(ActivityLapMetric),
+                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
+            )
+            click.echo(f"Processed {len(lap_metrics)} lap records.")
+        else:
+            click.secho("⚠️ No lap data found.", fg="yellow")
+
+        if gps_records_deg:
+            # Sort ascending by timestamp so path order matches activity
+            # progress (frame iteration is not guaranteed monotonic).
+            gps_records_deg.sort(key=lambda r: r[0])
+            path_coords = [[lon, lat] for _, lon, lat in gps_records_deg]
+
+            session.execute(
+                insert(ActivityPath),
+                [
+                    {
+                        "activity_id": activity_id,
+                        "path_json": path_coords,
+                        "point_count": len(path_coords),
+                    }
+                ],
+            )
+            click.echo(f"Processed {len(path_coords)} GPS path points.")
+        else:
+            # Indoor activities legitimately have no GPS data, so this is info
+            # rather than a warning.
+            click.secho(
+                "ℹ️ No GPS data found, skipping activity_path materialization.",
+                fg="blue",
+            )
+
     def _process_fit_file(self, file_path: Path, session: Session):
         """
         Process a FIT file and extract time-series, split, lap, and GPS path data.
@@ -2764,140 +2907,26 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
-        # Flush session to ensure foreign key relationships are resolved.
-        session.flush()
-
-        # Delete existing FIT metric rows for this activity before re-inserting.
-        # This handles added/removed laps, splits, or records between reprocesses.
-        session.execute(
-            delete(ActivityTsMetric)
-            .where(ActivityTsMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivitySplitMetric)
-            .where(ActivitySplitMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivityLapMetric)
-            .where(ActivityLapMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivityPath)
-            .where(ActivityPath.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-
-        # Core-level bulk insert for FIT metrics. Uses insert() instead
-        # of add_all() to bypass the ORM identity map, matching the
-        # original bulk_save_objects() intent: the preceding deletes use
-        # synchronize_session=False, so stale instances may remain in the
-        # map. Core insert also avoids the RETURNING sentinel mismatch
-        # that SQLite triggers with DateTime(timezone=True) composite PKs.
-        #
-        # Column keys are precomputed once per model to avoid repeated
-        # __table__.columns iteration on large FIT files. Columns with
-        # server_default (create_ts) are excluded so the database applies
-        # the default rather than receiving a Python None.
-        ts_keys = [
-            c.key
-            for c in ActivityTsMetric.__table__.columns
-            if c.server_default is None
-        ]
-        split_keys = [
-            c.key
-            for c in ActivitySplitMetric.__table__.columns
-            if c.server_default is None
-        ]
-        lap_keys = [
-            c.key
-            for c in ActivityLapMetric.__table__.columns
-            if c.server_default is None
+        # Convert FIT semicircles to decimal degrees for path materialization.
+        gps_records_deg = [
+            (
+                ts,
+                lon_semi * SEMICIRCLES_TO_DEGREES,
+                lat_semi * SEMICIRCLES_TO_DEGREES,
+            )
+            for ts, lon_semi, lat_semi in gps_records
         ]
 
-        if ts_metrics:
-            # Belt-and-suspenders: even after fractional_timestamp parsing,
-            # some FIT files may emit two record frames with identical
-            # (timestamp, name) (devices without fractional_timestamp,
-            # corrupted writes, etc.). Coalesce by (timestamp, name) keeping
-            # the last seen value so the unique constraint
-            # (activity_id, timestamp, name) is never violated.
-            ts_metrics_by_key: Dict = {}
-            for m in ts_metrics:
-                ts_metrics_by_key[(m.timestamp, m.name)] = m
-            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
-            if deduped_count > 0:
-                click.secho(
-                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
-                    f"row(s) for activity_id={activity_id} from "
-                    f"{file_path.name} (same timestamp + metric name).",
-                    fg="yellow",
-                )
-            ts_metrics = list(ts_metrics_by_key.values())
-
-            session.execute(
-                insert(ActivityTsMetric),
-                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
-            )
-            click.echo(f"Processed {len(ts_metrics)} time-series records.")
-        else:
-            click.secho("⚠️ No time-series data found.", fg="yellow")
-
-        existing_activity.ts_data_available = bool(ts_metrics)
-
-        if split_metrics:
-            session.execute(
-                insert(ActivitySplitMetric),
-                [{k: getattr(m, k) for k in split_keys} for m in split_metrics],
-            )
-            click.echo(f"Processed {len(split_metrics)} split records.")
-        else:
-            click.secho("⚠️ No split data found.", fg="yellow")
-
-        if lap_metrics:
-            session.execute(
-                insert(ActivityLapMetric),
-                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
-            )
-            click.echo(f"Processed {len(lap_metrics)} lap records.")
-        else:
-            click.secho("⚠️ No lap data found.", fg="yellow")
-
-        # Build and insert activity GPS path for downstream visualization.
-        if gps_records:
-            # Sort ascending by timestamp so path order matches activity
-            # progress (FIT iteration is not guaranteed monotonic).
-            gps_records.sort(key=lambda r: r[0])
-
-            # Format: [[lon, lat], [lon, lat], ...] in decimal degrees.
-            path_coords = [
-                [
-                    lon_semi * SEMICIRCLES_TO_DEGREES,
-                    lat_semi * SEMICIRCLES_TO_DEGREES,
-                ]
-                for _, lon_semi, lat_semi in gps_records
-            ]
-
-            session.execute(
-                insert(ActivityPath),
-                [
-                    {
-                        "activity_id": activity_id,
-                        "path_json": path_coords,
-                        "point_count": len(path_coords),
-                    }
-                ],
-            )
-            click.echo(f"Processed {len(path_coords)} GPS path points.")
-        else:
-            # Indoor activities legitimately have no GPS data, so this is info
-            # rather than a warning.
-            click.secho(
-                "ℹ️ No GPS data found, skipping activity_path materialization.",
-                fg="blue",
-            )
+        self._persist_activity_metrics(
+            activity_id=activity_id,
+            file_path=file_path,
+            existing_activity=existing_activity,
+            ts_metrics=ts_metrics,
+            lap_metrics=lap_metrics,
+            gps_records_deg=gps_records_deg,
+            session=session,
+            split_metrics=split_metrics,
+        )
 
     def _process_activity_file(self, file_path: Path, session: Session):
         """
@@ -3100,85 +3129,16 @@ class GarminProcessor(Processor):
                         except (ValueError, TypeError):
                             pass
 
-        session.flush()
-
-        session.execute(
-            delete(ActivityTsMetric)
-            .where(ActivityTsMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
+        # TCX coordinates are already in decimal degrees, and TCX has no split
+        # concept (split_metrics=None suppresses both the insert and the
+        # "no split data" warning).
+        self._persist_activity_metrics(
+            activity_id=activity_id,
+            file_path=file_path,
+            existing_activity=existing_activity,
+            ts_metrics=ts_metrics,
+            lap_metrics=lap_metrics,
+            gps_records_deg=gps_records,
+            session=session,
+            split_metrics=None,
         )
-        session.execute(
-            delete(ActivityLapMetric)
-            .where(ActivityLapMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivityPath)
-            .where(ActivityPath.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-
-        ts_keys = [
-            c.key
-            for c in ActivityTsMetric.__table__.columns
-            if c.server_default is None
-        ]
-        lap_keys = [
-            c.key
-            for c in ActivityLapMetric.__table__.columns
-            if c.server_default is None
-        ]
-
-        if ts_metrics:
-            ts_metrics_by_key: Dict = {}
-            for m in ts_metrics:
-                ts_metrics_by_key[(m.timestamp, m.name)] = m
-            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
-            if deduped_count > 0:
-                click.secho(
-                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
-                    f"row(s) for activity_id={activity_id} from "
-                    f"{file_path.name} (same timestamp + metric name).",
-                    fg="yellow",
-                )
-            ts_metrics = list(ts_metrics_by_key.values())
-
-            session.execute(
-                insert(ActivityTsMetric),
-                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
-            )
-            click.echo(f"Processed {len(ts_metrics)} time-series records.")
-        else:
-            click.secho("⚠️ No time-series data found.", fg="yellow")
-
-        existing_activity.ts_data_available = bool(ts_metrics)
-
-        if lap_metrics:
-            session.execute(
-                insert(ActivityLapMetric),
-                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
-            )
-            click.echo(f"Processed {len(lap_metrics)} lap records.")
-        else:
-            click.secho("⚠️ No lap data found.", fg="yellow")
-
-        if gps_records:
-            gps_records.sort(key=lambda r: r[0])
-            path_coords = [[lon, lat] for _, lon, lat in gps_records]
-
-            session.execute(
-                insert(ActivityPath),
-                [
-                    {
-                        "activity_id": activity_id,
-                        "path_json": path_coords,
-                        "point_count": len(path_coords),
-                    }
-                ],
-            )
-            click.echo(f"Processed {len(path_coords)} GPS path points.")
-        else:
-            click.secho(
-                "ℹ️ No GPS data found, skipping activity_path materialization.",
-                fg="blue",
-            )
