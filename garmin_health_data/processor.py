@@ -3047,7 +3047,10 @@ class GarminProcessor(Processor):
                 except ValueError:
                     continue
 
-                # GPS coordinates — decimal degrees, no semicircle conversion needed.
+                # TCX Position values are decimal degrees. Keep degrees for the
+                # activity_path materialization, but convert to semicircles for
+                # activity_ts_metric so the position_lat/position_long contract
+                # matches FIT (which stores raw semicircles under those names).
                 lat_elem = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
                 lon_elem = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
                 if (
@@ -3065,8 +3068,8 @@ class GarminProcessor(Processor):
                                 activity_id=activity_id,
                                 timestamp=timestamp,
                                 name="position_lat",
-                                value=lat,
-                                units="degrees",
+                                value=lat / SEMICIRCLES_TO_DEGREES,
+                                units="semicircles",
                             )
                         )
                         ts_metrics.append(
@@ -3074,8 +3077,8 @@ class GarminProcessor(Processor):
                                 activity_id=activity_id,
                                 timestamp=timestamp,
                                 name="position_long",
-                                value=lon,
-                                units="degrees",
+                                value=lon / SEMICIRCLES_TO_DEGREES,
+                                units="semicircles",
                             )
                         )
                     except (ValueError, TypeError):

@@ -34,6 +34,7 @@ from garmin_health_data.models import (
     StrengthSet,
     User,
 )
+from garmin_health_data.constants import SEMICIRCLES_TO_DEGREES
 from garmin_health_data.processor import GarminProcessor
 from garmin_health_data.processor_helpers import FileSet, upsert_model_instances
 
@@ -2144,8 +2145,14 @@ class TestProcessTcxFile:
         assert get(ts1, "altitude") == pytest.approx(56.0)
         assert get(ts1, "distance") == pytest.approx(10.0)
         assert get(ts1, "cadence") == pytest.approx(80.0)
-        assert get(ts1, "position_lat") == pytest.approx(47.6062)
-        assert get(ts1, "position_long") == pytest.approx(-122.3321)
+        # position_lat/long are stored as semicircles in activity_ts_metric to
+        # match FIT's contract; activity_path keeps decimal degrees.
+        assert get(ts1, "position_lat") == pytest.approx(
+            47.6062 / SEMICIRCLES_TO_DEGREES
+        )
+        assert get(ts1, "position_long") == pytest.approx(
+            -122.3321 / SEMICIRCLES_TO_DEGREES
+        )
         assert get(ts2, "heart_rate") == pytest.approx(148.0)
         assert get(ts2, "altitude") == pytest.approx(57.5)
 
