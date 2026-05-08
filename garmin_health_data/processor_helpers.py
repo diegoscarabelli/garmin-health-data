@@ -84,11 +84,27 @@ def upsert_model_instances(
 
     :param session: SQLAlchemy session.
     :param model_instances: List of model instances to upsert.
-    :param conflict_columns: Columns that define uniqueness.
+    :param conflict_columns: Column **names** (database column names, matching
+        ``Column.name``) forming the unique conflict target. SQLAlchemy's
+        ``index_elements`` parameter expects names, which is why this list
+        uses the names namespace; ``update_columns`` and ``returning_columns``
+        use the keys namespace instead. For the common case
+        ``Column('foo', ...)`` the two are identical and the distinction does
+        not matter; it only diverges when callers do
+        ``Column('db_name', key='attr_name')``.
     :param on_conflict_update: If True, update on conflict; if False, ignore.
-    :param update_columns: Columns to update (if None, update all non-conflict cols).
-    :param returning_columns: Columns to populate on the returned instances. If None,
-        the input ``model_instances`` list is returned unchanged.
+    :param update_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to update on conflict. Defaults to all columns except
+        the conflict columns, primary-key columns, ``create_ts``, and
+        ``update_ts``. Note: ``update_ts`` cannot be preserved or backfilled
+        through this parameter. If the model has an ``update_ts`` column, the
+        helper unconditionally overwrites it with ``CURRENT_TIMESTAMP`` on
+        every conflict update (audit-column semantics), regardless of whether
+        ``update_ts`` appears in ``update_columns`` and regardless of the
+        value (or absence) of ``update_ts`` on the input instances.
+    :param returning_columns: Column **keys** (Python attribute names, matching
+        ``Column.key``) to populate on the returned instances. If None, the
+        input ``model_instances`` list is returned unchanged.
     :return: List of model instances. If ``returning_columns`` is None, this is the
         input list. Otherwise, it is a fresh list of model instances populated with only
         the requested columns from the database.
@@ -97,30 +113,83 @@ def upsert_model_instances(
         return []
 
     model_class = type(model_instances[0])
-    model_columns = model_class.__table__.columns.keys()
+    model_columns = model_class.__table__.columns.keys()  # KEYS namespace.
+    column_names = {col.name for col in model_class.__table__.columns}  # NAMES.
+    name_to_key = {col.name: col.key for col in model_class.__table__.columns}
 
-    # Validate inputs and surface the SQLite version requirement at the call
-    # boundary so callers that build a Session outside `get_engine` (and
-    # therefore skip its version gate) still get a clear error instead of an
-    # opaque SQL syntax / IndexError / AttributeError failure further down.
+    # SQLAlchemy uses two namespaces for the same column:
+    # - col.name = the database column name (used by SQL emitted via
+    #   `index_elements=conflict_columns` in `on_conflict_do_update`).
+    # - col.key  = the Python attribute name (used by `excluded[col]` and
+    #   `getattr(model_class, col)`).
+    # They are equal for the common case `Column('foo', ...)`, but diverge
+    # when callers do `Column('db_name', key='attr_name')`. The contract
+    # this helper enforces:
+    #   - `conflict_columns` entries are NAMES (matching SQLAlchemy's
+    #     `index_elements`).
+    #   - `update_columns` and `returning_columns` are KEYS (matching
+    #     `excluded[...]` and `getattr(model_class, ...)`).
+    # Validate up front so a mismatch fails with a clear error here rather
+    # than an opaque AttributeError / KeyError deep in execution.
+    def _duplicates(seq: List[str]) -> List[str]:
+        seen: set = set()
+        dups: List[str] = []
+        for item in seq:
+            if item in seen and item not in dups:
+                dups.append(item)
+            seen.add(item)
+        return dups
+
     if not conflict_columns:
         raise ValueError(
             "`conflict_columns` must be a non-empty list. An empty list "
             "produces invalid `ON CONFLICT` SQL in both DO UPDATE and DO "
             "NOTHING modes."
         )
+    unknown_conflict = [c for c in conflict_columns if c not in column_names]
+    if unknown_conflict:
+        raise ValueError(
+            f"`conflict_columns` references column name(s) not present on "
+            f"{model_class.__name__}: {unknown_conflict}. Valid column "
+            f"names: {sorted(column_names)}"
+        )
+    dup_conflict = _duplicates(conflict_columns)
+    if dup_conflict:
+        raise ValueError(
+            f"`conflict_columns` contains duplicate entries: {dup_conflict}."
+        )
+    if update_columns is not None:
+        unknown_update = [c for c in update_columns if c not in model_columns]
+        if unknown_update:
+            raise ValueError(
+                f"`update_columns` references column key(s) not present on "
+                f"{model_class.__name__}: {unknown_update}. Valid column "
+                f"keys: {sorted(model_columns)}"
+            )
+        dup_update = _duplicates(update_columns)
+        if dup_update:
+            raise ValueError(
+                f"`update_columns` contains duplicate entries: {dup_update}."
+            )
     if returning_columns is not None:
         if not returning_columns:
             raise ValueError(
                 "`returning_columns` must be a non-empty list when provided. "
                 "Pass None to opt out of the RETURNING path."
             )
-        unknown = [col for col in returning_columns if col not in model_columns]
-        if unknown:
+        unknown_returning = [c for c in returning_columns if c not in model_columns]
+        if unknown_returning:
             raise ValueError(
-                f"`returning_columns` references column(s) not present on "
-                f"{model_class.__name__}: {unknown}. Valid columns: "
-                f"{sorted(model_columns)}"
+                f"`returning_columns` references column key(s) not present "
+                f"on {model_class.__name__}: {unknown_returning}. Valid "
+                f"column keys: {sorted(model_columns)}"
+            )
+        dup_returning = _duplicates(returning_columns)
+        if dup_returning:
+            raise ValueError(
+                f"`returning_columns` contains duplicate entries: "
+                f"{dup_returning}. Duplicate column labels in RETURNING "
+                f"would silently collide in the result dict."
             )
         check_sqlite_version()
 
@@ -140,9 +209,15 @@ def upsert_model_instances(
     #   `SET sleep_id = NULL` and trigger a new-rowid assignment in SQLite),
     # - create_ts (audit column, should reflect the original insert time),
     # - update_ts (set explicitly below to current_timestamp if present).
-    pk_columns = {col.name for col in model_class.__table__.primary_key.columns}
+    #
+    # All comparisons happen in the KEYS namespace. We translate
+    # `conflict_columns` (names per the public contract) to keys via
+    # `name_to_key` so the set membership actually matches; PK columns use
+    # `col.key` directly.
+    pk_columns = {col.key for col in model_class.__table__.primary_key.columns}
     if update_columns is None:
-        excluded_cols = set(conflict_columns) | pk_columns | {"create_ts", "update_ts"}
+        conflict_keys = {name_to_key[c] for c in conflict_columns}
+        excluded_cols = conflict_keys | pk_columns | {"create_ts", "update_ts"}
         update_columns = [col for col in model_columns if col not in excluded_cols]
 
     # Clamp chunk size so total parameters stay within the SQLite
@@ -160,15 +235,36 @@ def upsert_model_instances(
         insert_stmt = sqlite_insert(model_class).values(chunk)
 
         if on_conflict_update:
-            # Build update dictionary for ON CONFLICT DO UPDATE.
+            # Build update dictionary for ON CONFLICT DO UPDATE. Both the SET
+            # keys and `excluded[...]` lookups use the KEYS namespace, which
+            # matches `update_columns` per the public contract.
             update_dict = {col: insert_stmt.excluded[col] for col in update_columns}
 
-            # Automatically update update_ts column if it exists in the
-            # model. SQLite's DEFAULT CURRENT_TIMESTAMP only applies on
-            # INSERT, not UPDATE. We must explicitly set update_ts to the
-            # current timestamp on updates.
+            # Automatically refresh update_ts on every conflict update.
+            # SQLite's DEFAULT CURRENT_TIMESTAMP only applies on INSERT, not
+            # UPDATE. We unconditionally overwrite any update_ts entry
+            # already in update_dict (e.g. when callers pass
+            # `update_columns` derived from `__table__.columns`, which
+            # includes update_ts and would otherwise resolve to
+            # `excluded.update_ts`, propagating whatever was on the input
+            # row instead of refreshing it). Audit semantics > caller
+            # control here: the row was just updated, so its update_ts
+            # should reflect that.
             if hasattr(model_class, "update_ts"):
                 update_dict["update_ts"] = func.current_timestamp()
+
+            # Defensive fallback: if update_dict is empty (e.g. a table with
+            # only PK + conflict + audit columns and no `update_ts`), the
+            # default `update_columns` list is empty and we'd otherwise emit
+            # `ON CONFLICT (...) DO UPDATE SET` with no SET targets, which is
+            # invalid SQL. Use the no-op DO UPDATE trick (assign a conflict
+            # column to itself) so the conflict path still fires and RETURNING
+            # works if requested. `name_to_key` translates the name namespace
+            # (per the conflict_columns contract) to keys (what `excluded[...]`
+            # expects).
+            if not update_dict:
+                key_col = name_to_key[conflict_columns[0]]
+                update_dict[key_col] = insert_stmt.excluded[key_col]
 
             upsert_stmt = insert_stmt.on_conflict_do_update(
                 index_elements=conflict_columns, set_=update_dict
@@ -201,7 +297,13 @@ def upsert_model_instances(
             # The pure DO NOTHING path is preserved below for callers that
             # don't request returning_columns and want to skip the write
             # entirely on conflict.
-            key_col = conflict_columns[0]
+            #
+            # NOTE: `conflict_columns` is in the NAMES namespace per the
+            # public contract, but `set_` keys and `excluded[...]` are in the
+            # KEYS namespace. Translate via `name_to_key` so the trick works
+            # for models with `Column('db_name', key='attr_name')` (where the
+            # two diverge). For the common case the translation is a no-op.
+            key_col = name_to_key[conflict_columns[0]]
             upsert_stmt = insert_stmt.on_conflict_do_update(
                 index_elements=conflict_columns,
                 set_={key_col: insert_stmt.excluded[key_col]},

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-05-06
+
+### Fixed
+
+- **Defensive fix for a latent bug class in `upsert_model_instances`** ([#57](https://github.com/diegoscarabelli/garmin-health-data/pull/57)): the helper built its primary-key exclusion set from `Column.name` and indexed `excluded[...]` with `conflict_columns[0]` directly, both of which are wrong against any model declared as `Column('db_name', key='attr_name')`. Not exploitable today because every garmin model uses plain `Column(Type, ...)` so `name == key` everywhere; becomes a silent PK renumbering / `KeyError` the moment a divergent model is added. Adopts the openetl contract (`conflict_columns` are NAMES per SQLAlchemy's `index_elements`; `update_columns` and `returning_columns` are KEYS per `excluded[...]` and `getattr(model, ...)`) with a `name_to_key` translation at the boundaries. Also documents that `update_ts` is unconditionally refreshed to `CURRENT_TIMESTAMP` on every conflict update (audit semantics; cannot be backfilled or preserved through `update_columns`).
+
+### Changed
+
+- **`upsert_model_instances` validation hardened**: duplicate detection on `conflict_columns`, `update_columns`, `returning_columns`; column-existence checks for `conflict_columns` (against names) and `update_columns` (against keys); empty-`update_dict` fallback to the no-op `DO UPDATE` trick when the auto-derived update list resolves to empty (e.g. tables with only PK + conflict + audit columns), avoiding invalid `DO UPDATE SET` SQL.
+
 ## [2.9.0] - 2026-05-05
 
 ### Added
