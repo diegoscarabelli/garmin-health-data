@@ -9,12 +9,13 @@ and health metrics.
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from xml.etree.ElementTree import ParseError as XMLParseError
 
+import defusedxml.ElementTree as ET
 import fitdecode
 from sqlalchemy import and_, delete, insert, select, text
 from sqlalchemy.orm import Session
@@ -65,6 +66,44 @@ from garmin_health_data.models import (
     UserProfile,
     VO2Max,
 )
+
+
+# TCX XML namespaces. ``tcx`` is the TrainingCenterDatabase v2 schema; ``ax`` is
+# the Garmin ActivityExtension v2 schema used for sensor fields like Speed and
+# RunCadence.
+_TCX_NAMESPACES = {
+    "tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
+    "ax": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
+}
+
+# Per-lap scalar summary fields: (metric_name, xpath, units).
+_TCX_LAP_SCALAR_FIELDS = [
+    ("total_elapsed_time", "tcx:TotalTimeSeconds", "s"),
+    ("total_distance", "tcx:DistanceMeters", "m"),
+    ("max_speed", "tcx:MaximumSpeed", "m/s"),
+    ("total_calories", "tcx:Calories", "kcal"),
+    ("avg_cadence", "tcx:Cadence", None),
+]
+
+# Per-lap heart rate fields. TCX wraps these in an extra <Value> child element.
+_TCX_LAP_HR_FIELDS = [
+    ("avg_heart_rate", "tcx:AverageHeartRateBpm/tcx:Value", "bpm"),
+    ("max_heart_rate", "tcx:MaximumHeartRateBpm/tcx:Value", "bpm"),
+]
+
+# Per-trackpoint scalar fields: (metric_name, xpath, units).
+_TCX_TP_SCALAR_FIELDS = [
+    ("altitude", "tcx:AltitudeMeters", "m"),
+    ("distance", "tcx:DistanceMeters", "m"),
+    ("cadence", "tcx:Cadence", None),
+]
+
+# Per-trackpoint Garmin ActivityExtension v2 fields.
+_TCX_TP_EXT_FIELDS = [
+    ("speed", "tcx:Extensions/ax:TPX/ax:Speed", "m/s"),
+    ("run_cadence", "tcx:Extensions/ax:TPX/ax:RunCadence", None),
+    ("watts", "tcx:Extensions/ax:TPX/ax:Watts", "watts"),
+]
 
 
 class GarminProcessor(Processor):
@@ -2864,8 +2903,8 @@ class GarminProcessor(Processor):
         """
         Dispatch activity file processing based on file extension.
 
-        Routes to the appropriate format-specific processor for FIT or TCX files.
-        Logs a warning and skips formats that have no processor yet (e.g. GPX).
+        Routes to the appropriate format-specific processor for FIT or TCX files. Logs a
+        warning and skips formats that have no processor yet (e.g. GPX).
 
         :param file_path: Path to the activity file.
         :param session: SQLAlchemy Session object.
@@ -2919,12 +2958,12 @@ class GarminProcessor(Processor):
                 f"TCX file processing requires existing activity record."
             )
 
-        ns = {
-            "tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
-            "ax": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
-        }
+        ns = _TCX_NAMESPACES
 
-        tree = ET.parse(file_path)
+        try:
+            tree = ET.parse(file_path)
+        except XMLParseError as exc:
+            raise ValueError(f"Malformed TCX file {file_path.name}: {exc}") from exc
         root = tree.getroot()
 
         ts_metrics: List[ActivityTsMetric] = []
@@ -2935,15 +2974,7 @@ class GarminProcessor(Processor):
         for lap in root.findall(".//tcx:Lap", ns):
             lap_idx += 1
 
-            # Scalar lap summary fields.
-            _LAP_SCALAR_FIELDS = [
-                ("total_elapsed_time", "tcx:TotalTimeSeconds", "s"),
-                ("total_distance", "tcx:DistanceMeters", "m"),
-                ("max_speed", "tcx:MaximumSpeed", "m/s"),
-                ("total_calories", "tcx:Calories", "kcal"),
-                ("avg_cadence", "tcx:Cadence", None),
-            ]
-            for metric_name, xpath, units in _LAP_SCALAR_FIELDS:
+            for metric_name, xpath, units in _TCX_LAP_SCALAR_FIELDS:
                 elem = lap.find(xpath, ns)
                 if elem is not None and elem.text:
                     try:
@@ -2959,12 +2990,7 @@ class GarminProcessor(Processor):
                     except (ValueError, TypeError):
                         pass
 
-            # Heart rate fields have an extra <Value> child element.
-            _LAP_HR_FIELDS = [
-                ("avg_heart_rate", "tcx:AverageHeartRateBpm/tcx:Value", "bpm"),
-                ("max_heart_rate", "tcx:MaximumHeartRateBpm/tcx:Value", "bpm"),
-            ]
-            for metric_name, xpath, units in _LAP_HR_FIELDS:
+            for metric_name, xpath, units in _TCX_LAP_HR_FIELDS:
                 elem = lap.find(xpath, ns)
                 if elem is not None and elem.text:
                     try:
@@ -2995,7 +3021,12 @@ class GarminProcessor(Processor):
                 # GPS coordinates — decimal degrees, no semicircle conversion needed.
                 lat_elem = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
                 lon_elem = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
-                if lat_elem is not None and lon_elem is not None and lat_elem.text and lon_elem.text:
+                if (
+                    lat_elem is not None
+                    and lon_elem is not None
+                    and lat_elem.text
+                    and lon_elem.text
+                ):
                     try:
                         lat = float(lat_elem.text)
                         lon = float(lon_elem.text)
@@ -3021,13 +3052,7 @@ class GarminProcessor(Processor):
                     except (ValueError, TypeError):
                         pass
 
-                # Scalar trackpoint fields.
-                _TP_SCALAR_FIELDS = [
-                    ("altitude", "tcx:AltitudeMeters", "m"),
-                    ("distance", "tcx:DistanceMeters", "m"),
-                    ("cadence", "tcx:Cadence", None),
-                ]
-                for metric_name, xpath, units in _TP_SCALAR_FIELDS:
+                for metric_name, xpath, units in _TCX_TP_SCALAR_FIELDS:
                     elem = tp.find(xpath, ns)
                     if elem is not None and elem.text:
                         try:
@@ -3059,13 +3084,7 @@ class GarminProcessor(Processor):
                     except (ValueError, TypeError):
                         pass
 
-                # Garmin ActivityExtension v2 fields.
-                _TP_EXT_FIELDS = [
-                    ("speed", "tcx:Extensions/ax:TPX/ax:Speed", "m/s"),
-                    ("run_cadence", "tcx:Extensions/ax:TPX/ax:RunCadence", None),
-                    ("watts", "tcx:Extensions/ax:TPX/ax:Watts", "watts"),
-                ]
-                for metric_name, xpath, units in _TP_EXT_FIELDS:
+                for metric_name, xpath, units in _TCX_TP_EXT_FIELDS:
                     elem = tp.find(xpath, ns)
                     if elem is not None and elem.text:
                         try:
@@ -3100,7 +3119,9 @@ class GarminProcessor(Processor):
         )
 
         ts_keys = [
-            c.key for c in ActivityTsMetric.__table__.columns if c.server_default is None
+            c.key
+            for c in ActivityTsMetric.__table__.columns
+            if c.server_default is None
         ]
         lap_keys = [
             c.key

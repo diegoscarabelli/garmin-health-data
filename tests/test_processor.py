@@ -2033,7 +2033,9 @@ _EMPTY_LAPS_TCX = """\
 
 
 def _write_tcx(tmp_path: Path, content: str, filename: str = TCX_FILENAME) -> Path:
-    """Write TCX content to a temp file and return the path."""
+    """
+    Write TCX content to a temp file and return the path.
+    """
     p = tmp_path / filename
     p.write_text(content, encoding="utf-8")
     return p
@@ -2045,7 +2047,9 @@ def _write_tcx(tmp_path: Path, content: str, filename: str = TCX_FILENAME) -> Pa
 
 
 class TestProcessTcxFile:
-    """Tests for _process_tcx_file."""
+    """
+    Tests for _process_tcx_file.
+    """
 
     def _make_processor(self) -> GarminProcessor:
         return GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
@@ -2147,7 +2151,7 @@ class TestProcessTcxFile:
 
     def test_garmin_extension_fields(self, db_session: Session, tmp_path: Path):
         """
-        ax:TPX Speed and RunCadence land in activity_ts_metric.
+        Ax:TPX Speed and RunCadence land in activity_ts_metric.
         """
         _seed_activity(db_session)
         self._make_processor()._process_tcx_file(
@@ -2233,7 +2237,9 @@ class TestProcessTcxFile:
 
         assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
         # Heart rate still lands in ts_metric.
-        assert db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+        )
 
     def test_reprocessing_deletes_and_reinserts(
         self, db_session: Session, tmp_path: Path
@@ -2270,7 +2276,8 @@ class TestProcessTcxFile:
         db_session.commit()
 
         assert (
-            db_session.scalar(select(func.count()).select_from(ActivitySplitMetric)) == 0
+            db_session.scalar(select(func.count()).select_from(ActivitySplitMetric))
+            == 0
         )
 
     def test_activity_not_found_raises(self, db_session: Session, tmp_path: Path):
@@ -2298,6 +2305,17 @@ class TestProcessTcxFile:
         with pytest.raises(ValueError, match="Cannot extract activity_id"):
             self._make_processor()._process_tcx_file(bad_path, db_session)
 
+    def test_malformed_xml_raises_value_error(
+        self, db_session: Session, tmp_path: Path
+    ):
+        """
+        Raises ValueError (not a raw XML ParseError) when the TCX file is corrupt.
+        """
+        _seed_activity(db_session)
+        bad = _write_tcx(tmp_path, "<TrainingCenterDatabase><not closed")
+        with pytest.raises(ValueError, match="Malformed TCX file"):
+            self._make_processor()._process_tcx_file(bad, db_session)
+
 
 # ---------------------------------------------------------------------------
 # TestProcessActivityFileDispatch
@@ -2305,7 +2323,9 @@ class TestProcessTcxFile:
 
 
 class TestProcessActivityFileDispatch:
-    """Tests for _process_activity_file routing."""
+    """
+    Tests for _process_activity_file routing.
+    """
 
     def _make_processor(self) -> GarminProcessor:
         return GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
@@ -2359,7 +2379,9 @@ class TestProcessActivityFileDispatch:
 
 
 class TestGarminFileTypesActivityPattern:
-    """Tests for the GARMIN_FILE_TYPES pattern and _partition_processable_and_backup."""
+    """
+    Tests for the GARMIN_FILE_TYPES pattern and _partition_processable_and_backup.
+    """
 
     def test_tcx_activity_file_is_processable(self, tmp_path: Path):
         """
