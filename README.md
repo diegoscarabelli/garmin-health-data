@@ -10,7 +10,7 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 
 ## Features
 
-- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
@@ -189,7 +189,7 @@ $ garmin extract
 
 ### Managing disk usage
 
-`activity_ts_metric` (per-second sensor data from FIT files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
+`activity_ts_metric` (per-second sensor data parsed from FIT or TCX activity files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
 
 - **`garmin downsample`** aggregates per-second readings into time buckets and writes them to a separate `activity_ts_metric_downsampled` table. Source rows are never modified by this command.
 - **`garmin prune`** deletes per-second source rows for activities in a date range. The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
@@ -382,7 +382,7 @@ If all five strategies are exhausted without success (uncommon — typically onl
 
 Duplicates are prevented through a three-tier approach:
 
-1. **FIT activity metrics** (time-series, laps, splits): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction, handling added/removed laps or records between reprocesses. The `ts_data_available` flag tracks whether time-series data exists.
+1. **Activity metrics from FIT or TCX files** (time-series, laps, splits): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction, handling added/removed laps or records between reprocesses. The `ts_data_available` flag tracks whether time-series data exists. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
 2. **JSON wellness time-series** (heart rate, sleep movement, stress, body battery, etc.): `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts.
 3. **Main records** (activities, sleep, user profile): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
 
@@ -426,7 +426,7 @@ Exits with code 1 if the schema integrity check fails or the database does not e
 
 ### Retention: `prune`, `downsample`, `migrate-cascade`
 
-`activity_ts_metric` (per-second sensor data from FIT files) is the only table whose long-run growth typically matters; on a representative database it accounts for ~93% of disk usage. The retention commands target it directly and leave every other table untouched.
+`activity_ts_metric` (per-second sensor data parsed from FIT or TCX activity files) is the only table whose long-run growth typically matters; on a representative database it accounts for ~93% of disk usage. The retention commands target it directly and leave every other table untouched.
 
 #### Time-range conventions
 
@@ -511,7 +511,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |
 | **RACE_PREDICTIONS** | Predicted race times | Periodic updates |
 | **USER_PROFILE** | Demographics, fitness metrics | Periodic updates |
-| **ACTIVITY** | Binary FIT files with detailed time-series sensor data | Per activity |
+| **ACTIVITY** | FIT (binary) or TCX (XML) activity files with detailed time-series sensor data | Per activity |
 
 ### Database Schema
 

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-05-08
+
+### Added
+
+- **TCX activity file processing** ([#56](https://github.com/diegoscarabelli/garmin-health-data/pull/56)): activities uploaded to Garmin Connect from older devices or third-party apps in TCX format are now parsed end-to-end alongside FIT. Per-trackpoint sensor data lands in `activity_ts_metric`, per-lap summaries in `activity_lap_metric`, and trackpoints with GPS materialize into `activity_path`. The extractor stops emitting "unknown format" warnings for TCX, the filename pattern accepts `.tcx`, and a new `_process_activity_file` dispatcher routes by extension so future formats (GPX, etc.) drop in cleanly. `activity_split_metric` is FIT-only (TCX has no split concept). Idempotent reprocessing matches the FIT path: re-running cleanly replaces all activity-child rows.
+
+### Changed
+
+- **Shared `_persist_activity_metrics` helper**: extracted the delete+insert+log persistence tail that FIT and TCX both used. Behavior is identical; the previously-duplicated ~80-line block now lives in one place.
+- **TCX `position_lat`/`position_long` stored as semicircles in `activity_ts_metric`** to match FIT's contract under the same metric names. `activity_path` keeps decimal degrees for both formats.
+
+### Fixed
+
+- **Hardened TCX XML parsing**: parsing now uses `defusedxml` (XXE / billion-laughs defense for files from third-party sources), wraps `ET.parse` in `try/except` so a malformed TCX produces a `ValueError` naming the file rather than an opaque traceback, and reuses the existing `_parse_garmin_gmt` helper for trackpoint timestamps so single-/two-digit fractional seconds (e.g. `2024-01-01T08:00:01.5Z`) parse correctly on Python 3.10's strict `datetime.fromisoformat`.
+
 ## [2.9.1] - 2026-05-06
 
 ### Fixed
