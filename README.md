@@ -8,6 +8,11 @@ A single CLI command downloads your complete Garmin Connect health and activity 
 
 **Adapted from the Garmin pipeline in [OpenETL](https://github.com/diegoscarabelli/openetl)**, a comprehensive ETL framework with Apache Airflow and PostgreSQL/TimescaleDB. This standalone version of the [OpenETL Garmin data pipeline](https://github.com/diegoscarabelli/openetl/tree/main/dags/pipelines/garmin) provides the same data extraction and modeling scheme without requiring Airflow or PostgreSQL infrastructure.
 
+## Demo
+
+<!-- markdownlint-disable-next-line MD034 -->
+https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
+
 ## Features
 
 - 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and FIT activity files (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
