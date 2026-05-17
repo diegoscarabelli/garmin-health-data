@@ -308,7 +308,7 @@ def _create_garmin_file_types() -> type:
     Pattern format: .*_{data_type.name}_.*\\.{extension}$
     Extensions:
     - JSON files: .json (for most data types)
-    - FIT files: .fit (for ACTIVITY data type)
+    - FIT/TCX files: .fit or .tcx (for ACTIVITY data type)
 
     :return: Enum class with file type patterns for Garmin Connect data pipeline.
     """
@@ -317,11 +317,9 @@ def _create_garmin_file_types() -> type:
     # Add patterns for each data type in registry.
     for data_type in GARMIN_DATA_REGISTRY.all_data_types:
         if data_type.name == "ACTIVITY":
-            file_extension = "fit"
+            pattern = re.compile(rf".*_ACTIVITY_.*\.(fit|tcx)$")
         else:
-            file_extension = "json"
-
-        pattern = re.compile(rf".*_{data_type.name}_.*\.{file_extension}$")
+            pattern = re.compile(rf".*_{data_type.name}_.*\.json$")
         patterns[data_type.name] = pattern
 
     # Create dynamic enum class.

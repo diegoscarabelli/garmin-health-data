@@ -12,8 +12,10 @@ import re
 from collections import OrderedDict
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from xml.etree.ElementTree import ParseError as XMLParseError
 
+import defusedxml.ElementTree as ET
 import fitdecode
 from sqlalchemy import and_, delete, insert, select, text
 from sqlalchemy.orm import Session
@@ -64,6 +66,49 @@ from garmin_health_data.models import (
     UserProfile,
     VO2Max,
 )
+
+
+# TCX XML namespaces. ``tcx`` is the TrainingCenterDatabase v2 schema; ``ax`` is
+# the Garmin ActivityExtension v2 schema used for sensor fields like Speed and
+# RunCadence.
+_TCX_NAMESPACES = {
+    "tcx": "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2",
+    "ax": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
+}
+
+# TCX <Cadence> is unit-ambiguous: rpm for cycling, spm (often doubled) for running.
+# The TCX schema carries no per-activity-type unit metadata to disambiguate, so all
+# cadence fields below leave units NULL rather than guess. Downstream consumers can
+# infer from `activity.sport_type` when needed.
+
+# Per-lap scalar summary fields: (metric_name, xpath, units).
+_TCX_LAP_SCALAR_FIELDS = [
+    ("total_elapsed_time", "tcx:TotalTimeSeconds", "s"),
+    ("total_distance", "tcx:DistanceMeters", "m"),
+    ("max_speed", "tcx:MaximumSpeed", "m/s"),
+    ("total_calories", "tcx:Calories", "kcal"),
+    ("avg_cadence", "tcx:Cadence", None),
+]
+
+# Per-lap heart rate fields. TCX wraps these in an extra <Value> child element.
+_TCX_LAP_HR_FIELDS = [
+    ("avg_heart_rate", "tcx:AverageHeartRateBpm/tcx:Value", "bpm"),
+    ("max_heart_rate", "tcx:MaximumHeartRateBpm/tcx:Value", "bpm"),
+]
+
+# Per-trackpoint scalar fields: (metric_name, xpath, units).
+_TCX_TP_SCALAR_FIELDS = [
+    ("altitude", "tcx:AltitudeMeters", "m"),
+    ("distance", "tcx:DistanceMeters", "m"),
+    ("cadence", "tcx:Cadence", None),
+]
+
+# Per-trackpoint Garmin ActivityExtension v2 fields.
+_TCX_TP_EXT_FIELDS = [
+    ("speed", "tcx:Extensions/ax:TPX/ax:Speed", "m/s"),
+    ("run_cadence", "tcx:Extensions/ax:TPX/ax:RunCadence", None),
+    ("watts", "tcx:Extensions/ax:TPX/ax:Watts", "watts"),
+]
 
 
 class GarminProcessor(Processor):
@@ -131,7 +176,7 @@ class GarminProcessor(Processor):
                 ("STRESS", self._process_stress_body_battery),
                 ("TRAINING_STATUS", self._process_training_status),
                 ("TRAINING_READINESS", self._process_training_readiness),
-                ("ACTIVITY", self._process_fit_file),
+                ("ACTIVITY", self._process_activity_file),
             ]
         )
 
@@ -250,14 +295,15 @@ class GarminProcessor(Processor):
         Expected formats:
         - JSON files (based on extract._save_garmin_data()):
             {user_id}_{DATA_TYPE}_{timestamp}.json
-        - FIT files (based on extract.extract_fit_activity()):
+        - FIT/TCX files (based on extract.extract_fit_activity()):
             {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
+            {user_id}_ACTIVITY_{activity_id}_{timestamp}.tcx
 
         :param filename: Name of the file to parse.
         :return: Dictionary with `user_id`, `data_type`, and `timestamp`.
         :raises ValueError: If filename doesn't match expected pattern.
         """
-        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit)$"
+        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit|tcx)$"
         match = re.match(pattern, filename)
 
         if not match:
@@ -2509,6 +2555,149 @@ class GarminProcessor(Processor):
             on_conflict_update=False,
         )
 
+    def _persist_activity_metrics(
+        self,
+        activity_id: int,
+        file_path: Path,
+        existing_activity: Activity,
+        ts_metrics: List[ActivityTsMetric],
+        lap_metrics: List[ActivityLapMetric],
+        gps_records_deg: List[tuple],
+        session: Session,
+        split_metrics: Optional[List[ActivitySplitMetric]] = None,
+    ) -> None:
+        """
+        Persist parsed activity metrics with idempotent delete+insert semantics.
+
+        Replaces all existing ts/split/lap/path rows for ``activity_id`` and bulk-
+        inserts the new ones. Coalesces duplicate ts_metrics by ``(timestamp, name)`` to
+        avoid UNIQUE-constraint collisions. Materializes ``activity_path`` from
+        ``gps_records_deg`` (sorted by timestamp before insert). Updates
+        ``existing_activity.ts_data_available``.
+
+        Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
+        pass an empty list for formats that have splits but found none in this file.
+
+        :param activity_id: Activity primary key.
+        :param file_path: Source file path, used in log messages only.
+        :param existing_activity: ORM-tracked Activity row whose ``ts_data_available``
+            flag is updated.
+        :param ts_metrics: Time-series metric instances to insert.
+        :param lap_metrics: Lap metric instances to insert.
+        :param gps_records_deg: GPS samples as ``(timestamp, lon_degrees, lat_degrees)``
+            tuples in decimal degrees.
+        :param session: SQLAlchemy session.
+        :param split_metrics: Split metric instances, or ``None`` if the source format
+            has no splits.
+        """
+        # Flush so any pending session state settles before bulk delete.
+        session.flush()
+
+        # Idempotent delete: drop all existing rows for this activity. Splits
+        # are deleted unconditionally so reprocessing as a different format
+        # (e.g. FIT → TCX) cleanly removes splits that no longer apply.
+        for model in (
+            ActivityTsMetric,
+            ActivitySplitMetric,
+            ActivityLapMetric,
+            ActivityPath,
+        ):
+            session.execute(
+                delete(model)
+                .where(model.activity_id == activity_id)
+                .execution_options(synchronize_session=False)
+            )
+
+        # Core-level bulk insert keys, computed once. Excludes server-default
+        # columns (e.g. create_ts) so the database applies the default rather
+        # than receiving a Python None.
+        ts_keys = [
+            c.key
+            for c in ActivityTsMetric.__table__.columns
+            if c.server_default is None
+        ]
+        lap_keys = [
+            c.key
+            for c in ActivityLapMetric.__table__.columns
+            if c.server_default is None
+        ]
+
+        if ts_metrics:
+            # Coalesce duplicate (timestamp, name) entries: some FIT devices
+            # emit multiple record frames per second without
+            # fractional_timestamp; some TCX trackpoints repeat. Last-seen wins.
+            ts_metrics_by_key: Dict = {}
+            for m in ts_metrics:
+                ts_metrics_by_key[(m.timestamp, m.name)] = m
+            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
+            if deduped_count > 0:
+                click.secho(
+                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
+                    f"row(s) for activity_id={activity_id} from "
+                    f"{file_path.name} (same timestamp + metric name).",
+                    fg="yellow",
+                )
+            ts_metrics = list(ts_metrics_by_key.values())
+
+            session.execute(
+                insert(ActivityTsMetric),
+                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
+            )
+            click.echo(f"Processed {len(ts_metrics)} time-series records.")
+        else:
+            click.secho("⚠️ No time-series data found.", fg="yellow")
+
+        existing_activity.ts_data_available = bool(ts_metrics)
+
+        if split_metrics is not None:
+            if split_metrics:
+                split_keys = [
+                    c.key
+                    for c in ActivitySplitMetric.__table__.columns
+                    if c.server_default is None
+                ]
+                session.execute(
+                    insert(ActivitySplitMetric),
+                    [{k: getattr(m, k) for k in split_keys} for m in split_metrics],
+                )
+                click.echo(f"Processed {len(split_metrics)} split records.")
+            else:
+                click.secho("⚠️ No split data found.", fg="yellow")
+
+        if lap_metrics:
+            session.execute(
+                insert(ActivityLapMetric),
+                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
+            )
+            click.echo(f"Processed {len(lap_metrics)} lap records.")
+        else:
+            click.secho("⚠️ No lap data found.", fg="yellow")
+
+        if gps_records_deg:
+            # Sort ascending by timestamp so path order matches activity
+            # progress (frame iteration is not guaranteed monotonic).
+            gps_records_deg.sort(key=lambda r: r[0])
+            path_coords = [[lon, lat] for _, lon, lat in gps_records_deg]
+
+            session.execute(
+                insert(ActivityPath),
+                [
+                    {
+                        "activity_id": activity_id,
+                        "path_json": path_coords,
+                        "point_count": len(path_coords),
+                    }
+                ],
+            )
+            click.echo(f"Processed {len(path_coords)} GPS path points.")
+        else:
+            # Indoor activities legitimately have no GPS data, so this is info
+            # rather than a warning.
+            click.secho(
+                "ℹ️ No GPS data found, skipping activity_path materialization.",
+                fg="blue",
+            )
+
     def _process_fit_file(self, file_path: Path, session: Session):
         """
         Process a FIT file and extract time-series, split, lap, and GPS path data.
@@ -2723,137 +2912,242 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
-        # Flush session to ensure foreign key relationships are resolved.
-        session.flush()
-
-        # Delete existing FIT metric rows for this activity before re-inserting.
-        # This handles added/removed laps, splits, or records between reprocesses.
-        session.execute(
-            delete(ActivityTsMetric)
-            .where(ActivityTsMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivitySplitMetric)
-            .where(ActivitySplitMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivityLapMetric)
-            .where(ActivityLapMetric.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-        session.execute(
-            delete(ActivityPath)
-            .where(ActivityPath.activity_id == activity_id)
-            .execution_options(synchronize_session=False)
-        )
-
-        # Core-level bulk insert for FIT metrics. Uses insert() instead
-        # of add_all() to bypass the ORM identity map, matching the
-        # original bulk_save_objects() intent: the preceding deletes use
-        # synchronize_session=False, so stale instances may remain in the
-        # map. Core insert also avoids the RETURNING sentinel mismatch
-        # that SQLite triggers with DateTime(timezone=True) composite PKs.
-        #
-        # Column keys are precomputed once per model to avoid repeated
-        # __table__.columns iteration on large FIT files. Columns with
-        # server_default (create_ts) are excluded so the database applies
-        # the default rather than receiving a Python None.
-        ts_keys = [
-            c.key
-            for c in ActivityTsMetric.__table__.columns
-            if c.server_default is None
-        ]
-        split_keys = [
-            c.key
-            for c in ActivitySplitMetric.__table__.columns
-            if c.server_default is None
-        ]
-        lap_keys = [
-            c.key
-            for c in ActivityLapMetric.__table__.columns
-            if c.server_default is None
+        # Convert FIT semicircles to decimal degrees for path materialization.
+        gps_records_deg = [
+            (
+                ts,
+                lon_semi * SEMICIRCLES_TO_DEGREES,
+                lat_semi * SEMICIRCLES_TO_DEGREES,
+            )
+            for ts, lon_semi, lat_semi in gps_records
         ]
 
-        if ts_metrics:
-            # Belt-and-suspenders: even after fractional_timestamp parsing,
-            # some FIT files may emit two record frames with identical
-            # (timestamp, name) (devices without fractional_timestamp,
-            # corrupted writes, etc.). Coalesce by (timestamp, name) keeping
-            # the last seen value so the unique constraint
-            # (activity_id, timestamp, name) is never violated.
-            ts_metrics_by_key: Dict = {}
-            for m in ts_metrics:
-                ts_metrics_by_key[(m.timestamp, m.name)] = m
-            deduped_count = len(ts_metrics) - len(ts_metrics_by_key)
-            if deduped_count > 0:
-                click.secho(
-                    f"⚠️  Coalesced {deduped_count} duplicate time-series "
-                    f"row(s) for activity_id={activity_id} from "
-                    f"{file_path.name} (same timestamp + metric name).",
-                    fg="yellow",
-                )
-            ts_metrics = list(ts_metrics_by_key.values())
+        self._persist_activity_metrics(
+            activity_id=activity_id,
+            file_path=file_path,
+            existing_activity=existing_activity,
+            ts_metrics=ts_metrics,
+            lap_metrics=lap_metrics,
+            gps_records_deg=gps_records_deg,
+            session=session,
+            split_metrics=split_metrics,
+        )
 
-            session.execute(
-                insert(ActivityTsMetric),
-                [{k: getattr(m, k) for k in ts_keys} for m in ts_metrics],
-            )
-            click.echo(f"Processed {len(ts_metrics)} time-series records.")
+    def _process_activity_file(self, file_path: Path, session: Session):
+        """
+        Dispatch activity file processing based on file extension.
+
+        Routes to the appropriate format-specific processor for FIT or TCX files. Logs a
+        warning and skips formats that have no processor yet (e.g. GPX).
+
+        :param file_path: Path to the activity file.
+        :param session: SQLAlchemy Session object.
+        """
+        ext = file_path.suffix.lower().lstrip(".")
+        if ext == "fit":
+            self._process_fit_file(file_path, session)
+        elif ext == "tcx":
+            self._process_tcx_file(file_path, session)
         else:
-            click.secho("⚠️ No time-series data found.", fg="yellow")
-
-        existing_activity.ts_data_available = bool(ts_metrics)
-
-        if split_metrics:
-            session.execute(
-                insert(ActivitySplitMetric),
-                [{k: getattr(m, k) for k in split_keys} for m in split_metrics],
-            )
-            click.echo(f"Processed {len(split_metrics)} split records.")
-        else:
-            click.secho("⚠️ No split data found.", fg="yellow")
-
-        if lap_metrics:
-            session.execute(
-                insert(ActivityLapMetric),
-                [{k: getattr(m, k) for k in lap_keys} for m in lap_metrics],
-            )
-            click.echo(f"Processed {len(lap_metrics)} lap records.")
-        else:
-            click.secho("⚠️ No lap data found.", fg="yellow")
-
-        # Build and insert activity GPS path for downstream visualization.
-        if gps_records:
-            # Sort ascending by timestamp so path order matches activity
-            # progress (FIT iteration is not guaranteed monotonic).
-            gps_records.sort(key=lambda r: r[0])
-
-            # Format: [[lon, lat], [lon, lat], ...] in decimal degrees.
-            path_coords = [
-                [
-                    lon_semi * SEMICIRCLES_TO_DEGREES,
-                    lat_semi * SEMICIRCLES_TO_DEGREES,
-                ]
-                for _, lon_semi, lat_semi in gps_records
-            ]
-
-            session.execute(
-                insert(ActivityPath),
-                [
-                    {
-                        "activity_id": activity_id,
-                        "path_json": path_coords,
-                        "point_count": len(path_coords),
-                    }
-                ],
-            )
-            click.echo(f"Processed {len(path_coords)} GPS path points.")
-        else:
-            # Indoor activities legitimately have no GPS data, so this is info
-            # rather than a warning.
             click.secho(
-                "ℹ️ No GPS data found, skipping activity_path materialization.",
-                fg="blue",
+                f"⚠️  No processor for activity file format '.{ext}': "
+                f"{file_path.name} — skipping.",
+                fg="yellow",
             )
+
+    def _process_tcx_file(self, file_path: Path, session: Session):
+        """
+        Process a TCX file and extract time-series, lap, and GPS path data.
+
+        Parses the Garmin TrainingCenterDatabase XML format, extracting per-trackpoint
+        sensor data into activity_ts_metric and per-lap summaries into
+        activity_lap_metric. Activities with GPS trackpoints also get a materialized
+        activity_path row. Uses delete+insert for idempotent reprocessing.
+
+        TCX does not contain split data, so activity_split_metric is not populated.
+
+        :param file_path: Path to the TCX file.
+        :param session: SQLAlchemy Session object.
+        """
+        # TCX files share the same naming convention as FIT files.
+        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.tcx$"
+        match = re.match(pattern, file_path.name)
+
+        if not match:
+            raise ValueError(
+                f"Cannot extract activity_id from filename: {file_path.name}"
+            )
+
+        activity_id = int(match.groups()[1])
+
+        existing_activity = (
+            session.execute(select(Activity).where(Activity.activity_id == activity_id))
+            .scalars()
+            .first()
+        )
+
+        if not existing_activity:
+            raise ValueError(
+                f"Activity {activity_id} not found in database. "
+                f"TCX file processing requires existing activity record."
+            )
+
+        ns = _TCX_NAMESPACES
+
+        try:
+            tree = ET.parse(file_path)
+        except XMLParseError as exc:
+            raise ValueError(f"Malformed TCX file {file_path.name}: {exc}") from exc
+        root = tree.getroot()
+
+        ts_metrics: List[ActivityTsMetric] = []
+        lap_metrics: List[ActivityLapMetric] = []
+        gps_records: List[tuple] = []
+        lap_idx = 0
+
+        for lap in root.findall(".//tcx:Lap", ns):
+            lap_idx += 1
+
+            for metric_name, xpath, units in _TCX_LAP_SCALAR_FIELDS:
+                elem = lap.find(xpath, ns)
+                if elem is not None and elem.text:
+                    try:
+                        lap_metrics.append(
+                            ActivityLapMetric(
+                                activity_id=activity_id,
+                                lap_idx=lap_idx,
+                                name=metric_name,
+                                value=float(elem.text),
+                                units=units,
+                            )
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+            for metric_name, xpath, units in _TCX_LAP_HR_FIELDS:
+                elem = lap.find(xpath, ns)
+                if elem is not None and elem.text:
+                    try:
+                        lap_metrics.append(
+                            ActivityLapMetric(
+                                activity_id=activity_id,
+                                lap_idx=lap_idx,
+                                name=metric_name,
+                                value=float(elem.text),
+                                units=units,
+                            )
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+            for tp in lap.findall("tcx:Track/tcx:Trackpoint", ns):
+                time_elem = tp.find("tcx:Time", ns)
+                if time_elem is None or not time_elem.text:
+                    continue
+
+                # Use _parse_garmin_gmt rather than raw fromisoformat: Python
+                # 3.10's strict parser rejects single-digit fractional seconds
+                # (e.g. ``.5Z``), which the helper normalizes to 6 digits.
+                try:
+                    timestamp = self._parse_garmin_gmt(time_elem.text)
+                except ValueError:
+                    continue
+
+                # TCX Position values are decimal degrees. Keep degrees for the
+                # activity_path materialization, but convert to semicircles for
+                # activity_ts_metric so the position_lat/position_long contract
+                # matches FIT (which stores raw semicircles under those names).
+                lat_elem = tp.find("tcx:Position/tcx:LatitudeDegrees", ns)
+                lon_elem = tp.find("tcx:Position/tcx:LongitudeDegrees", ns)
+                if (
+                    lat_elem is not None
+                    and lon_elem is not None
+                    and lat_elem.text
+                    and lon_elem.text
+                ):
+                    try:
+                        lat = float(lat_elem.text)
+                        lon = float(lon_elem.text)
+                        gps_records.append((timestamp, lon, lat))
+                        ts_metrics.append(
+                            ActivityTsMetric(
+                                activity_id=activity_id,
+                                timestamp=timestamp,
+                                name="position_lat",
+                                value=lat / SEMICIRCLES_TO_DEGREES,
+                                units="semicircles",
+                            )
+                        )
+                        ts_metrics.append(
+                            ActivityTsMetric(
+                                activity_id=activity_id,
+                                timestamp=timestamp,
+                                name="position_long",
+                                value=lon / SEMICIRCLES_TO_DEGREES,
+                                units="semicircles",
+                            )
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                for metric_name, xpath, units in _TCX_TP_SCALAR_FIELDS:
+                    elem = tp.find(xpath, ns)
+                    if elem is not None and elem.text:
+                        try:
+                            ts_metrics.append(
+                                ActivityTsMetric(
+                                    activity_id=activity_id,
+                                    timestamp=timestamp,
+                                    name=metric_name,
+                                    value=float(elem.text),
+                                    units=units,
+                                )
+                            )
+                        except (ValueError, TypeError):
+                            pass
+
+                # Heart rate has an extra <Value> child element.
+                hr_elem = tp.find("tcx:HeartRateBpm/tcx:Value", ns)
+                if hr_elem is not None and hr_elem.text:
+                    try:
+                        ts_metrics.append(
+                            ActivityTsMetric(
+                                activity_id=activity_id,
+                                timestamp=timestamp,
+                                name="heart_rate",
+                                value=float(hr_elem.text),
+                                units="bpm",
+                            )
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                for metric_name, xpath, units in _TCX_TP_EXT_FIELDS:
+                    elem = tp.find(xpath, ns)
+                    if elem is not None and elem.text:
+                        try:
+                            ts_metrics.append(
+                                ActivityTsMetric(
+                                    activity_id=activity_id,
+                                    timestamp=timestamp,
+                                    name=metric_name,
+                                    value=float(elem.text),
+                                    units=units,
+                                )
+                            )
+                        except (ValueError, TypeError):
+                            pass
+
+        # TCX coordinates are already in decimal degrees, and TCX has no split
+        # concept (split_metrics=None suppresses both the insert and the
+        # "no split data" warning).
+        self._persist_activity_metrics(
+            activity_id=activity_id,
+            file_path=file_path,
+            existing_activity=existing_activity,
+            ts_metrics=ts_metrics,
+            lap_metrics=lap_metrics,
+            gps_records_deg=gps_records,
+            session=session,
+            split_metrics=None,
+        )
