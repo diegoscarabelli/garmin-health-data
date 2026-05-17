@@ -76,6 +76,11 @@ _TCX_NAMESPACES = {
     "ax": "http://www.garmin.com/xmlschemas/ActivityExtension/v2",
 }
 
+# TCX <Cadence> is unit-ambiguous: rpm for cycling, spm (often doubled) for running.
+# The TCX schema carries no per-activity-type unit metadata to disambiguate, so all
+# cadence fields below leave units NULL rather than guess. Downstream consumers can
+# infer from `activity.sport_type` when needed.
+
 # Per-lap scalar summary fields: (metric_name, xpath, units).
 _TCX_LAP_SCALAR_FIELDS = [
     ("total_elapsed_time", "tcx:TotalTimeSeconds", "s"),
