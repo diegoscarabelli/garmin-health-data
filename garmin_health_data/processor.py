@@ -537,7 +537,7 @@ class GarminProcessor(Processor):
 
     def _process_activity_base(
         self, activity_data: Dict[str, Any], session: Session
-    ) -> int:
+    ) -> Optional[int]:
         """
         Extract activity fields and process to database using upsert with composite
         primary key.
@@ -545,9 +545,15 @@ class GarminProcessor(Processor):
         Uses pop() to remove processed fields from activity_data, enabling automatic
         supplemental metrics extraction without hardcoded exclusion lists.
 
+        Returns ``None`` when the activity is skipped (empty record, or a duplicate
+        ``(user_id, start_ts)`` collision with an existing activity in the database).
+        The caller treats ``None`` as "skip the rest of the per-activity pipeline" so
+        sport-specific aggregates and supplemental metrics are not attached to a non-
+        existent parent row.
+
         :param activity_data: Activity data from JSON (will be modified by pop()).
         :param session: SQLAlchemy Session object.
-        :return: Activity ID from the processed record.
+        :return: Activity ID from the processed record, or ``None`` if skipped.
         """
         # Extract activity ID.
         activity_id = activity_data.pop("activityId")
@@ -572,6 +578,40 @@ class GarminProcessor(Processor):
         # Create timezone-aware datetimes and calculate offset.
         start_ts = self._parse_garmin_gmt(start_time_gmt_str)
         end_ts = self._parse_garmin_gmt(end_time_gmt_str)
+
+        # Activity-level deduplication. The `activity` table has a
+        # UNIQUE (user_id, start_ts) constraint expressing the real-world
+        # invariant "one user, one activity at any given instant" (a sensible
+        # guard against accidental upserts). Garmin Connect, however, does not
+        # itself enforce this: users can create multiple activities with the
+        # same start_ts (e.g. manually entering the same workout twice, or
+        # uploading from two devices that recorded the same session). When that
+        # happens the API returns both as distinct activity_ids and a naive
+        # upsert keyed on the PK would raise IntegrityError on the secondary
+        # UNIQUE constraint, quarantining the entire (user, day) FileSet -
+        # losing sleep, HR, stress, and everything else for that day. Detect
+        # the conflict and skip the duplicate with a warning so the rest of the
+        # day's data still loads. The first-seen activity for that start_ts
+        # wins; subsequent duplicates are dropped. The user can resolve the
+        # underlying duplication by deleting one entry in Garmin Connect.
+        existing_dup = session.execute(
+            select(Activity.activity_id).where(
+                Activity.user_id == int(self.user_id),
+                Activity.start_ts == start_ts,
+                Activity.activity_id != activity_id,
+            )
+        ).scalar_one_or_none()
+        if existing_dup is not None:
+            click.secho(
+                f"⚠️ Skipping duplicate activity {activity_id} for user "
+                f"{self.user_id}: another activity (activity_id={existing_dup}) "
+                f"already exists with start_ts={start_ts}. This usually means "
+                f"the same workout was entered twice (e.g. a manual entry "
+                f"created twice by accident). Delete one in Garmin Connect to "
+                f"clean it up.",
+                fg="yellow",
+            )
+            return None
 
         # Calculate timezone offset in hours (decimal precision for half-hour zones).
         utc_naive = self._parse_garmin_iso(start_time_gmt_str)
