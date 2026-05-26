@@ -557,9 +557,45 @@ class GarminExtractor:
             f"{start_str}..{end_str}."
         )
 
+        # Wrap the whole pipeline (API call + splitter + per-day saves) in one
+        # try/except so any failure - HTTP error, splitter blowing up on an
+        # unexpected payload shape, disk I/O on a save - records the same
+        # per-window "<start>..<end>" failure label. Without this, a save error
+        # would bubble to the outer per-data-type handler with an empty date
+        # context, hiding which window was affected. We abort the rest of the
+        # range on a save failure rather than recording per-day failures inside
+        # the loop because the realistic causes (disk full, permission denied)
+        # would just generate noise across every subsequent day too.
         try:
             api_method = getattr(self.garmin_client, data_type.api_method)
             data = _with_retries(api_method, start_str, end_str)
+
+            if not data:
+                click.secho(
+                    f"{data_type.emoji} {data_type.name}: No data for "
+                    f"{start_str}..{end_str}.",
+                    fg="yellow",
+                )
+                return []
+
+            splitter = _PER_DAY_SPLITTERS.get(data_type.name)
+            if splitter is None:
+                # Unsplittable: one file stamped end_date, body contains all rows.
+                return self._save_garmin_data(data, data_type, end_date)
+
+            per_day = splitter(data)
+            if not per_day:
+                click.secho(
+                    f"{data_type.emoji} {data_type.name}: No data for "
+                    f"{start_str}..{end_str}.",
+                    fg="yellow",
+                )
+                return []
+
+            saved_files: List[Path] = []
+            for day in sorted(per_day):
+                saved_files.extend(self._save_garmin_data(per_day[day], data_type, day))
+            return saved_files
         except Exception as e:
             click.secho(
                 f"⚠️  {data_type.name} {start_str}..{end_str} failed: "
@@ -575,33 +611,6 @@ class GarminExtractor:
                 )
             )
             return []
-
-        if not data:
-            click.secho(
-                f"{data_type.emoji} {data_type.name}: No data for "
-                f"{start_str}..{end_str}.",
-                fg="yellow",
-            )
-            return []
-
-        splitter = _PER_DAY_SPLITTERS.get(data_type.name)
-        if splitter is None:
-            # Unsplittable: write one file stamped end_date, body contains all rows.
-            return self._save_garmin_data(data, data_type, end_date)
-
-        per_day = splitter(data)
-        if not per_day:
-            click.secho(
-                f"{data_type.emoji} {data_type.name}: No data for "
-                f"{start_str}..{end_str}.",
-                fg="yellow",
-            )
-            return []
-
-        saved_files: List[Path] = []
-        for day in sorted(per_day):
-            saved_files.extend(self._save_garmin_data(per_day[day], data_type, day))
-        return saved_files
 
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date

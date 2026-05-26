@@ -1470,6 +1470,87 @@ def test_extract_range_records_failure_with_range_label(tmp_path):
     assert "API outage" in failure.error
 
 
+def test_extract_range_records_failure_when_unsplittable_save_raises(tmp_path):
+    """
+    A disk I/O error during the unsplittable-RANGE save path
+    (``MENSTRUAL_CYCLE_SUMMARY``) must record the per-window ``"<start>..<end>"``
+    failure label, not let the exception bubble to the outer per-data-type handler with
+    an empty date context.
+
+    Regression guard against losing per-window error observability.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("MENSTRUAL_CYCLE_SUMMARY",),
+    )
+    extractor.user_id = "test-user"
+
+    summary_type = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_SUMMARY")
+    mock_api = MagicMock(return_value={"cycleSummaries": [{"startDate": "2025-01-15"}]})
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, summary_type.api_method, mock_api)
+
+    with patch.object(extractor, "_save_garmin_data", side_effect=OSError("disk full")):
+        saved = extractor._extract_range(
+            summary_type, date(2025, 1, 1), date(2025, 1, 31)
+        )
+
+    assert saved == []
+    assert len(extractor.failures) == 1
+    assert extractor.failures[0].data_type == "MENSTRUAL_CYCLE_SUMMARY"
+    assert extractor.failures[0].date == "2025-01-01..2025-01-31"
+    assert "disk full" in extractor.failures[0].error
+
+
+def test_extract_range_records_failure_when_splitter_raises(tmp_path):
+    """
+    An unexpected payload shape that crashes the splitter (e.g. a future API change)
+    must record the per-window ``"<start>..<end>"`` failure label, aborting the rest of
+    the per-day saves rather than partial-writing files until the crash point.
+
+    Regression guard against losing per-window error observability through the splitter
+    path.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("BODY_COMPOSITION",),
+    )
+    extractor.user_id = "test-user"
+
+    body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+    mock_api = MagicMock(return_value={"dateWeightList": [{"weight": 1.0}]})
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, body_comp.api_method, mock_api)
+
+    with patch(
+        "garmin_health_data.extractor._PER_DAY_SPLITTERS",
+        {"BODY_COMPOSITION": MagicMock(side_effect=RuntimeError("bad payload"))},
+    ):
+        saved = extractor._extract_range(body_comp, date(2025, 1, 1), date(2025, 1, 31))
+
+    assert saved == []
+    assert len(extractor.failures) == 1
+    assert extractor.failures[0].data_type == "BODY_COMPOSITION"
+    assert extractor.failures[0].date == "2025-01-01..2025-01-31"
+    assert "bad payload" in extractor.failures[0].error
+
+
 def test_extract_range_no_data_writes_no_file(tmp_path):
     """
     A falsy API response (None, {}) yields no saved file and no recorded failure —
