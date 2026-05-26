@@ -2524,7 +2524,7 @@ class GarminProcessor(Processor):
 
         # Wipe stale predictions before insert so the table reflects Garmin's
         # current projection set rather than the union of every past projection.
-        session.execute(
+        wipe_result = session.execute(
             delete(MenstrualCycleSummary).where(
                 and_(
                     MenstrualCycleSummary.user_id == int(self.user_id),
@@ -2532,9 +2532,13 @@ class GarminProcessor(Processor):
                 )
             )
         )
+        wiped_predicted = wipe_result.rowcount or 0
 
         if not cycle_summaries:
-            click.echo(f"No cycle summaries in {file_path.name}.")
+            click.echo(
+                f"No cycle summaries in {file_path.name}; "
+                f"wiped {wiped_predicted} stale predicted row(s)."
+            )
             return
 
         records = []
@@ -2563,7 +2567,10 @@ class GarminProcessor(Processor):
                 conflict_columns=["user_id", "start_date"],
                 on_conflict_update=True,
             )
-            click.echo(f"Processed {len(records)} menstrual cycle summary records.")
+            click.echo(
+                f"Processed {len(records)} menstrual cycle summary record(s); "
+                f"wiped {wiped_predicted} stale predicted row(s) first."
+            )
 
     def _process_personal_records(self, file_path: Path, session: Session):
         """
