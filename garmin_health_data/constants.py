@@ -152,6 +152,16 @@ class GarminDataRegistry:
                 "time-series data and goal tracking.",
                 "⚡",
             ),
+            GarminDataType(
+                "MENSTRUAL_CYCLE_DAY",
+                "get_menstrual_data_for_date",
+                APIMethodTimeParam.DAILY,
+                "/periodichealth-service/menstrualcycle/dayview/{date}",
+                "Daily menstrual cycle log: phase, day-in-cycle, period length, "
+                "logged symptoms/moods/discharge, flow, sex drive, sexual activity, "
+                "freeform notes, ovulation and baby-movement flags.",
+                "🩸",
+            ),
             # Range Data - Date range parameters: get_method(start_str, end_str)
             GarminDataType(
                 "BODY_COMPOSITION",
@@ -162,6 +172,19 @@ class GarminDataRegistry:
                 "muscle mass, physique rating, visceral fat, metabolic age. Multiple "
                 "entries per day if the user weighs more than once.",
                 "⚖️",
+            ),
+            GarminDataType(
+                "MENSTRUAL_CYCLE_SUMMARY",
+                "get_menstrual_calendar_data",
+                APIMethodTimeParam.RANGE,
+                "/periodichealth-service/menstrualcycle/calendar/{start}/{end}",
+                "Per-cycle summaries (observed and predicted): start date, period "
+                "length, predicted flag. Calendar endpoint has a 92-day max range "
+                "per request, paginated transparently by the wrapper for direct "
+                "callers. Note: today's extractor invokes RANGE methods day-by-day "
+                "with startdate=enddate, so a multi-day extract makes one API call "
+                "and one wipe-and-replace processor cycle per day. Tracked in #62.",
+                "🩸",
             ),
             GarminDataType(
                 "ACTIVITIES_LIST",
@@ -346,6 +369,22 @@ class SleepStage(IntEnum):
     LIGHT = 1
     REM = 2
     AWAKE = 3
+
+
+class MenstrualCyclePhase(IntEnum):
+    """
+    Discrete menstrual cycle phase classification used by Garmin Connect.
+
+    Values map to the integer codes found in the MENSTRUAL_CYCLE_DAY JSON response under
+    daySummary.currentPhase. The enum name (e.g. "MENSTRUAL") is stored in
+    menstrual_cycle_day.current_phase as a denormalized human-readable label; the
+    integer index is not persisted.
+    """
+
+    MENSTRUAL = 1
+    FOLLICULAR = 2
+    OVULATORY = 3
+    LUTEAL = 4
 
 
 PR_TYPE_LABELS = {

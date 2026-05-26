@@ -148,19 +148,22 @@ class TestRefreshTokens:
         self,
         mock_echo: MagicMock,
         mock_garmin_class: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """
         Test successful token refresh without MFA.
 
         :param mock_echo: Mock click.echo function.
         :param mock_garmin_class: Mock Garmin class.
+        :param tmp_path: Per-test token directory so the real auth code does not pollute
+            ``~/.garminconnect/`` with the mocked profile id.
         """
         mock_garmin = MagicMock()
         mock_garmin.login.return_value = None
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
-        refresh_tokens("test@example.com", "password123")
+        refresh_tokens("test@example.com", "password123", base_token_dir=str(tmp_path))
 
         mock_garmin_class.assert_called_once()
         mock_garmin.login.assert_called_once()
@@ -175,6 +178,7 @@ class TestRefreshTokens:
         mock_echo: MagicMock,
         mock_get_mfa: MagicMock,
         mock_garmin_class: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """
         Test successful token refresh with MFA.
@@ -182,6 +186,8 @@ class TestRefreshTokens:
         :param mock_echo: Mock click.echo function.
         :param mock_get_mfa: Mock get_mfa_code function.
         :param mock_garmin_class: Mock Garmin class.
+        :param tmp_path: Per-test token directory so the real auth code does not pollute
+            ``~/.garminconnect/`` with the mocked profile id.
         """
         mock_get_mfa.return_value = "123456"
         mock_garmin = MagicMock()
@@ -189,7 +195,7 @@ class TestRefreshTokens:
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
-        refresh_tokens("test@example.com", "password123")
+        refresh_tokens("test@example.com", "password123", base_token_dir=str(tmp_path))
 
         mock_garmin_class.assert_called_once()
         mock_garmin.login.assert_called_once()
@@ -205,6 +211,7 @@ class TestRefreshTokens:
         mock_secho: MagicMock,
         mock_echo: MagicMock,
         mock_garmin_class: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """
         Test token refresh failure with invalid credentials.
@@ -212,6 +219,8 @@ class TestRefreshTokens:
         :param mock_secho: Mock click.secho function.
         :param mock_echo: Mock click.echo function.
         :param mock_garmin_class: Mock Garmin class.
+        :param tmp_path: Per-test token directory so the real auth code does not pollute
+            ``~/.garminconnect/`` if it ever reaches the mkdir step.
         """
         import click
 
@@ -220,7 +229,11 @@ class TestRefreshTokens:
         mock_garmin_class.return_value = mock_garmin
 
         with pytest.raises(click.ClickException, match="Authentication failed"):
-            refresh_tokens("invalid@example.com", "wrong_password")
+            refresh_tokens(
+                "invalid@example.com",
+                "wrong_password",
+                base_token_dir=str(tmp_path),
+            )
 
         # Should not call dump if login fails.
         mock_garmin.dump.assert_not_called()
@@ -233,6 +246,7 @@ class TestRefreshTokens:
         mock_echo: MagicMock,
         mock_get_mfa: MagicMock,
         mock_garmin_class: MagicMock,
+        tmp_path: Path,
     ) -> None:
         """
         Test MFA authentication with retry on first failure.
@@ -240,6 +254,8 @@ class TestRefreshTokens:
         :param mock_echo: Mock click.echo function.
         :param mock_get_mfa: Mock get_mfa_code function.
         :param mock_garmin_class: Mock Garmin class.
+        :param tmp_path: Per-test token directory so the real auth code does not pollute
+            ``~/.garminconnect/`` with the mocked profile id.
         """
         mock_get_mfa.side_effect = ["000000", "123456"]
         mock_garmin = MagicMock()
@@ -251,7 +267,7 @@ class TestRefreshTokens:
         mock_garmin.get_user_profile.return_value = {"id": "12345678"}
         mock_garmin_class.return_value = mock_garmin
 
-        refresh_tokens("test@example.com", "password123")
+        refresh_tokens("test@example.com", "password123", base_token_dir=str(tmp_path))
 
         assert mock_garmin.resume_login.call_count == 2
         mock_garmin.dump.assert_called_once()

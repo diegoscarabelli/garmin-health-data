@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
 
 ## Features
 
-- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
@@ -383,11 +383,12 @@ If all five strategies are exhausted without success (uncommon — typically onl
 <details>
 <summary><strong>Duplicate prevention &amp; reprocessing</strong></summary>
 
-Duplicates are prevented through a three-tier approach:
+Duplicates are prevented through a four-tier approach:
 
-1. **Activity metrics from FIT or TCX files** (time-series, laps, splits): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction, handling added/removed laps or records between reprocesses. The `ts_data_available` flag tracks whether time-series data exists. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
+1. **Activity metrics from FIT or TCX files** (time-series, laps, splits) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
 2. **JSON wellness time-series** (heart rate, sleep movement, stress, body battery, etc.): `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts.
-3. **Main records** (activities, sleep, user profile): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
+3. **Main records** (activities, sleep, user profile, menstrual cycle day, observed menstrual cycle summaries): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
+4. **Predicted menstrual cycle summaries** (`menstrual_cycle_summary` rows with `predicted_cycle = TRUE`): wipe-and-replace per extract. Garmin recomputes its projected start dates as new data is logged, so a pure upsert would accumulate stale predicted rows whose `start_date` PK no longer matches the latest projection. The processor `DELETE`s all predicted rows for the user before inserting the new set; observed (logged) cycles use pattern 3 and survive untouched.
 
 This means you can safely:
 
@@ -508,6 +509,8 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 | **STEPS** | Step counts and activity levels | 15-min intervals |
 | **FLOORS** | Floors climbed and descended | 15-min intervals |
 | **INTENSITY_MINUTES** | Moderate/vigorous activity minutes | 15-min intervals |
+| **MENSTRUAL_CYCLE_DAY** | Per-day cycle state: phase, day-in-cycle, period length, plus the user's symptoms / moods / discharge tags, flow, sex drive, sexual activity, notes, ovulation flag on logged days | Per day inside any observed or predicted cycle window |
+| **MENSTRUAL_CYCLE_SUMMARY** | Per-cycle summaries (observed + predicted): start date, period length | Per cycle |
 | **BODY_COMPOSITION** | Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, muscle mass | Per weigh-in |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |
 | **EXERCISE_SETS** | Per-set strength training data: reps, weight, ML-classified exercise name | Per activity |
@@ -518,7 +521,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 
 ### Database Schema
 
-The SQLite database contains 35 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 38 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -636,6 +639,16 @@ race_predictions (predicted race times)
 
 *Foreign keys: all tables → `user.user_id`. Note: `personal_record.activity_id` column exists but has no FK constraint (allows processing PRs before the linked activity is extracted).*
 
+**Cycle Tracking (3 tables)**
+
+```
+menstrual_cycle_day (daily cycle log: phase, day-in-cycle, flow, notes, ovulation flag)
+├── menstrual_cycle_tag (symptoms / moods / discharge tagged on a day)
+menstrual_cycle_summary (per-cycle summaries: start date, period length, predicted flag)
+```
+
+*Foreign keys: `menstrual_cycle_day` → `user.user_id`; `menstrual_cycle_tag` → `menstrual_cycle_day(user_id, date)` ON DELETE CASCADE; `menstrual_cycle_summary` → `user.user_id`. Per-cycle summaries from Garmin's calendar endpoint include both user-logged cycles and Garmin's projections of upcoming cycles (predicted_cycle column). Predicted rows are wiped and re-inserted on every extract because Garmin recomputes projections as new data is logged; observed rows are upserted by `(user_id, start_date)`.*
+
 </details>
 
 ## Privacy & Security
@@ -643,10 +656,11 @@ race_predictions (predicted race times)
 - **Your credentials never leave your machine**: they're only used to obtain OAuth tokens, stored locally in `~/.garminconnect/<user_id>/`. On Unix-like systems, token directories and files are locked to owner-only access (0o700 directories, 0o600 files); on Windows, standard user-profile permissions apply.
 - **All data stays on your machine**: no cloud services involved.
 - **No analytics or tracking**: this tool doesn't send any data anywhere except querying the Garmin Connect API directly.
+- **Sensitive cycle-tracking fields**: when `MENSTRUAL_CYCLE_DAY` is extracted, the per-day log includes the user's freeform `notes`, `sexual_activity`, and `sex_drive` fields alongside the cycle-state scalars. These are captured for completeness so the local database is a faithful mirror of what Garmin Connect stores. They never leave the machine, but they are more sensitive than HR or steps; reviewers of the `garmin_data.db` file should know they're there.
 
 ## Comparison With Other Tools
 
-**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 34-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
+**[garmin-health-data](https://github.com/diegoscarabelli/garmin-health-data)** is designed for comprehensive data extraction with a well-structured relational schema that supports both human-powered analytics and LLM-powered analysis via agents querying the locally created SQLite file. It extracts complete FIT file data with per-second activity metrics, 1-minute sleep intervals, and sport-specific tables for detailed analysis. The normalized 38-table schema with explicit SQL constraints ensures data integrity and makes it easy to understand relationships for complex queries, power zone analysis, running dynamics, and long-term trend studies.
 
 **[garmy](https://github.com/bes-dev/garmy)** is optimized for programmatic access to the Garmin Connect API, particularly useful for AI assistant integration via its built-in MCP (Model Context Protocol) server. It enables real-time interaction with Claude Desktop or custom chatbots for quick daily insights and summaries. However, it's limited to API-provided metrics (daily aggregates only, no FIT file access), making deep analytics or granular time-series analysis impossible. Best suited for lightweight health monitoring apps that prioritize AI integration over comprehensive data collection.
 
@@ -665,7 +679,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 | **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ❌ | ❌ |
 | **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ❌ | ❌ |
 | **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ❌ | ❌ |
-| **Database schema quality** | ✅ Normalized, 35 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
+| **Database schema quality** | ✅ Normalized, 38 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | N/A | N/A |
 | **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | N/A | N/A |
 | **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ⚠️ Limited |

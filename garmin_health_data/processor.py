@@ -28,6 +28,7 @@ from garmin_health_data.constants import (
     GARMIN_DATA_REGISTRY,
     PR_TYPE_LABELS,
     SEMICIRCLES_TO_DEGREES,
+    MenstrualCyclePhase,
     SleepStage,
 )
 from garmin_health_data.models import (
@@ -45,6 +46,9 @@ from garmin_health_data.models import (
     HeartRate,
     HRV,
     IntensityMinutes,
+    MenstrualCycleDay,
+    MenstrualCycleSummary,
+    MenstrualCycleTag,
     PersonalRecord,
     RacePredictions,
     Respiration,
@@ -168,6 +172,8 @@ class GarminProcessor(Processor):
                 ("FLOORS", self._process_floors),
                 ("HEART_RATE", self._process_heart_rate),
                 ("INTENSITY_MINUTES", self._process_intensity_minutes),
+                ("MENSTRUAL_CYCLE_DAY", self._process_menstrual_cycle_day),
+                ("MENSTRUAL_CYCLE_SUMMARY", self._process_menstrual_cycle_summary),
                 ("PERSONAL_RECORDS", self._process_personal_records),
                 ("RACE_PREDICTIONS", self._process_race_predictions),
                 ("RESPIRATION", self._process_respiration),
@@ -2371,6 +2377,200 @@ class GarminProcessor(Processor):
             click.echo(f"Processed {len(floors_records)} floors records.")
         else:
             click.secho("⚠️ No floors data found.", fg="yellow")
+
+    def _process_menstrual_cycle_day(self, file_path: Path, session: Session):
+        """
+        Process a MENSTRUAL_CYCLE_DAY file containing one day's cycle log.
+
+        Upserts the day row keyed by ``(user_id, date)``. Then runs delete-then-insert
+        for that day's tags (symptoms, moods, discharge) so user removals propagate on
+        reprocess. The integer ``daySummary.currentPhase`` is translated to a textual
+        label via ``MenstrualCyclePhase`` and stored denormalized in ``current_phase``;
+        the integer index is not persisted.
+
+        :param file_path: Path to the MENSTRUAL_CYCLE_DAY JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        day_summary = payload.get("daySummary") or {}
+        day_log = payload.get("dayLog") or {}
+
+        # Recover the data date. Prefer dayLog.calendarDate; fall back to the
+        # filename timestamp (a midday UTC stamp built from the queried date).
+        date_str = day_log.get("calendarDate")
+        if not date_str:
+            ts_str = self._parse_filename(file_path.name)["timestamp"]
+            date_str = ts_str.split("T", 1)[0]
+        day_date = self._parse_date_string(date_str)
+
+        # Translate the numeric phase to a denormalized text label.
+        phase_int = day_summary.get("currentPhase")
+        current_phase_label: Optional[str] = None
+        if phase_int is not None:
+            try:
+                current_phase_label = MenstrualCyclePhase(phase_int).name
+            except ValueError:
+                click.secho(
+                    f"⚠️ Unknown menstrual cycle phase code {phase_int!r} in "
+                    f"{file_path.name}; storing as 'UNKNOWN_{phase_int}'.",
+                    fg="yellow",
+                )
+                current_phase_label = f"UNKNOWN_{phase_int}"
+
+        # Parse cycle start date (may be missing for fully-unlogged days).
+        cycle_start_str = day_summary.get("startDate")
+        cycle_start_date = (
+            self._parse_date_string(cycle_start_str) if cycle_start_str else None
+        )
+
+        # Parse the user's last-edit timestamp.
+        report_ts_str = day_log.get("reportTimestamp")
+        report_ts = self._parse_garmin_iso(report_ts_str) if report_ts_str else None
+
+        day_record = MenstrualCycleDay(
+            user_id=int(self.user_id),
+            date=day_date,
+            cycle_start_date=cycle_start_date,
+            day_in_cycle=day_summary.get("dayInCycle"),
+            period_length=day_summary.get("periodLength"),
+            current_phase=current_phase_label,
+            length_of_current_phase=day_summary.get("lengthOfCurrentPhase"),
+            days_until_next_phase=day_summary.get("daysUntilNextPhase"),
+            predicted_cycle_length=day_summary.get("predictedCycleLength"),
+            cycle_type=day_summary.get("cycleType"),
+            predicted_cycle=day_summary.get("predictedCycle"),
+            flow=day_log.get("flow"),
+            sex_drive=day_log.get("sexDrive"),
+            sexual_activity=day_log.get("sexualActivity"),
+            notes=day_log.get("notes"),
+            report_ts=report_ts,
+            has_baby_movement=day_log.get("hasBabyMovement"),
+            ovulation_day=day_log.get("ovulationDay"),
+        )
+        upsert_model_instances(
+            session=session,
+            model_instances=[day_record],
+            conflict_columns=["user_id", "date"],
+            on_conflict_update=True,
+        )
+
+        # Delete-then-insert per (user_id, date) for all three tag kinds. This is the
+        # only safe pattern because users can REMOVE tags between extracts; a pure
+        # upsert-by-PK would leave orphan rows for removed tags. One DELETE clears
+        # symptoms, moods, and discharge together; one INSERT batch repopulates them.
+        session.execute(
+            delete(MenstrualCycleTag).where(
+                and_(
+                    MenstrualCycleTag.user_id == int(self.user_id),
+                    MenstrualCycleTag.date == day_date,
+                )
+            )
+        )
+
+        # Garmin currently returns each tag list as a flat list of string enums
+        # (e.g. ['BACKACHE', 'CRAMPS']). If a future Garmin change enriches the
+        # shape (e.g. {'name': 'CRAMPS', 'severity': 'MILD'}), skip non-string
+        # entries with a warning rather than silently stringifying the dict into
+        # the `name` column.
+        tag_records: List[MenstrualCycleTag] = []
+        for kind, names in (
+            ("SYMPTOM", day_log.get("symptoms") or []),
+            ("MOOD", day_log.get("moods") or []),
+            ("DISCHARGE", day_log.get("discharge") or []),
+        ):
+            for name in names:
+                if not name:
+                    continue
+                if not isinstance(name, str):
+                    click.secho(
+                        f"⚠️ Skipping non-string {kind} tag in "
+                        f"{file_path.name}: {name!r}.",
+                        fg="yellow",
+                    )
+                    continue
+                tag_records.append(
+                    MenstrualCycleTag(
+                        user_id=int(self.user_id),
+                        date=day_date,
+                        kind=kind,
+                        name=name,
+                    )
+                )
+
+        if tag_records:
+            session.add_all(tag_records)
+
+        click.echo(
+            f"Processed menstrual cycle day for {day_date} "
+            f"({len(tag_records)} tags)."
+        )
+
+    def _process_menstrual_cycle_summary(self, file_path: Path, session: Session):
+        """
+        Process a MENSTRUAL_CYCLE_SUMMARY file from the calendar endpoint.
+
+        Wipes all ``predicted_cycle=True`` rows for the current user before inserting
+        the new payload. Real (user-logged) cycles use upsert by ``(user_id,
+        start_date)`` because their start date is anchored to an observed event and does
+        not drift between extracts. Predictions, by contrast, shift dates as Garmin
+        recomputes projections, so wipe-and-replace is the only way to keep the table
+        mirroring the current Garmin state without accumulating stale predicted rows.
+
+        :param file_path: Path to the MENSTRUAL_CYCLE_SUMMARY JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        cycle_summaries = payload.get("cycleSummaries") or []
+
+        # Wipe stale predictions before insert so the table reflects Garmin's
+        # current projection set rather than the union of every past projection.
+        wipe_result = session.execute(
+            delete(MenstrualCycleSummary).where(
+                and_(
+                    MenstrualCycleSummary.user_id == int(self.user_id),
+                    MenstrualCycleSummary.predicted_cycle.is_(True),
+                )
+            )
+        )
+        wiped_predicted = wipe_result.rowcount or 0
+
+        if not cycle_summaries:
+            click.echo(
+                f"No cycle summaries in {file_path.name}; "
+                f"wiped {wiped_predicted} stale predicted row(s)."
+            )
+            return
+
+        records = []
+        for cycle in cycle_summaries:
+            start_date_str = cycle.get("startDate")
+            if not start_date_str:
+                click.secho(
+                    f"⚠️ Skipping cycle summary entry with no startDate in "
+                    f"{file_path.name}: {cycle}",
+                    fg="yellow",
+                )
+                continue
+            records.append(
+                MenstrualCycleSummary(
+                    user_id=int(self.user_id),
+                    start_date=self._parse_date_string(start_date_str),
+                    period_length=cycle.get("periodLength"),
+                    predicted_cycle=bool(cycle.get("predictedCycle", False)),
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "start_date"],
+                on_conflict_update=True,
+            )
+            click.echo(
+                f"Processed {len(records)} menstrual cycle summary record(s); "
+                f"wiped {wiped_predicted} stale predicted row(s) first."
+            )
 
     def _process_personal_records(self, file_path: Path, session: Session):
         """

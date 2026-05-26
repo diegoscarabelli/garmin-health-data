@@ -1,7 +1,7 @@
 """
 API method implementations for the vendored Garmin Connect client.
 
-Each function here corresponds to one of the 16 Garmin Connect endpoints the
+Each function here corresponds to one of the Garmin Connect endpoints the
 openetl pipeline consumes. The functions are written as plain functions taking
 the ``GarminClient`` instance as their first argument so that the client class
 can stay slim, and so that the file is testable in isolation.
@@ -9,18 +9,19 @@ can stay slim, and so that the file is testable in isolation.
 Method-to-endpoint mapping is inherited from the upstream ``python-garminconnect``
 library; URL templates live in :mod:`.constants`.
 
-The 16 supported endpoints:
+The supported endpoints:
 
 - Daily wellness:        sleep, stress, respiration, heart_rates, training_readiness,
-                         training_status, steps, floors, intensity_minutes
+                         training_status, steps, floors, intensity_minutes,
+                         menstrual_cycle_dayview
 - Range data:            activities_by_date (paginated), activity_exercise_sets,
-                         body_composition
+                         body_composition, menstrual_cycle_calendar (paginated)
 - No-date metadata:      personal_records, race_predictions, user_profile
 - Binary download:       download_activity (FIT/TCX/GPX/KML/CSV)
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -37,6 +38,9 @@ from .constants import (
     GPX_DOWNLOAD_URL,
     HEART_RATES_DAILY_URL,
     KML_DOWNLOAD_URL,
+    MENSTRUAL_CALENDAR_MAX_DAYS,
+    MENSTRUAL_CALENDAR_URL,
+    MENSTRUAL_DAYVIEW_URL,
     PERSONAL_RECORD_URL,
     RACE_PREDICTOR_URL,
     TCX_DOWNLOAD_URL,
@@ -233,6 +237,38 @@ def get_intensity_minutes_data(client: "GarminClient", cdate: str) -> Dict[str, 
     return client._connectapi(url)
 
 
+def get_menstrual_data_for_date(
+    client: "GarminClient", cdate: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch menstrual cycle dayview data for the given date.
+
+    The dayview endpoint returns the per-day cycle state (phase, day-in-cycle, predicted
+    cycle length) wrapped in ``daySummary`` plus the user's logged data (symptoms,
+    moods, discharge, flow, sex drive, sexual activity, notes, ovulation/baby-movement
+    flags) wrapped in ``dayLog``. Days inside a predicted-cycle window return
+    ``daySummary`` populated and ``dayLog: null``; days outside every cycle window
+    return a bare ``{}``.
+
+    Returns ``None`` when neither ``daySummary`` nor ``dayLog`` is present. The
+    extractor's ``if data:`` check already drops a bare ``{}`` (it's falsy), but this
+    wrapper additionally drops *truthy* response shapes that lack the expected keys
+    (e.g. an unexpected wrapper-only dict) so the extractor never persists meaningless
+    payloads to disk.
+
+    :param client: GarminClient instance.
+    :param cdate: Date in ``YYYY-MM-DD`` format.
+    :return: Menstrual cycle dictionary with ``daySummary`` and ``dayLog`` keys, or
+        ``None`` when no cycle data exists for the date.
+    """
+    cdate = _validate_date_format(cdate, "cdate")
+    url = f"{MENSTRUAL_DAYVIEW_URL}/{cdate}"
+    result = client._connectapi(url)
+    if result and (result.get("daySummary") or result.get("dayLog")):
+        return result
+    return None
+
+
 def get_body_composition(
     client: "GarminClient", startdate: str, enddate: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
@@ -265,6 +301,79 @@ def get_body_composition(
     if result and result.get("dateWeightList"):
         return result
     return None
+
+
+def get_menstrual_calendar_data(
+    client: "GarminClient", startdate: str, enddate: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch menstrual cycle summaries (observed and predicted) for a date range.
+
+    The Garmin calendar endpoint enforces a hard ``MENSTRUAL_CALENDAR_MAX_DAYS``
+    (92-day) max range per request. This wrapper chunks longer ranges into contiguous
+    sub-windows, calls the endpoint once per chunk, and merges results. Duplicate
+    ``cycleSummaries`` entries (a single cycle may appear in adjacent chunks) are
+    deduped by ``startDate``; ``loggedSymptomDays`` / ``loggedOvulationDays`` /
+    ``loggedNoteDays`` are merged into sorted unique lists.
+
+    Returns ``None`` only when no chunk produced a response (e.g. transport failure on
+    every chunk). A successful response with zero cycles still returns the merged shape
+    with empty arrays so the file lands and ``_process_menstrual_cycle_summary`` can
+    fire its wipe-and-replace policy for stale predicted rows. Without this, a user who
+    stopped tracking cycles (or never had any in the queried window) would leave
+    previously-extracted predicted rows stranded in the database.
+
+    :param client: GarminClient instance.
+    :param startdate: Range start (``YYYY-MM-DD``, inclusive).
+    :param enddate: Range end (``YYYY-MM-DD``, inclusive). Defaults to ``startdate``.
+    :return: Merged calendar dictionary (possibly with empty arrays), or ``None`` when
+        no chunk in the range produced a response.
+    """
+    startdate = _validate_date_format(startdate, "startdate")
+    if enddate is None:
+        enddate = startdate
+    else:
+        enddate = _validate_date_format(enddate, "enddate")
+
+    start = datetime.strptime(startdate, _DATE_FORMAT_STR).date()
+    end = datetime.strptime(enddate, _DATE_FORMAT_STR).date()
+    if end < start:
+        raise ValueError(
+            f"enddate ({enddate}) must be on or after startdate ({startdate})"
+        )
+
+    chunk_step = timedelta(days=MENSTRUAL_CALENDAR_MAX_DAYS - 1)
+    cycles_by_start: Dict[str, Dict[str, Any]] = {}
+    logged_symptom: set = set()
+    logged_ovulation: set = set()
+    logged_note: set = set()
+    got_response = False
+
+    chunk_start = start
+    while chunk_start <= end:
+        chunk_end = min(chunk_start + chunk_step, end)
+        url = f"{MENSTRUAL_CALENDAR_URL}/{chunk_start.isoformat()}/{chunk_end.isoformat()}"
+        result = client._connectapi(url)
+        if result is not None:
+            got_response = True
+            for cycle in result.get("cycleSummaries") or []:
+                cycle_start = cycle.get("startDate")
+                if cycle_start:
+                    cycles_by_start[cycle_start] = cycle
+            logged_symptom.update(result.get("loggedSymptomDays") or [])
+            logged_ovulation.update(result.get("loggedOvulationDays") or [])
+            logged_note.update(result.get("loggedNoteDays") or [])
+        chunk_start = chunk_end + timedelta(days=1)
+
+    if not got_response:
+        return None
+
+    return {
+        "cycleSummaries": [cycles_by_start[k] for k in sorted(cycles_by_start)],
+        "loggedSymptomDays": sorted(logged_symptom),
+        "loggedOvulationDays": sorted(logged_ovulation),
+        "loggedNoteDays": sorted(logged_note),
+    }
 
 
 # ----------------------------------------------------------------------------------------

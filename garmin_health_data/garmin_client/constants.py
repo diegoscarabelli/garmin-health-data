@@ -122,6 +122,12 @@ RACE_PREDICTOR_URL = "/metrics-service/metrics/racepredictions"
 # Personal records.
 PERSONAL_RECORD_URL = "/personalrecord-service/personalrecord/prs"
 
+# Menstrual cycle (periodic health). Calendar enforces a hard 92-day max range
+# per request; the API wrapper paginates internally for longer windows.
+MENSTRUAL_DAYVIEW_URL = "/periodichealth-service/menstrualcycle/dayview"
+MENSTRUAL_CALENDAR_URL = "/periodichealth-service/menstrualcycle/calendar"
+MENSTRUAL_CALENDAR_MAX_DAYS = 92
+
 # Activities.
 ACTIVITIES_URL = "/activitylist-service/activities/search/activities"
 ACTIVITY_URL = "/activity-service/activity"

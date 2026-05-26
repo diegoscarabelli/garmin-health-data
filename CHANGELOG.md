@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-05-26
+
+### Added
+
+- **Menstrual cycle data extraction** ([#61](https://github.com/diegoscarabelli/garmin-health-data/issues/61), [#64](https://github.com/diegoscarabelli/garmin-health-data/pull/64)): two new Garmin Connect data types backed by the `periodic-health` service. `MENSTRUAL_CYCLE_DAY` (DAILY) extracts the per-day cycle state from the `dayview` endpoint: phase (MENSTRUAL / FOLLICULAR / OVULATORY / LUTEAL), day-in-cycle, period length, predicted cycle length, plus the user's symptoms / moods / discharge tags, flow, sex drive, sexual activity, freeform notes, ovulation and baby-movement flags. `MENSTRUAL_CYCLE_SUMMARY` (RANGE) extracts per-cycle summaries from the `calendar` endpoint, covering both user-logged cycles and Garmin's projections of upcoming cycles; the API wrapper paginates >92-day ranges into the endpoint's max chunk size and merges results, deduping by `startDate`. Rows persist for any day inside an observed or predicted cycle window; days the user has not logged within a predicted window get `daySummary` filled in and `dayLog` columns NULL.
+- **Three new schema tables (total 35 → 38)**: `menstrual_cycle_day` (one row per day inside any observed or predicted cycle window, UPSERT by `(user_id, date)`); `menstrual_cycle_tag` (polymorphic tag table for symptoms / moods / discharge with a composite `(user_id, date)` cascade FK to `menstrual_cycle_day`; processor uses delete-then-reinsert per day so user-removed tags propagate); `menstrual_cycle_summary` (one row per cycle, observed rows UPSERT by `(user_id, start_date)`, predicted rows wipe-and-replace on every extract because Garmin recomputes projection dates as new data is logged). Cycle length is intentionally not stored; derive in SQL via `LEAD(start_date) OVER (PARTITION BY user_id ORDER BY start_date) - start_date`.
+- **`MenstrualCyclePhase` IntEnum** mirroring the `SleepStage` precedent (1=MENSTRUAL, 2=FOLLICULAR, 3=OVULATORY, 4=LUTEAL): the raw integer index from `daySummary.currentPhase` is denormalized to the text label and stored in `menstrual_cycle_day.current_phase`; the integer is not persisted.
+
+### Changed
+
+- **Duplicate prevention is now a four-tier approach** (was three-tier). The new fourth tier documents the wipe-and-replace policy for predicted menstrual cycle summary rows: Garmin's projected start dates drift between runs, so the `(user_id, start_date)` PK no longer matches the latest projection on each extract; a pure UPSERT would accumulate stale predicted rows. The processor `DELETE`s all `predicted_cycle = TRUE` rows for the user before inserting the new set; observed cycles continue to UPSERT and survive untouched.
+
+### Fixed
+
+- **Test pollution: `tests/test_auth_extended.py` created an empty `~/.garminconnect/12345678/` directory on every CI run** ([#64](https://github.com/diegoscarabelli/garmin-health-data/pull/64)). The four `TestRefreshTokens` cases called `refresh_tokens()` without overriding the default `base_token_dir="~/.garminconnect"`. Because `get_user_profile` was mocked to return `{"id": "12345678"}`, the real auth code's `Path.mkdir` ran against `~/.garminconnect`. `garmin.dump()` was a MagicMock so no token file was written, but the empty directory was then discovered as a candidate account by subsequent `garmin extract` runs and surfaced as a phantom user. Tests now pass `base_token_dir=str(tmp_path)`.
+- **Wrapper returning `None` for empty calendar responses made the wipe-and-replace path unreachable** ([#64](https://github.com/diegoscarabelli/garmin-health-data/pull/64)). The original `get_menstrual_calendar_data` returned `None` whenever the API responded with no cycles. Because the extractor guards file writes with `if data:`, no file landed and the processor never ran, so stale `predicted_cycle = TRUE` rows from earlier extracts could not be wiped if the user later stopped tracking cycles or queried a window with no cycles. Fix distinguishes "transport failure on every chunk" (still returns `None`) from "HTTP success with `cycleSummaries: []`" (returns the merged shape with empty arrays so the file lands and the wipe fires).
+
 ## [2.10.0] - 2026-05-16
 
 ### Added
