@@ -1091,12 +1091,14 @@ class ActivityTsMetricDownsampled(Base, InsertBase):
 
 class MenstrualCycleDay(Base, UpsertBase):
     """
-    Daily menstrual cycle log from Garmin Connect's periodic-health service.
+    Daily menstrual cycle state from Garmin Connect's periodic-health service.
 
-    Combines the dayview endpoint's daySummary (computed cycle state) and dayLog (user-
-    supplied data) into one row per logged day. Re-extracting the same day refreshes
-    scalars via upsert; tag-shaped sub-fields (symptoms, moods, discharge) live in
-    MenstrualCycleTag with delete-then-insert semantics on every reprocess.
+    One row per day inside any observed or predicted cycle window. Combines the dayview
+    endpoint's daySummary (computed cycle state, always present when the day falls in a
+    cycle window) and dayLog (user-supplied data, NULL for predicted- cycle days the
+    user has not logged). Re-extracting the same day refreshes scalars via upsert; tag-
+    shaped sub-fields (symptoms, moods, discharge) live in MenstrualCycleTag with
+    delete-then-insert semantics on every reprocess.
     """
 
     __tablename__ = "menstrual_cycle_day"

@@ -116,11 +116,15 @@ class TestGetBodyComposition:
 
 class TestGetMenstrualDataForDate:
     """
-    Tests for :func:`api.get_menstrual_data_for_date` empty-response normalization.
+    Tests for :func:`api.get_menstrual_data_for_date` response-shape normalization.
 
-    The Garmin dayview endpoint returns a bare ``{}`` for unlogged days, which the
-    extractor's generic truthiness check would otherwise misclassify as non-empty.
-    ``get_menstrual_data_for_date`` must collapse that shape to ``None``.
+    The dayview endpoint returns a bare ``{}`` for days outside every cycle window. That
+    alone would be filtered by the extractor's ``if data:`` truthiness check (``{}`` is
+    falsy in Python). The wrapper's additional value is filtering *truthy* response
+    shapes that lack the expected ``daySummary`` / ``dayLog`` keys (e.g. an unexpected
+    wrapper-only dict) so the extractor never persists meaningless payloads. These tests
+    cover both the falsy-empty and truthy-but- unknown paths, plus the happy-path
+    passthroughs.
     """
 
     def test_returns_payload_when_logged(self) -> None:
