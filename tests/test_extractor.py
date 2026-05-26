@@ -1455,7 +1455,7 @@ def test_garmin_client_exposes_a_delegator_for_every_registered_api_method():
     method on :class:`GarminClient`. The extractor calls ``getattr(self.garmin_client,
     data_type.api_method)``; a missing delegator raises ``AttributeError`` only at
     runtime, which the unit tests for the plain ``api.<method>`` functions can't catch
-    because they call the module- level function directly. This parametric check closes
+    because they call the module-level function directly. This parametric check closes
     that gap.
 
     Discovered during PR #64: ``get_menstrual_data_for_date`` and
