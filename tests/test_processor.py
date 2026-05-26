@@ -7,7 +7,7 @@ strength training data processing.
 
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +25,9 @@ from garmin_health_data.models import (
     ActivityTsMetric,
     BodyComposition,
     BreathingDisruption,
+    MenstrualCycleDay,
+    MenstrualCycleSummary,
+    MenstrualCycleTag,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -1941,6 +1944,423 @@ class TestProcessBodyComposition:
 
         rows = db_session.execute(select(BodyComposition)).scalars().all()
         assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Menstrual cycle tests ----------------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+def _menstrual_day_payload(
+    symptoms=None,
+    moods=None,
+    discharge=None,
+    phase=1,
+    flow="HEAVY",
+    notes="test",
+    ovulation_day=True,
+    report_ts="2026-05-25T18:34:49.9",
+    calendar_date="2026-05-25",
+    cycle_start_date="2026-05-23",
+):
+    """
+    Build a representative MENSTRUAL_CYCLE_DAY JSON payload (probe-shaped).
+    """
+    return {
+        "daySummary": {
+            "startDate": cycle_start_date,
+            "dayInCycle": 3,
+            "periodLength": 3,
+            "currentPhase": phase,
+            "lengthOfCurrentPhase": 3,
+            "daysUntilNextPhase": 1,
+            "predictedCycleLength": 28,
+            "cycleType": "REGULAR",
+            "predictedCycle": False,
+        },
+        "dayLog": {
+            "userProfilePk": 999,
+            "calendarDate": calendar_date,
+            "symptoms": symptoms if symptoms is not None else ["BACKACHE", "CRAMPS"],
+            "moods": moods if moods is not None else ["HAPPY"],
+            "discharge": discharge if discharge is not None else ["CREAMY"],
+            "flow": flow,
+            "sexDrive": "AVERAGE",
+            "sexualActivity": "PROTECTED",
+            "notes": notes,
+            "reportTimestamp": report_ts,
+            "hasBabyMovement": False,
+            "ovulationDay": ovulation_day,
+        },
+    }
+
+
+def _seed_user_999(db_session: Session) -> None:
+    """
+    Seed user_id=999 so menstrual_cycle_day FK targets exist.
+    """
+    upsert_model_instances(
+        session=db_session,
+        model_instances=[User(user_id=999, full_name="Test")],
+        conflict_columns=["user_id"],
+        on_conflict_update=True,
+    )
+    db_session.commit()
+
+
+def _menstrual_processor(user_id=999) -> GarminProcessor:
+    """
+    Build a GarminProcessor wired with the test user_id.
+    """
+    proc = GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+    proc.user_id = user_id
+    return proc
+
+
+class TestProcessMenstrualCycleDay:
+    """
+    Tests for _process_menstrual_cycle_day covering scalar upsert and the critical
+    delete-then-reinsert semantics for tag-shaped fields (symptoms, moods, discharge),
+    which let user-removed tags propagate on reprocess.
+    """
+
+    def test_insert_day_and_tags(self, db_session: Session, tmp_path):
+        """
+        First-time insert populates the day row and all three tag kinds.
+        """
+        _seed_user_999(db_session)
+
+        data = _menstrual_day_payload()
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        day = db_session.execute(select(MenstrualCycleDay)).scalars().one()
+        assert day.user_id == 999
+        assert str(day.date) == "2026-05-25"
+        assert day.current_phase == "MENSTRUAL"
+        assert day.day_in_cycle == 3
+        assert day.predicted_cycle is False
+        assert day.flow == "HEAVY"
+        assert day.notes == "test"
+        assert day.ovulation_day is True
+
+        tags = db_session.execute(select(MenstrualCycleTag)).scalars().all()
+        # 2 symptoms + 1 mood + 1 discharge = 4.
+        assert len(tags) == 4
+        by_kind = {(t.kind, t.name) for t in tags}
+        assert ("SYMPTOM", "BACKACHE") in by_kind
+        assert ("SYMPTOM", "CRAMPS") in by_kind
+        assert ("MOOD", "HAPPY") in by_kind
+        assert ("DISCHARGE", "CREAMY") in by_kind
+
+    def test_reprocess_updates_scalars(self, db_session: Session, tmp_path):
+        """
+        UPSERT semantics: reprocessing the same day with edited scalars overwrites the
+        existing row in place rather than appending a new one.
+        """
+        _seed_user_999(db_session)
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(_menstrual_day_payload(flow="LIGHT", notes="initial"), f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        # User edits the day on Garmin Connect; rewrite the file with new values.
+        with open(file_path, "w") as f:
+            json.dump(_menstrual_day_payload(flow="HEAVY", notes="edited"), f)
+
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        rows = db_session.execute(select(MenstrualCycleDay)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].flow == "HEAVY"
+        assert rows[0].notes == "edited"
+
+    def test_tag_removal_propagates(self, db_session: Session, tmp_path):
+        """
+        Critical scenario: a user removes a previously-logged symptom on Garmin Connect.
+
+        The next extract must reflect the removal, not leave an orphan row. Validates
+        the delete-then-reinsert pattern.
+        """
+        _seed_user_999(db_session)
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        # Start with three symptoms.
+        with open(file_path, "w") as f:
+            json.dump(
+                _menstrual_day_payload(
+                    symptoms=["BACKACHE", "CRAMPS", "HEADACHE"],
+                    moods=["HAPPY"],
+                    discharge=["CREAMY"],
+                ),
+                f,
+            )
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        # User removes two symptoms and the mood; only BACKACHE remains.
+        with open(file_path, "w") as f:
+            json.dump(
+                _menstrual_day_payload(
+                    symptoms=["BACKACHE"], moods=[], discharge=["CREAMY"]
+                ),
+                f,
+            )
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        tags = db_session.execute(select(MenstrualCycleTag)).scalars().all()
+        by_kind = {(t.kind, t.name) for t in tags}
+        assert by_kind == {("SYMPTOM", "BACKACHE"), ("DISCHARGE", "CREAMY")}
+
+    def test_phase_label_mapping(self, db_session: Session, tmp_path):
+        """
+        Integer currentPhase translates to the denormalized text label.
+        """
+        _seed_user_999(db_session)
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(_menstrual_day_payload(phase=3), f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        day = db_session.execute(select(MenstrualCycleDay)).scalars().one()
+        assert day.current_phase == "OVULATORY"
+
+    def test_unknown_phase_label_stored_with_fallback(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Defensive: unknown phase integers are stored as 'UNKNOWN_<n>' rather than
+        crashing the processor.
+        """
+        _seed_user_999(db_session)
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(_menstrual_day_payload(phase=99), f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        day = db_session.execute(select(MenstrualCycleDay)).scalars().one()
+        assert day.current_phase == "UNKNOWN_99"
+
+    def test_deleting_day_cascades_to_tags(self, db_session: Session, tmp_path):
+        """
+        FK with ON DELETE CASCADE means removing the parent day row removes its tag
+        children automatically.
+        """
+        _seed_user_999(db_session)
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(_menstrual_day_payload(), f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        assert (
+            db_session.execute(select(func.count(MenstrualCycleTag.name))).scalar() > 0
+        )
+
+        day = db_session.execute(select(MenstrualCycleDay)).scalars().one()
+        db_session.delete(day)
+        db_session.commit()
+
+        assert (
+            db_session.execute(select(func.count(MenstrualCycleTag.name))).scalar() == 0
+        )
+
+    def test_non_string_tag_entries_skipped(self, db_session: Session, tmp_path):
+        """
+        Defensive: if Garmin ever enriches the tag list shape (e.g. to dicts with a
+        severity field), the processor must skip non-string entries with a warning
+        rather than stringifying them into the ``name`` column.
+
+        Valid string entries in the same list still land.
+        """
+        _seed_user_999(db_session)
+
+        payload = _menstrual_day_payload(
+            symptoms=["BACKACHE", {"name": "CRAMPS", "severity": "MILD"}, None],
+            moods=["HAPPY"],
+            discharge=[],
+        )
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_DAY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(payload, f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_day(file_path, db_session)
+        db_session.commit()
+
+        tags = db_session.execute(select(MenstrualCycleTag)).scalars().all()
+        by_kind = {(t.kind, t.name) for t in tags}
+        # Dict and None are skipped; BACKACHE and HAPPY survive.
+        assert by_kind == {("SYMPTOM", "BACKACHE"), ("MOOD", "HAPPY")}
+
+
+class TestProcessMenstrualCycleSummary:
+    """
+    Tests for _process_menstrual_cycle_summary covering the wipe-and-replace policy for
+    predicted cycles alongside upsert-by-PK for observed (real) cycles.
+    """
+
+    def test_insert_observed_and_predicted(self, db_session: Session, tmp_path):
+        """
+        First-time insert populates both observed and predicted summary rows.
+        """
+        _seed_user_999(db_session)
+
+        data = {
+            "cycleSummaries": [
+                {"startDate": "2026-05-23", "periodLength": 3, "predictedCycle": False},
+                {"startDate": "2026-06-20", "periodLength": 5, "predictedCycle": True},
+                {"startDate": "2026-07-18", "periodLength": 5, "predictedCycle": True},
+            ],
+        }
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(data, f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_summary(file_path, db_session)
+        db_session.commit()
+
+        rows = (
+            db_session.execute(
+                select(MenstrualCycleSummary).order_by(MenstrualCycleSummary.start_date)
+            )
+            .scalars()
+            .all()
+        )
+        assert [str(r.start_date) for r in rows] == [
+            "2026-05-23",
+            "2026-06-20",
+            "2026-07-18",
+        ]
+        assert [r.predicted_cycle for r in rows] == [False, True, True]
+
+    def test_predictions_replaced_observed_preserved(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Critical scenario: two extract runs produce different predicted start dates.
+
+        The second run must wipe stale predictions but preserve the observed (real)
+        cycle row.
+        """
+        _seed_user_999(db_session)
+
+        # First run: 1 observed + 2 predicted.
+        first = {
+            "cycleSummaries": [
+                {"startDate": "2026-05-23", "periodLength": 3, "predictedCycle": False},
+                {"startDate": "2026-06-20", "periodLength": 5, "predictedCycle": True},
+                {"startDate": "2026-07-18", "periodLength": 5, "predictedCycle": True},
+            ],
+        }
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump(first, f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_summary(file_path, db_session)
+        db_session.commit()
+
+        # Second run: observed cycle unchanged; Garmin recomputed projections,
+        # so the predicted start dates have shifted.
+        second = {
+            "cycleSummaries": [
+                {"startDate": "2026-05-23", "periodLength": 3, "predictedCycle": False},
+                {"startDate": "2026-06-22", "periodLength": 5, "predictedCycle": True},
+                {"startDate": "2026-07-20", "periodLength": 5, "predictedCycle": True},
+            ],
+        }
+        with open(file_path, "w") as f:
+            json.dump(second, f)
+
+        proc._process_menstrual_cycle_summary(file_path, db_session)
+        db_session.commit()
+
+        rows = (
+            db_session.execute(
+                select(MenstrualCycleSummary).order_by(MenstrualCycleSummary.start_date)
+            )
+            .scalars()
+            .all()
+        )
+        # Stale 2026-06-20 / 2026-07-18 predictions are gone; observed and new
+        # predictions remain.
+        assert [str(r.start_date) for r in rows] == [
+            "2026-05-23",
+            "2026-06-22",
+            "2026-07-20",
+        ]
+        # Observed cycle still flagged predicted=False.
+        observed = next(r for r in rows if str(r.start_date) == "2026-05-23")
+        assert observed.predicted_cycle is False
+
+    def test_empty_cycle_summaries_wipes_predictions_only(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Defensive: an empty calendar response still wipes stale predicted rows so the
+        table doesn't keep showing projections after the user clears them.
+
+        Observed cycles are unaffected (only predicted_cycle=True is in scope).
+        """
+        _seed_user_999(db_session)
+
+        # Pre-seed: 1 observed + 1 predicted.
+        db_session.add_all(
+            [
+                MenstrualCycleSummary(
+                    user_id=999,
+                    start_date=date(2026, 5, 23),
+                    period_length=3,
+                    predicted_cycle=False,
+                ),
+                MenstrualCycleSummary(
+                    user_id=999,
+                    start_date=date(2026, 6, 20),
+                    period_length=5,
+                    predicted_cycle=True,
+                ),
+            ]
+        )
+        db_session.commit()
+
+        file_path = tmp_path / "999_MENSTRUAL_CYCLE_SUMMARY_2026-05-25T12-00-00Z.json"
+        with open(file_path, "w") as f:
+            json.dump({"cycleSummaries": []}, f)
+
+        proc = _menstrual_processor()
+        proc._process_menstrual_cycle_summary(file_path, db_session)
+        db_session.commit()
+
+        rows = db_session.execute(select(MenstrualCycleSummary)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].predicted_cycle is False
+        assert str(rows[0].start_date) == "2026-05-23"
 
 
 # ---------------------------------------------------------------------------

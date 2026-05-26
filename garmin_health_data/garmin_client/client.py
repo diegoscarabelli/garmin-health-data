@@ -899,6 +899,12 @@ class GarminClient:
         """
         return api.get_intensity_minutes_data(self, cdate)
 
+    def get_menstrual_data_for_date(self, cdate: str) -> Optional[Dict[str, Any]]:
+        """
+        See :func:`api.get_menstrual_data_for_date`.
+        """
+        return api.get_menstrual_data_for_date(self, cdate)
+
     def get_body_composition(
         self, startdate: str, enddate: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -906,6 +912,14 @@ class GarminClient:
         See :func:`api.get_body_composition`.
         """
         return api.get_body_composition(self, startdate, enddate)
+
+    def get_menstrual_calendar_data(
+        self, startdate: str, enddate: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        See :func:`api.get_menstrual_calendar_data`.
+        """
+        return api.get_menstrual_calendar_data(self, startdate, enddate)
 
     def get_activities_by_date(
         self,

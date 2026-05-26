@@ -15,6 +15,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -1086,3 +1087,83 @@ class ActivityTsMetricDownsampled(Base, InsertBase):
             bucket_ts.desc(),
         ),
     )
+
+
+class MenstrualCycleDay(Base, UpsertBase):
+    """
+    Daily menstrual cycle log from Garmin Connect's periodic-health service.
+
+    Combines the dayview endpoint's daySummary (computed cycle state) and dayLog (user-
+    supplied data) into one row per logged day. Re-extracting the same day refreshes
+    scalars via upsert; tag-shaped sub-fields (symptoms, moods, discharge) live in
+    MenstrualCycleTag with delete-then-insert semantics on every reprocess.
+    """
+
+    __tablename__ = "menstrual_cycle_day"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    date = Column(Date, primary_key=True)
+    cycle_start_date = Column(Date)
+    day_in_cycle = Column(Integer)
+    period_length = Column(Integer)
+    current_phase = Column(String)
+    length_of_current_phase = Column(Integer)
+    days_until_next_phase = Column(Integer)
+    predicted_cycle_length = Column(Integer)
+    cycle_type = Column(String)
+    predicted_cycle = Column(Boolean)
+    flow = Column(String)
+    sex_drive = Column(String)
+    sexual_activity = Column(String)
+    notes = Column(Text)
+    report_ts = Column(DateTime)
+    has_baby_movement = Column(Boolean)
+    ovulation_day = Column(Boolean)
+
+
+class MenstrualCycleTag(Base, InsertBase):
+    """
+    Polymorphic tag table for symptoms, moods, and discharge logged on a given day.
+
+    Cascade-deletes when the parent menstrual_cycle_day row is removed. Processor uses
+    delete-then-insert per (user_id, date) so user-removed tags propagate.
+    """
+
+    __tablename__ = "menstrual_cycle_tag"
+
+    user_id = Column(BigInteger, primary_key=True)
+    date = Column(Date, primary_key=True)
+    kind = Column(String, primary_key=True)
+    name = Column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "date"],
+            ["menstrual_cycle_day.user_id", "menstrual_cycle_day.date"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('SYMPTOM', 'MOOD', 'DISCHARGE')",
+            name="menstrual_cycle_tag_kind_valid",
+        ),
+        Index("menstrual_cycle_tag_kind_name_idx", "kind", "name"),
+    )
+
+
+class MenstrualCycleSummary(Base, UpsertBase):
+    """
+    Per-cycle summaries from the menstrual cycle calendar endpoint.
+
+    Includes both user-logged cycles (predicted_cycle=False) and Garmin's projections
+    of upcoming cycles (predicted_cycle=True). Predicted rows are wiped and re-inserted
+    on every extract because Garmin's projection dates shift as new data is logged;
+    observed rows use upsert by (user_id, start_date). Cycle length is intentionally
+    not stored: derive in SQL via LEAD(start_date) OVER (...) - start_date.
+    """
+
+    __tablename__ = "menstrual_cycle_summary"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    start_date = Column(Date, primary_key=True)
+    period_length = Column(Integer)
+    predicted_cycle = Column(Boolean, nullable=False)

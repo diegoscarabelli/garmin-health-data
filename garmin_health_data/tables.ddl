@@ -592,6 +592,72 @@ CREATE TABLE IF NOT EXISTS floors (
 CREATE INDEX IF NOT EXISTS floors_user_id_timestamp_idx
 ON floors (user_id, timestamp DESC);
 
+-- Daily menstrual cycle log from Garmin Connect's periodic-health service. One row per logged day. Combines the dayview endpoint's daySummary (computed cycle state) and dayLog (user-supplied data). Logged days outside any cycle are skipped at extract time. Re-extracting the same day refreshes the row in place via upsert; tag-shaped sub-fields (symptoms, moods, discharge) live in menstrual_cycle_tag with delete-then-insert per (user_id, date) semantics so user removals propagate.
+CREATE TABLE IF NOT EXISTS menstrual_cycle_day (
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this log belongs to.
+    , date DATE NOT NULL                   -- Calendar date of the log (dayLog.calendarDate, or the queried date when only daySummary is present).
+    , cycle_start_date DATE                -- daySummary.startDate. Most recent period start anchoring this day's day-in-cycle.
+    , day_in_cycle INTEGER                 -- 1-based day index within the current cycle (daySummary.dayInCycle).
+    , period_length INTEGER                -- Length of the current period in days (daySummary.periodLength).
+    , current_phase TEXT                   -- Denormalized phase label: MENSTRUAL / FOLLICULAR / OVULATORY / LUTEAL. Sourced from daySummary.currentPhase (1-4 int) via MenstrualCyclePhase.
+    , length_of_current_phase INTEGER      -- daySummary.lengthOfCurrentPhase.
+    , days_until_next_phase INTEGER        -- daySummary.daysUntilNextPhase.
+    , predicted_cycle_length INTEGER       -- daySummary.predictedCycleLength.
+    , cycle_type TEXT                      -- daySummary.cycleType (e.g., ''REGULAR'', ''IRREGULAR'').
+    , predicted_cycle BOOLEAN              -- daySummary.predictedCycle. TRUE means the cycle is a projection, FALSE means a user-logged period.
+    , flow TEXT                            -- dayLog.flow: NONE / LIGHT / MEDIUM / HEAVY. Nullable when not logged.
+    , sex_drive TEXT                       -- dayLog.sexDrive: NONE / LOW / AVERAGE / HIGH. Nullable.
+    , sexual_activity TEXT                 -- dayLog.sexualActivity: NONE / UNPROTECTED / PROTECTED. Nullable.
+    , notes TEXT                           -- dayLog.notes. Freeform user text. Nullable.
+    , report_ts DATETIME                   -- dayLog.reportTimestamp. Last time the user edited this day's log.
+    , has_baby_movement BOOLEAN            -- dayLog.hasBabyMovement.
+    , ovulation_day BOOLEAN                -- dayLog.ovulationDay. User-marked ovulation flag.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (user_id, date)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_day_user_id_date_idx
+ON menstrual_cycle_day (user_id, date DESC);
+
+-- Polymorphic tag table for the three list-shaped fields on the dayview dayLog: symptoms, moods, and discharge. Each row is one tag the user logged on one day. Names are raw Garmin enum identifiers (e.g., ''BACKACHE'', ''HAPPY'', ''EGG_WHITE''). Processor uses delete-then-insert per (user_id, date) so tags removed by the user propagate on the next extract.
+CREATE TABLE IF NOT EXISTS menstrual_cycle_tag (
+    user_id BIGINT NOT NULL              -- References menstrual_cycle_day(user_id).
+    , date DATE NOT NULL                   -- References menstrual_cycle_day(date).
+    , kind TEXT NOT NULL                   -- One of: SYMPTOM, MOOD, DISCHARGE.
+    , name TEXT NOT NULL                   -- Raw Garmin enum identifier for the tag.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (user_id, date, kind, name)
+    , FOREIGN KEY (user_id, date) REFERENCES menstrual_cycle_day (
+        user_id, date
+    ) ON DELETE CASCADE
+    , CONSTRAINT menstrual_cycle_tag_kind_valid CHECK (
+        kind IN ('SYMPTOM', 'MOOD', 'DISCHARGE')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_tag_kind_name_idx
+ON menstrual_cycle_tag (kind, name);
+
+-- Per-cycle summaries from the menstrual cycle calendar endpoint. Includes both user-logged cycles (predicted_cycle=0) and Garmin's projections of upcoming cycles (predicted_cycle=1). Cycle length is intentionally not stored; derive in SQL via LEAD(start_date) OVER (PARTITION BY user_id ORDER BY start_date) - start_date. Predicted rows are wiped and re-inserted on every extract because Garmin's projection dates shift as new data is logged; observed rows use upsert by (user_id, start_date).
+CREATE TABLE IF NOT EXISTS menstrual_cycle_summary (
+    user_id BIGINT NOT NULL              -- References user(user_id).
+    , start_date DATE NOT NULL             -- cycleSummaries[].startDate. Day the period began (or is predicted to begin).
+    , period_length INTEGER                -- cycleSummaries[].periodLength. Length of the period in days.
+    , predicted_cycle BOOLEAN NOT NULL     -- cycleSummaries[].predictedCycle. TRUE for Garmin projections, FALSE for user-logged cycles.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (user_id, start_date)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_summary_user_id_start_date_idx
+ON menstrual_cycle_summary (user_id, start_date DESC);
+
+CREATE INDEX IF NOT EXISTS menstrual_cycle_summary_predicted_cycle_idx
+ON menstrual_cycle_summary (user_id, predicted_cycle);
+
 -- Personal records achieved by users across various activity types and distances.
 CREATE TABLE IF NOT EXISTS personal_record (
     user_id BIGINT NOT NULL              -- Foreign key reference to the user profile.
