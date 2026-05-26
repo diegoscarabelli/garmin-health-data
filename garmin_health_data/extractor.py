@@ -102,7 +102,7 @@ class ExtractionFailure:
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
     :ivar date: Date context for the failure. Typically an ISO date string (``"YYYY-MM-
         DD"``) for per-day failures, a range string ``"<start>..<end>"`` for
-        unsplittable RANGE failures, or ``""`` when no date context applies (per- data-
+        unsplittable RANGE failures, or ``""`` when no date context applies (per-data-
         type or per-activity failures).
     :ivar activity_id: Activity ID as a string for per-activity failures, or ``""``
         otherwise.
@@ -124,11 +124,12 @@ def _split_body_composition_by_day(
 
     Each entry in ``dateWeightList`` carries its own ``timestampGMT`` (milliseconds
     since epoch). Groups entries by their UTC calendar date. Days without entries
-    yield no key in the returned dict. The per-day payload preserves the wrapper
-    shape (``{"dateWeightList": [...]}``) so :meth:`GarminProcessor._process_body_
-    composition` parses it identically to the legacy per-day API responses. Other
-    wrapper fields (``startDate``, ``endDate``, ``totalAverage``) are intentionally
-    dropped: they describe the full range and are not consumed by the processor.
+    yield no key in the returned dict. The per-day payload preserves the
+    ``dateWeightList`` wrapper key so the downstream body-composition processor
+    parses it identically to the legacy per-day API responses. The other
+    range-level wrapper fields (``startDate``, ``endDate``, ``totalAverage``) are
+    intentionally dropped: they describe the full range and are not consumed by
+    the processor.
 
     Malformed entries (no usable timestamp) are skipped silently here; the
     processor warns on the same shape downstream.

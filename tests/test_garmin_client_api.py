@@ -103,8 +103,8 @@ class TestGetBodyComposition:
         query).
 
         The extractor itself calls this wrapper with the full requested window via
-        ``_extract_range``; the default-enddate behavior is for direct callers (e.g. ad-
-        hoc scripts, the activities downloader's per-day fallback).
+        ``_extract_range``; the default-enddate behavior is for direct callers
+        (ad-hoc scripts, the activities downloader's per-day fallback).
         """
         client = MagicMock()
         client._connectapi.return_value = {"dateWeightList": []}
