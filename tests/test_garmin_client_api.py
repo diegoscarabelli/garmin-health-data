@@ -274,14 +274,15 @@ class TestGetMenstrualCalendarData:
 
         api.get_menstrual_calendar_data(client, "2026-01-01", "2026-06-30")
 
-        # Six months ~= 181 days, needs >=3 chunks at 92 days each.
-        assert client._connectapi.call_count >= 2
+        # 2026-01-01 .. 2026-06-30 inclusive is 181 days; at a 92-day max range per
+        # request, that's exactly 2 chunks: 2026-01-01..2026-04-02 (92 days) and
+        # 2026-04-03..2026-06-30 (89 days).
+        assert client._connectapi.call_count == 2
         called_urls = [c.args[0] for c in client._connectapi.call_args_list]
-        # First chunk starts at requested start.
+        # First chunk starts at requested start, last chunk ends at requested end,
+        # chunks are contiguous (chunk 2's start == chunk 1's end + 1 day).
         assert called_urls[0].endswith("/2026-01-01/2026-04-02")
-        # Chunks are contiguous (each start == prior end + 1 day).
-        # Last chunk ends at requested end.
-        assert called_urls[-1].endswith("/2026-06-30")
+        assert called_urls[1].endswith("/2026-04-03/2026-06-30")
 
     def test_merges_cycle_summaries_dedup_by_start_date(self) -> None:
         """
@@ -346,9 +347,15 @@ class TestGetMenstrualCalendarData:
         assert result["loggedOvulationDays"] == ["2026-05-25"]
         assert result["loggedNoteDays"] == ["2026-03-04"]
 
-    def test_returns_none_when_no_cycles(self) -> None:
+    def test_empty_cycles_response_returns_merged_shape(self) -> None:
         """
-        All chunks empty -> None.
+        A successful response with no cycles must still return the merged shape (empty
+        arrays) so the file lands and ``_process_menstrual_cycle_summary`` runs its
+        wipe-and-replace policy for stale predicted rows.
+
+        Without this, a user who stopped tracking cycles (or who has none in the queried
+        window) would leave previously-extracted predicted rows stranded in the database
+        forever, since the processor would never run.
         """
         client = MagicMock()
         client._connectapi.return_value = {
@@ -360,11 +367,18 @@ class TestGetMenstrualCalendarData:
 
         result = api.get_menstrual_calendar_data(client, "2026-04-01", "2026-05-25")
 
-        assert result is None
+        assert result is not None
+        assert result["cycleSummaries"] == []
+        assert result["loggedSymptomDays"] == []
 
     def test_returns_none_when_all_chunks_return_none(self) -> None:
         """
-        Defensive: all-None responses across all chunks treated as no data.
+        Distinct from the empty-but-successful case above: when every chunk's HTTP call
+        returns ``None`` (e.g. a transport failure swallowed by the retry layer), the
+        wrapper returns ``None`` so the extractor skips writing a file.
+
+        We have no signal at all in that case, so there's nothing for the processor to
+        act on.
         """
         client = MagicMock()
         client._connectapi.return_value = None

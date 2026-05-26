@@ -316,13 +316,18 @@ def get_menstrual_calendar_data(
     deduped by ``startDate``; ``loggedSymptomDays`` / ``loggedOvulationDays`` /
     ``loggedNoteDays`` are merged into sorted unique lists.
 
-    Normalizes empty responses to ``None`` (no ``cycleSummaries`` across any chunk) so
-    the extractor's ``if data:`` truthiness check skips the file write.
+    Returns ``None`` only when no chunk produced a response (e.g. transport failure on
+    every chunk). A successful response with zero cycles still returns the merged shape
+    with empty arrays so the file lands and ``_process_menstrual_cycle_summary`` can
+    fire its wipe-and-replace policy for stale predicted rows. Without this, a user who
+    stopped tracking cycles (or never had any in the queried window) would leave
+    previously-extracted predicted rows stranded in the database.
 
     :param client: GarminClient instance.
     :param startdate: Range start (``YYYY-MM-DD``, inclusive).
     :param enddate: Range end (``YYYY-MM-DD``, inclusive). Defaults to ``startdate``.
-    :return: Merged calendar dictionary, or ``None`` when no cycles were found.
+    :return: Merged calendar dictionary (possibly with empty arrays), or ``None`` when
+        no chunk in the range produced a response.
     """
     startdate = _validate_date_format(startdate, "startdate")
     if enddate is None:
@@ -342,13 +347,15 @@ def get_menstrual_calendar_data(
     logged_symptom: set = set()
     logged_ovulation: set = set()
     logged_note: set = set()
+    got_response = False
 
     chunk_start = start
     while chunk_start <= end:
         chunk_end = min(chunk_start + chunk_step, end)
         url = f"{MENSTRUAL_CALENDAR_URL}/{chunk_start.isoformat()}/{chunk_end.isoformat()}"
         result = client._connectapi(url)
-        if result:
+        if result is not None:
+            got_response = True
             for cycle in result.get("cycleSummaries") or []:
                 cycle_start = cycle.get("startDate")
                 if cycle_start:
@@ -358,7 +365,7 @@ def get_menstrual_calendar_data(
             logged_note.update(result.get("loggedNoteDays") or [])
         chunk_start = chunk_end + timedelta(days=1)
 
-    if not cycles_by_start:
+    if not got_response:
         return None
 
     return {

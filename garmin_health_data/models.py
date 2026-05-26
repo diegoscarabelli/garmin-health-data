@@ -1095,8 +1095,8 @@ class MenstrualCycleDay(Base, UpsertBase):
 
     One row per day inside any observed or predicted cycle window. Combines the dayview
     endpoint's daySummary (computed cycle state, always present when the day falls in a
-    cycle window) and dayLog (user-supplied data, NULL for predicted- cycle days the
-    user has not logged). Re-extracting the same day refreshes scalars via upsert; tag-
+    cycle window) and dayLog (user-supplied data, NULL for predicted-cycle days the user
+    has not logged). Re-extracting the same day refreshes scalars via upsert; tag-
     shaped sub-fields (symptoms, moods, discharge) live in MenstrualCycleTag with
     delete-then-insert semantics on every reprocess.
     """
