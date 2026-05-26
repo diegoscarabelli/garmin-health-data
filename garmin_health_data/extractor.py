@@ -368,13 +368,15 @@ class GarminExtractor:
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
         """
-        Extract a Garmin data type one day at a time with per-date error isolation.
+        Extract a DAILY-typed Garmin data type one day at a time with per-date error
+        isolation.
 
-        Handles both DAILY and RANGE API time parameter patterns. A failure on one date
-        is logged and recorded in :attr:`failures`; extraction continues with the next
-        date so transient API hiccups never abort the full date range.
+        A failure on one date is logged and recorded in :attr:`failures`; extraction
+        continues with the next date so transient API hiccups never abort the full date
+        range. RANGE-typed data types are extracted by :meth:`_extract_range` with a
+        single API call covering the full window.
 
-        :param data_type: GarminDataType defining the extraction parameters.
+        :param data_type: GarminDataType with DAILY time parameter.
         :param start_date: Start date for data extraction (inclusive).
         :param end_date: End date for data extraction (inclusive).
         :return: List of saved file paths.
@@ -394,11 +396,7 @@ class GarminExtractor:
                 # Wrap the API call in retries-with-backoff so a transient
                 # network blip absorbs silently and only persistent failures
                 # land in self.failures.
-                if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-                    data = _with_retries(api_method, date_str)
-                else:
-                    # Pass the same date to both params for RANGE methods.
-                    data = _with_retries(api_method, date_str, date_str)
+                data = _with_retries(api_method, date_str)
 
                 if data:
                     saved_files.extend(
@@ -430,6 +428,67 @@ class GarminExtractor:
 
         return saved_files
 
+    def _extract_range(
+        self, data_type: GarminDataType, start_date: date, end_date: date
+    ) -> List[Path]:
+        """
+        Extract a RANGE-typed Garmin data type with a single API call covering the
+        full window, instead of one call per day.
+
+        The Garmin endpoints behind RANGE-typed wrappers each accept a native date
+        range and return all matching rows in one response (the wrappers paginate
+        internally where the endpoint imposes a max range, e.g. menstrual cycle
+        calendar's 92-day chunk). Calling them once per day with ``start = end``
+        wastes API quota, multiplies disk I/O, and (for the menstrual cycle summary
+        path) re-fires the wipe-and-replace policy per file when one pass would
+        suffice. This method takes the full requested window and calls the wrapper
+        once. Failure isolation shifts from per-date to per-range, recorded as
+        ``"{start}..{end}"`` in :attr:`failures`.
+
+        The saved file's date stamp is ``end_date`` (single-date filename
+        convention preserved); the body contains all rows in the requested window.
+
+        :param data_type: GarminDataType with RANGE time parameter.
+        :param start_date: Start date for data extraction (inclusive).
+        :param end_date: End date for data extraction (inclusive).
+        :return: List of saved file paths (zero or one file).
+        """
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        click.echo(
+            f"Fetching {data_type.emoji} {data_type.name} data for "
+            f"{start_str}..{end_str}."
+        )
+
+        try:
+            api_method = getattr(self.garmin_client, data_type.api_method)
+            data = _with_retries(api_method, start_str, end_str)
+        except Exception as e:
+            click.secho(
+                f"⚠️  {data_type.name} {start_str}..{end_str} failed: "
+                f"{type(e).__name__}: {e}. Continuing.",
+                fg="red",
+            )
+            self.failures.append(
+                ExtractionFailure(
+                    data_type=data_type.name,
+                    date=f"{start_str}..{end_str}",
+                    activity_id="",
+                    error=f"{type(e).__name__}: {e}",
+                )
+            )
+            return []
+
+        if not data:
+            click.secho(
+                f"{data_type.emoji} {data_type.name}: No data for "
+                f"{start_str}..{end_str}.",
+                fg="yellow",
+            )
+            return []
+
+        return self._save_garmin_data(data, data_type, end_date)
+
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
@@ -454,17 +513,19 @@ class GarminExtractor:
             )
             return []  # Return empty list.
 
-        if data_type.api_method_time_param in [
-            APIMethodTimeParam.DAILY,
-            APIMethodTimeParam.RANGE,
-        ]:
-            # Process each day individually using common helper method.
+        if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
+            # One API call per day, per-date error isolation.
             return self._extract_day_by_day(data_type, start_date, end_date)
+
+        if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
+            # One API call for the full window (wrappers paginate internally
+            # where the endpoint has a max range). Per-range error isolation.
+            return self._extract_range(data_type, start_date, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.NO_DATE:
             # Process no-date data. Wrap the call in _with_retries so
             # transient network failures absorb the same way they do for
-            # DAILY / RANGE types via _extract_day_by_day; otherwise NO_DATE
+            # DAILY (per-day) and RANGE (per-window) types; otherwise NO_DATE
             # types (USER_PROFILE, PERSONAL_RECORDS, RACE_PREDICTIONS) would
             # fail on the first DNS hiccup.
             click.echo(f"{data_type.emoji} Fetching {data_type.name.lower()} data.")
@@ -605,12 +666,13 @@ class GarminExtractor:
         Read all saved ACTIVITIES_LIST JSON files from ``ingest_dir`` and merge them
         into a single deduplicated activities list.
 
-        The registry-driven extract loop calls ``get_activities_by_date`` once per day
-        inside ``_extract_day_by_day`` (RANGE-typed), so a multi-day window writes one
-        ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file per day. Reading only the
-        newest file would silently skip activities from earlier days; instead, parse
-        every matching file and merge by ``activityId`` (last value wins for any
-        duplicate).
+        The registry-driven extract loop calls ``get_activities_by_date`` once for the
+        full requested window inside ``_extract_range`` (RANGE-typed), so a multi-day
+        window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file covering
+        the entire range. The merge-by-``activityId`` logic still runs because users
+        upgrading from earlier versions may have multiple per-day files left over in
+        ``ingest/`` from before the per-range refactor; deduplication keeps the merged
+        result correct in that mixed-shape transitional state.
 
         Falls back to ``None`` (caller hits the live API) on any read or parse error so
         a single corrupt file doesn't prevent extraction.

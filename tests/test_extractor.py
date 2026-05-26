@@ -1169,10 +1169,14 @@ def test_extract_day_by_day_uses_retries_for_per_day_calls(tmp_path, monkeypatch
 
 def test_load_activities_list_merges_multiple_files_dedupes_by_id(tmp_path):
     """
-    Multi-day extracts produce one ACTIVITIES_LIST_<date>.json per day.
+    The helper must merge multiple per-day ACTIVITIES_LIST_<date>.json files and dedupe
+    by activityId so activities from earlier days are not silently dropped.
 
-    The helper must merge all of them and dedupe by activityId so activities from
-    earlier days are not silently dropped (round-4 review fix).
+    Fresh post-refactor extracts produce a single per-range file, but users upgrading
+    from earlier versions may have multiple per-day files left over in ``ingest/`` from
+    when ACTIVITIES_LIST was extracted day-by-day. The dedupe path covers that mixed-
+    shape transitional state and remains valuable as a defense if the per-day file shape
+    ever returns (e.g. a future split by activity type).
     """
     from datetime import date as date_cls
     from unittest.mock import MagicMock
@@ -1290,3 +1294,196 @@ def test_no_date_api_calls_use_retries(tmp_path, monkeypatch):
     assert mock_api.call_count == 3
     assert len(result) == 1  # one saved file
     assert instance.failures == []
+
+
+# ---------------------------------------------------------------------------
+# RANGE per-window extraction (issue #62)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_range_calls_api_once_for_full_window(tmp_path):
+    """
+    RANGE-typed data types must hit the API exactly once for the full requested window,
+    not once per day.
+
+    Previously the extractor called all RANGE methods with ``startdate=enddate`` per
+    day, wasting API quota and (for the menstrual cycle summary path) re-firing wipe-
+    and-replace per file.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("BODY_COMPOSITION",),
+    )
+    extractor.user_id = "test-user"
+
+    body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+    mock_api = MagicMock(return_value={"dateWeightList": [{"weight": 75000.0}]})
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, body_comp.api_method, mock_api)
+
+    saved = extractor._extract_range(body_comp, date(2025, 1, 1), date(2025, 1, 31))
+
+    # Exactly one API call for the 31-day window, not 31 calls.
+    assert mock_api.call_count == 1
+    mock_api.assert_called_once_with("2025-01-01", "2025-01-31")
+    # One file saved, stamped with the end_date for filename consistency.
+    assert len(saved) == 1
+    assert "2025-01-31" in saved[0].name
+
+
+def test_extract_range_records_failure_with_range_label(tmp_path):
+    """
+    A failure during a per-range API call records the ``"{start}..{end}"`` window in
+    :attr:`failures` rather than a single date, so the end-of-run summary accurately
+    conveys the blast radius of the failure (it's the whole window, not one day).
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("BODY_COMPOSITION",),
+    )
+    extractor.user_id = "test-user"
+
+    body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+    mock_api = MagicMock(side_effect=RuntimeError("API outage"))
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, body_comp.api_method, mock_api)
+
+    saved = extractor._extract_range(body_comp, date(2025, 1, 1), date(2025, 1, 31))
+
+    assert saved == []
+    assert len(extractor.failures) == 1
+    failure = extractor.failures[0]
+    assert failure.data_type == "BODY_COMPOSITION"
+    assert failure.date == "2025-01-01..2025-01-31"
+    assert "API outage" in failure.error
+
+
+def test_extract_range_no_data_writes_no_file(tmp_path):
+    """
+    A falsy API response (None, {}) yields no saved file and no recorded failure —
+    matches the existing DAILY behavior for empty days.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("BODY_COMPOSITION",),
+    )
+    extractor.user_id = "test-user"
+
+    body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+    mock_api = MagicMock(return_value=None)
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, body_comp.api_method, mock_api)
+
+    saved = extractor._extract_range(body_comp, date(2025, 1, 1), date(2025, 1, 31))
+
+    assert saved == []
+    assert extractor.failures == []
+
+
+def test_extract_data_by_type_routes_range_to_extract_range(tmp_path):
+    """
+    The routing in :meth:`_extract_data_by_type` must dispatch RANGE-typed data types to
+    ``_extract_range`` and DAILY-typed to ``_extract_day_by_day``.
+
+    A regression here (e.g. accidentally collapsing the two branches) would silently
+    revert to the per-day API spam pattern.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 3),
+        ingest_dir=tmp_path,
+        data_types=("BODY_COMPOSITION", "SLEEP"),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
+    sleep_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+
+    with (
+        patch.object(extractor, "_extract_range") as range_path,
+        patch.object(extractor, "_extract_day_by_day") as daily_path,
+    ):
+        range_path.return_value = []
+        daily_path.return_value = []
+
+        extractor._extract_data_by_type(body_comp, date(2025, 1, 1), date(2025, 1, 3))
+        extractor._extract_data_by_type(sleep_type, date(2025, 1, 1), date(2025, 1, 3))
+
+    range_path.assert_called_once_with(body_comp, date(2025, 1, 1), date(2025, 1, 3))
+    daily_path.assert_called_once_with(sleep_type, date(2025, 1, 1), date(2025, 1, 3))
+
+
+# ---------------------------------------------------------------------------
+# GarminClient delegator coverage (issue #63)
+# ---------------------------------------------------------------------------
+
+
+def test_garmin_client_exposes_a_delegator_for_every_registered_api_method():
+    """
+    Every ``GarminDataType.api_method`` in the registry must correspond to a callable
+    method on :class:`GarminClient`. The extractor calls ``getattr(self.garmin_client,
+    data_type.api_method)``; a missing delegator raises ``AttributeError`` only at
+    runtime, which the unit tests for the plain ``api.<method>`` functions can't catch
+    because they call the module- level function directly. This parametric check closes
+    that gap.
+
+    Discovered during PR #64: ``get_menstrual_data_for_date`` and
+    ``get_menstrual_calendar_data`` were added to ``api.py`` with passing unit tests but
+    the corresponding ``GarminClient`` delegators were missed; the only signal was an
+    end-to-end ``AttributeError`` at extract time.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.garmin_client.client import GarminClient
+
+    missing = []
+    not_callable = []
+    for data_type in GARMIN_DATA_REGISTRY.all_data_types:
+        method = getattr(GarminClient, data_type.api_method, None)
+        if method is None:
+            missing.append((data_type.name, data_type.api_method))
+            continue
+        if not callable(method):
+            not_callable.append((data_type.name, data_type.api_method))
+
+    assert not missing, (
+        f"GarminClient is missing delegator methods for registered data "
+        f"types: {missing}. Each registered api_method must be exposed as a "
+        f"method on GarminClient (matching the existing pattern in "
+        f"garmin_client/client.py) so the extractor's "
+        f"getattr(self.garmin_client, data_type.api_method) succeeds."
+    )
+    assert not not_callable, (
+        f"GarminClient has non-callable attributes for registered data "
+        f"types: {not_callable}."
+    )
