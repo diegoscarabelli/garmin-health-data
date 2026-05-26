@@ -246,13 +246,15 @@ def get_menstrual_data_for_date(
     The dayview endpoint returns the per-day cycle state (phase, day-in-cycle, predicted
     cycle length) wrapped in ``daySummary`` plus the user's logged data (symptoms,
     moods, discharge, flow, sex drive, sexual activity, notes, ovulation/baby-movement
-    flags) wrapped in ``dayLog``. Either wrapper may be absent; in particular Garmin
-    returns a bare ``{}`` for unlogged days that fall outside any known or predicted
-    cycle.
+    flags) wrapped in ``dayLog``. Days inside a predicted-cycle window return
+    ``daySummary`` populated and ``dayLog: null``; days outside every cycle window
+    return a bare ``{}``.
 
-    Normalizes empty responses to ``None`` so the extractor's ``if data:`` truthiness
-    check skips the file write, matching the behavior of other DAILY-typed endpoints
-    that lack data on some dates.
+    Returns ``None`` when neither ``daySummary`` nor ``dayLog`` is present. The
+    extractor's ``if data:`` check already drops a bare ``{}`` (it's falsy), but this
+    wrapper additionally drops *truthy* response shapes that lack the expected keys
+    (e.g. an unexpected wrapper-only dict) so the extractor never persists meaningless
+    payloads to disk.
 
     :param client: GarminClient instance.
     :param cdate: Date in ``YYYY-MM-DD`` format.

@@ -592,7 +592,7 @@ CREATE TABLE IF NOT EXISTS floors (
 CREATE INDEX IF NOT EXISTS floors_user_id_timestamp_idx
 ON floors (user_id, timestamp DESC);
 
--- Daily menstrual cycle log from Garmin Connect's periodic-health service. One row per logged day. Combines the dayview endpoint's daySummary (computed cycle state) and dayLog (user-supplied data). Logged days outside any cycle are skipped at extract time. Re-extracting the same day refreshes the row in place via upsert; tag-shaped sub-fields (symptoms, moods, discharge) live in menstrual_cycle_tag with delete-then-insert per (user_id, date) semantics so user removals propagate.
+-- Daily menstrual cycle state from Garmin Connect's periodic-health service. One row per day inside any observed or predicted cycle window. Combines the dayview endpoint's daySummary (computed cycle state, always present) and dayLog (user-supplied data, NULL for days the user has not logged but that still fall inside a known or predicted cycle). Days outside every cycle window return a bare empty payload from the API and are skipped at extract time. Re-extracting the same day refreshes the row in place via upsert; tag-shaped sub-fields (symptoms, moods, discharge) live in menstrual_cycle_tag with delete-then-insert per (user_id, date) semantics so user removals propagate.
 CREATE TABLE IF NOT EXISTS menstrual_cycle_day (
     user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this log belongs to.
     , date DATE NOT NULL                   -- Calendar date of the log (dayLog.calendarDate, or the queried date when only daySummary is present).

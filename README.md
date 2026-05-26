@@ -508,7 +508,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 | **STEPS** | Step counts and activity levels | 15-min intervals |
 | **FLOORS** | Floors climbed and descended | 15-min intervals |
 | **INTENSITY_MINUTES** | Moderate/vigorous activity minutes | 15-min intervals |
-| **MENSTRUAL_CYCLE_DAY** | Per-day cycle log: phase, day-in-cycle, period length, symptoms / moods / discharge tags, flow, sex drive, sexual activity, notes, ovulation flag | Per logged day |
+| **MENSTRUAL_CYCLE_DAY** | Per-day cycle state: phase, day-in-cycle, period length, plus the user's symptoms / moods / discharge tags, flow, sex drive, sexual activity, notes, ovulation flag on logged days | Per day inside any observed or predicted cycle window |
 | **MENSTRUAL_CYCLE_SUMMARY** | Per-cycle summaries (observed + predicted): start date, period length | Per cycle |
 | **BODY_COMPOSITION** | Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, muscle mass | Per weigh-in |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |

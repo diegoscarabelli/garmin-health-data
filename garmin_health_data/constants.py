@@ -180,7 +180,10 @@ class GarminDataRegistry:
                 "/periodichealth-service/menstrualcycle/calendar/{start}/{end}",
                 "Per-cycle summaries (observed and predicted): start date, period "
                 "length, predicted flag. Calendar endpoint has a 92-day max range "
-                "per request; the API wrapper paginates longer windows transparently.",
+                "per request, paginated transparently by the wrapper for direct "
+                "callers. Note: today's extractor invokes RANGE methods day-by-day "
+                "with startdate=enddate, so a multi-day extract makes one API call "
+                "and one wipe-and-replace processor cycle per day. Tracked in #62.",
                 "🩸",
             ),
             GarminDataType(
