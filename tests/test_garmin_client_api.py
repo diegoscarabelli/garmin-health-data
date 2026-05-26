@@ -100,8 +100,11 @@ class TestGetBodyComposition:
     def test_default_enddate_matches_startdate(self) -> None:
         """
         When ``enddate`` is omitted, ``startdate`` is used for both bounds (single-day
-        query), matching the day-by-day extraction loop in
-        :meth:`GarminExtractor._extract_day_by_day`.
+        query).
+
+        The extractor itself calls this wrapper with the full requested window via
+        ``_extract_range``; the default-enddate behavior is for direct callers
+        (ad-hoc scripts, the activities downloader's per-day fallback).
         """
         client = MagicMock()
         client._connectapi.return_value = {"dateWeightList": []}

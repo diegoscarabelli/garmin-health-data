@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.1] - 2026-05-26
+
+### Changed
+
+- **Extractor now makes one API call per range for `RANGE`-typed data types** ([#62](https://github.com/diegoscarabelli/garmin-health-data/issues/62), [#65](https://github.com/diegoscarabelli/garmin-health-data/pull/65)). Previously the extractor called every `RANGE`-typed method day-by-day with `startdate=enddate`, wasting API quota and (for `MENSTRUAL_CYCLE_SUMMARY`) re-firing the wipe-and-replace policy once per file. A 30-day extract of any `RANGE` type now issues one API call instead of 30. For `BODY_COMPOSITION` and `ACTIVITIES_LIST`, the per-range response is split back into one file per day before write, so the downstream `(user, day)` FileSet abstraction is unchanged and the processor parses each per-day file identically to a legacy per-day API response (range-level wrapper fields like `startDate` / `endDate` / `totalAverage` that the processor doesn't consume are dropped from the split files; the data the processor reads is the same). `MENSTRUAL_CYCLE_SUMMARY` is intentionally unsplittable and writes one file stamped with `end_date`: its wipe-and-replace policy for predicted cycles needs to see the full new set of cycles atomically, so splitting would re-introduce the redundant-write bug this PR fixes.
+- **`APIMethodTimeParam.PER_ACTIVITY` taxonomy** ([#65](https://github.com/diegoscarabelli/garmin-health-data/pull/65)). `ACTIVITY` and `EXERCISE_SETS` were previously mis-classified as `RANGE` in the registry but special-cased by name in `_extract_data_by_type` because their actual API methods take an `activity_id`, not a date range. Added a fourth enum value `PER_ACTIVITY`, reclassified the two stragglers, and replaced the name-based short-circuit with an enum branch so the dispatcher is pure: every data type lands in exactly one branch based on its declared time-param shape. Registry gains a matching `per_activity_data_types` convenience property.
+
+### Added
+
+- **`GarminClient` delegator-coverage test** ([#63](https://github.com/diegoscarabelli/garmin-health-data/issues/63), [#65](https://github.com/diegoscarabelli/garmin-health-data/pull/65)). The extractor calls `getattr(self.garmin_client, data_type.api_method)`; a missing delegator method would raise `AttributeError` only at extract time, which the existing unit tests for the plain `api.<method>` functions couldn't catch (they call the module-level function directly). Discovered during PR #64 work: `get_menstrual_data_for_date` and `get_menstrual_calendar_data` were added to `api.py` with passing unit tests but the corresponding `GarminClient` delegators were missed; only an end-to-end `AttributeError` exposed it. New parametric test walks `GARMIN_DATA_REGISTRY` and asserts every registered `api_method` is callable on `GarminClient`.
+
 ## [2.11.0] - 2026-05-26
 
 ### Added

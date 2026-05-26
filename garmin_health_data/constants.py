@@ -14,12 +14,19 @@ from typing import Dict, List, Optional
 
 class APIMethodTimeParam(Enum):
     """
-    Classification of API method time parameter patterns.
+    Classification of how each data type is iterated by the extractor.
+
+    The value drives :meth:`GarminExtractor._extract_data_by_type` dispatch: DAILY loops
+    day-by-day, RANGE makes one call covering the full requested window, NO_DATE makes
+    one call with no date parameters, and PER_ACTIVITY is fetched per activity ID
+    (handled separately by :meth:`GarminExtractor.extract_fit_activities`, which
+    iterates the ACTIVITIES_LIST output rather than calendar dates).
     """
 
     DAILY = "daily"  # Single date parameter: get_method(date_str).
     RANGE = "range"  # Date range parameters: get_method(start_str, end_str).
     NO_DATE = "no_date"  # No date parameters: get_method().
+    PER_ACTIVITY = "per_activity"  # Per-activity ID parameter: get_method(activity_id).
 
 
 @dataclass
@@ -33,7 +40,7 @@ class GarminDataType:
 
     name: str  # "SLEEP".
     api_method: str  # "get_sleep_data()".
-    api_method_time_param: APIMethodTimeParam  # DAILY/RANGE/NO_DATE.
+    api_method_time_param: APIMethodTimeParam  # DAILY / RANGE / NO_DATE / PER_ACTIVITY.
     api_endpoint: str  # API endpoint string.
     description: str  # Description of the data type.
     emoji: str  # Emoji for pretty logging.
@@ -54,6 +61,7 @@ class GarminDataRegistry:
             APIMethodTimeParam.DAILY: [],
             APIMethodTimeParam.RANGE: [],
             APIMethodTimeParam.NO_DATE: [],
+            APIMethodTimeParam.PER_ACTIVITY: [],
         }
         self._all_data_types: List[GarminDataType] = []
 
@@ -180,10 +188,10 @@ class GarminDataRegistry:
                 "/periodichealth-service/menstrualcycle/calendar/{start}/{end}",
                 "Per-cycle summaries (observed and predicted): start date, period "
                 "length, predicted flag. Calendar endpoint has a 92-day max range "
-                "per request, paginated transparently by the wrapper for direct "
-                "callers. Note: today's extractor invokes RANGE methods day-by-day "
-                "with startdate=enddate, so a multi-day extract makes one API call "
-                "and one wipe-and-replace processor cycle per day. Tracked in #62.",
+                "per request; the wrapper paginates longer windows transparently. "
+                "Unsplittable: the extractor writes one file stamped with end_date "
+                "(not per-day) because the processor's wipe-and-replace policy for "
+                "predicted cycles needs to see the full new set atomically.",
                 "🩸",
             ),
             GarminDataType(
@@ -193,16 +201,6 @@ class GarminDataRegistry:
                 "/activitylist-service/activities/search/activities",
                 "Numerous aggregated metrics for user-recorded activities.",
                 "📋",
-            ),
-            GarminDataType(
-                "EXERCISE_SETS",
-                "get_activity_exercise_sets",
-                APIMethodTimeParam.RANGE,
-                "/activity-service/activity/{activity_id}/exerciseSets",
-                "Per-set granular strength training data with "
-                "ML-classified exercises, reps, weight, duration, "
-                "and set type.",
-                "💪",
             ),
             # No Date Data - No date parameters: get_method()
             # In case of backfilling, comment out PERSONAL_RECORD data type, since PRs
@@ -233,10 +231,24 @@ class GarminDataRegistry:
                 "rate).",
                 "👤",
             ),
+            # Per-Activity Data - Activity ID parameter: get_method(activity_id).
+            # Iterated per activity (not per calendar date) by
+            # ``GarminExtractor.extract_fit_activities``, which sources the activity
+            # ID list from the ACTIVITIES_LIST output.
+            GarminDataType(
+                "EXERCISE_SETS",
+                "get_activity_exercise_sets",
+                APIMethodTimeParam.PER_ACTIVITY,
+                "/activity-service/activity/{activity_id}/exerciseSets",
+                "Per-set granular strength training data with "
+                "ML-classified exercises, reps, weight, duration, "
+                "and set type.",
+                "💪",
+            ),
             GarminDataType(
                 "ACTIVITY",
                 "download_activity",
-                APIMethodTimeParam.RANGE,
+                APIMethodTimeParam.PER_ACTIVITY,
                 "/download-service/files/activity/{activity_id}",
                 "Binary FIT files containing detailed time-series activity data.",
                 "🏃",
@@ -317,6 +329,15 @@ class GarminDataRegistry:
         :return: List of data types with NO_DATE time parameter.
         """
         return self.get_by_time_param(APIMethodTimeParam.NO_DATE)
+
+    @property
+    def per_activity_data_types(self) -> List[GarminDataType]:
+        """
+        Get all per-activity data types (shorthand).
+
+        :return: List of data types with PER_ACTIVITY time parameter.
+        """
+        return self.get_by_time_param(APIMethodTimeParam.PER_ACTIVITY)
 
 
 def _create_garmin_file_types() -> type:
