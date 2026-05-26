@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "garmin-health-data"
 version = "2.11.2"
-description = "Extract your Garmin Connect health data to a local SQLite database"
+description = "Download Garmin Connect health data as local files and load it into a SQLite database for analysis"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
