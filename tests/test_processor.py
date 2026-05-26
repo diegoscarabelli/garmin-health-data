@@ -7,7 +7,7 @@ strength training data processing.
 
 import copy
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -651,10 +651,11 @@ def _minimal_activity_json(activity_id: int, start_time_iso: str) -> dict:
     :param activity_id: The Garmin activity ID.
     :param start_time_iso: ISO 8601 start timestamp (``"YYYY-MM-DDTHH:MM:SS"``, no
         offset suffix; used for both ``startTimeGMT`` and ``startTimeLocal`` so
-        timezone_offset_hours computes to 0).
+        timezone_offset_hours computes to 0). End time is computed as ``start_time_iso +
+        1 hour``.
     :return: Activity dict ready for ``_process_activity_base``.
     """
-    end_iso = start_time_iso.replace("08:00:00", "09:00:00")
+    end_iso = (datetime.fromisoformat(start_time_iso) + timedelta(hours=1)).isoformat()
     return {
         "activityId": activity_id,
         "activityType": {"typeId": 1, "typeKey": "running"},
@@ -817,9 +818,9 @@ class TestActivityBaseDuplicateDedup:
     ):
         """
         A second activity with the same ``(user_id, start_ts)`` as a previously
-        persisted activity (but a different ``activity_id``) must be silently
-        dropped: ``_process_activity_base`` returns ``None``, no new row lands
-        in the activity table, and the original row stays untouched.
+        persisted activity (but a different ``activity_id``) must be dropped
+        with a warning: ``_process_activity_base`` returns ``None``, no new row
+        lands in the activity table, and the original row stays untouched.
         """
         _seed_activity(db_session, activity_id=12345)
         # Activity 12345 is now in the DB with
