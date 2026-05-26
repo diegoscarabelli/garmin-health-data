@@ -144,7 +144,14 @@ def _split_body_composition_by_day(
     """
     by_day: Dict[date, List[Dict[str, Any]]] = {}
     for entry in payload.get("dateWeightList") or []:
-        ts_ms = entry.get("timestampGMT") or entry.get("date")
+        # Use `is not None` rather than truthiness so a valid epoch-zero
+        # timestamp (Unix Jan 1 1970) wouldn't be silently treated as missing
+        # and replaced by the `date` fallback. Realistically Garmin will never
+        # return that, but the explicit check matches the dropped-entry
+        # docstring contract.
+        ts_ms = entry.get("timestampGMT")
+        if ts_ms is None:
+            ts_ms = entry.get("date")
         if ts_ms is None:
             continue
         try:

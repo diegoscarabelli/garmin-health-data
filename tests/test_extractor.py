@@ -1736,8 +1736,9 @@ def test_split_body_composition_by_day_drops_malformed_timestamps():
     payload = {
         "dateWeightList": [
             {"timestampGMT": valid_ts, "weight": 75000.0},
-            {"timestampGMT": "not-a-number", "weight": 1.0},  # TypeError on int().
+            {"timestampGMT": "not-a-number", "weight": 1.0},  # ValueError on int().
             {"timestampGMT": 10**18, "weight": 2.0},  # Overflow / OSError.
+            {"timestampGMT": [123], "weight": 4.0},  # TypeError on int().
             {"timestampGMT": "2025-01-05T08:00:00Z", "weight": 3.0},  # ValueError.
         ]
     }
