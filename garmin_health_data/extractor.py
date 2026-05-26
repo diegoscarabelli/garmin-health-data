@@ -101,9 +101,11 @@ class ExtractionFailure:
 
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
     :ivar date: Date context for the failure. Typically an ISO date string (``"YYYY-MM-
-        DD"``) for per-day failures, a range string ``"<start>..<end>"`` for
-        unsplittable RANGE failures, or ``""`` when no date context applies (per-data-
-        type or per-activity failures).
+        DD"``) for per-day (DAILY-type) failures, a range string ``"<start>..<end>"``
+        for any RANGE-type failure (the API call is per-window, so the failure label
+        covers the whole window even when the response would have been split into per-
+        day files on success), or ``""`` when no date context applies (per-data-type or
+        per-activity failures).
     :ivar activity_id: Activity ID as a string for per-activity failures, or ``""``
         otherwise.
     :ivar error: Human-readable error description (typically ``"<ExceptionType>:

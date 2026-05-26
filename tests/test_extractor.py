@@ -1172,11 +1172,12 @@ def test_load_activities_list_merges_multiple_files_dedupes_by_id(tmp_path):
     The helper must merge multiple per-day ACTIVITIES_LIST_<date>.json files and dedupe
     by activityId so activities from earlier days are not silently dropped.
 
-    Fresh post-refactor extracts produce a single per-range file, but users upgrading
-    from earlier versions may have multiple per-day files left over in ``ingest/`` from
-    when ACTIVITIES_LIST was extracted day-by-day. The dedupe path covers that mixed-
-    shape transitional state and remains valuable as a defense if the per-day file shape
-    ever returns (e.g. a future split by activity type).
+    Post-refactor extracts make one per-range API call but split the response back into
+    one file per day with activities (see ``_split_activities_list_by_day`` /
+    ``_PER_DAY_SPLITTERS``), so a multi-day extract still produces multiple per-day
+    files in ``ingest/`` that this helper must merge for the activity downloader. Dedupe
+    also covers users upgrading from earlier versions with leftover files of mixed shape
+    in ``ingest/``.
     """
     from datetime import date as date_cls
     from unittest.mock import MagicMock
