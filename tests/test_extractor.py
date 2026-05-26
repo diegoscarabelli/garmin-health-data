@@ -1637,6 +1637,38 @@ def test_split_body_composition_by_day_empty_input():
     assert _split_body_composition_by_day({"dateWeightList": None}) == {}
 
 
+def test_split_body_composition_by_day_drops_malformed_timestamps():
+    """
+    Non-numeric, out-of-range, or otherwise unconvertible ``timestampGMT`` values are
+    silently dropped rather than raising.
+
+    The Garmin API has always returned a numeric millisecond timestamp, so this is
+    purely defensive: a future API shape change (e.g. ISO-string timestamps) shouldn't
+    abort the whole RANGE extraction for that data type and lose every weigh-in in the
+    window.
+    """
+    from datetime import date, datetime, timezone
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    valid_ts = int(datetime(2025, 1, 5, 8, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    payload = {
+        "dateWeightList": [
+            {"timestampGMT": valid_ts, "weight": 75000.0},
+            {"timestampGMT": "not-a-number", "weight": 1.0},  # TypeError on int().
+            {"timestampGMT": 10**18, "weight": 2.0},  # Overflow / OSError.
+            {"timestampGMT": "2025-01-05T08:00:00Z", "weight": 3.0},  # ValueError.
+        ]
+    }
+    result = _split_body_composition_by_day(payload)
+
+    # Only the valid entry survives; the malformed ones are silently dropped
+    # rather than crashing the splitter.
+    assert list(result.keys()) == [date(2025, 1, 5)]
+    assert len(result[date(2025, 1, 5)]["dateWeightList"]) == 1
+    assert result[date(2025, 1, 5)]["dateWeightList"][0]["weight"] == 75000.0
+
+
 def test_split_activities_list_by_day_groups_by_local_date():
     """
     Activities group by ``startTimeLocal`` so each per-day file matches the user's

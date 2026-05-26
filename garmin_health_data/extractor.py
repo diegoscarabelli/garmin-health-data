@@ -147,7 +147,15 @@ def _split_body_composition_by_day(
         ts_ms = entry.get("timestampGMT") or entry.get("date")
         if ts_ms is None:
             continue
-        entry_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+        try:
+            entry_date = datetime.fromtimestamp(
+                int(ts_ms) / 1000, tz=timezone.utc
+            ).date()
+        except (TypeError, ValueError, OverflowError, OSError):
+            # Non-numeric, out-of-range, or otherwise unconvertible timestamp.
+            # Drop the entry rather than abort the whole RANGE extraction; matches
+            # the docstring's "malformed entries are silently dropped" contract.
+            continue
         by_day.setdefault(entry_date, []).append(entry)
     return {d: {"dateWeightList": entries} for d, entries in by_day.items()}
 
