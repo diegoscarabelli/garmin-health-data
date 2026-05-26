@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
 
 ## Features
 
-- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
@@ -383,11 +383,12 @@ If all five strategies are exhausted without success (uncommon — typically onl
 <details>
 <summary><strong>Duplicate prevention &amp; reprocessing</strong></summary>
 
-Duplicates are prevented through a three-tier approach:
+Duplicates are prevented through a four-tier approach:
 
-1. **Activity metrics from FIT or TCX files** (time-series, laps, splits): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction, handling added/removed laps or records between reprocesses. The `ts_data_available` flag tracks whether time-series data exists. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
+1. **Activity metrics from FIT or TCX files** (time-series, laps, splits) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
 2. **JSON wellness time-series** (heart rate, sleep movement, stress, body battery, etc.): `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts.
-3. **Main records** (activities, sleep, user profile): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
+3. **Main records** (activities, sleep, user profile, menstrual cycle day, observed menstrual cycle summaries): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
+4. **Predicted menstrual cycle summaries** (`menstrual_cycle_summary` rows with `predicted_cycle = TRUE`): wipe-and-replace per extract. Garmin recomputes its projected start dates as new data is logged, so a pure upsert would accumulate stale predicted rows whose `start_date` PK no longer matches the latest projection. The processor `DELETE`s all predicted rows for the user before inserting the new set; observed (logged) cycles use pattern 3 and survive untouched.
 
 This means you can safely:
 
