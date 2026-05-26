@@ -1597,7 +1597,7 @@ def test_split_body_composition_by_day_groups_by_utc_date():
     ``dateWeightList`` wrapper key so the processor parses it identically to the legacy
     per-day API responses.
     """
-    from datetime import datetime, timezone
+    from datetime import date, datetime, timezone
 
     from garmin_health_data.extractor import _split_body_composition_by_day
 
@@ -1645,6 +1645,8 @@ def test_split_activities_list_by_day_groups_by_local_date():
     Malformed / missing ``startTimeLocal`` skips the activity rather than dropping the
     whole batch.
     """
+    from datetime import date
+
     from garmin_health_data.extractor import _split_activities_list_by_day
 
     payload = [
@@ -1666,8 +1668,8 @@ def test_extract_data_by_type_per_activity_returns_empty_list(tmp_path):
     PER_ACTIVITY-classified data types (ACTIVITY, EXERCISE_SETS) take an activity_id at
     the API level, not a date range.
 
-    The dispatcher must short- circuit them and let ``extract_fit_activities`` handle
-    the per-activity loop. Regression guard against accidentally routing them through
+    The dispatcher must short-circuit them and let ``extract_fit_activities`` handle the
+    per-activity loop. Regression guard against accidentally routing them through
     ``_extract_range`` (which would call the API with date params it doesn't accept).
     """
     from datetime import date

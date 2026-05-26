@@ -133,8 +133,11 @@ def _split_body_composition_by_day(
     intentionally dropped: they describe the full range and are not consumed by
     the processor.
 
-    Malformed entries (no usable timestamp) are skipped silently here; the
-    processor warns on the same shape downstream.
+    Malformed entries (no usable timestamp) are silently dropped: they cannot be
+    grouped into any day's bucket and they never reach the processor (the splitter
+    is the only place such an entry can be skipped, so any downstream warning would
+    never fire). Real-world responses haven't shown this shape in practice; the
+    guard is defensive.
 
     :param payload: Full range response from ``get_body_composition``.
     :return: Mapping ``{date: {"dateWeightList": [...that day's entries...]}}``.
