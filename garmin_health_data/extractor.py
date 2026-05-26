@@ -13,7 +13,7 @@ import zipfile
 import io
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -53,8 +53,10 @@ def _with_retries(fn: Callable, *args, **kwargs):
 
     Retries only on the connection / DNS / timeout exception classes listed in
     ``_TRANSIENT_API_EXCEPTIONS``. Other exceptions propagate immediately so the
-    caller's broader try/except (e.g. per-date isolation in
-    :meth:`GarminExtractor._extract_day_by_day`) can record the failure once and move
+    caller's broader try/except (per-date isolation in
+    :meth:`GarminExtractor._extract_day_by_day`, per-window isolation in
+    :meth:`GarminExtractor._extract_range`, or per-activity isolation in
+    :meth:`GarminExtractor.extract_fit_activities`) can record the failure once and move
     on.
 
     :param fn: Callable to invoke.
@@ -98,11 +100,10 @@ class ExtractionFailure:
     A single extraction failure recorded by the extractor for end-of-run reporting.
 
     :ivar data_type: Garmin data type name (e.g. ``"SLEEP"``, ``"ACTIVITY"``).
-    :ivar date: Date context for the failure. Most commonly an ISO date string (``"YYYY-
-        MM-DD"``) for per-date failures, but may also be a date range string like
-        ``"<start>..<end>"`` (e.g. for ``ACTIVITIES_LIST`` failures that span the whole
-        run window) or ``""`` when no date context applies (per-data-type or per-
-        activity failures).
+    :ivar date: Date context for the failure. Typically an ISO date string (``"YYYY-MM-
+        DD"``) for per-day failures, a range string ``"<start>..<end>"`` for
+        unsplittable RANGE failures, or ``""`` when no date context applies (per- data-
+        type or per-activity failures).
     :ivar activity_id: Activity ID as a string for per-activity failures, or ``""``
         otherwise.
     :ivar error: Human-readable error description (typically ``"<ExceptionType>:
@@ -113,6 +114,76 @@ class ExtractionFailure:
     date: str
     activity_id: str
     error: str
+
+
+def _split_body_composition_by_day(
+    payload: Dict[str, Any],
+) -> Dict[date, Dict[str, Any]]:
+    """
+    Split a ``BODY_COMPOSITION`` per-range response into per-day payloads.
+
+    Each entry in ``dateWeightList`` carries its own ``timestampGMT`` (milliseconds
+    since epoch). Groups entries by their UTC calendar date. Days without entries
+    yield no key in the returned dict. The per-day payload preserves the wrapper
+    shape (``{"dateWeightList": [...]}``) so :meth:`GarminProcessor._process_body_
+    composition` parses it identically to the legacy per-day API responses. Other
+    wrapper fields (``startDate``, ``endDate``, ``totalAverage``) are intentionally
+    dropped: they describe the full range and are not consumed by the processor.
+
+    Malformed entries (no usable timestamp) are skipped silently here; the
+    processor warns on the same shape downstream.
+
+    :param payload: Full range response from ``get_body_composition``.
+    :return: Mapping ``{date: {"dateWeightList": [...that day's entries...]}}``.
+    """
+    by_day: Dict[date, List[Dict[str, Any]]] = {}
+    for entry in payload.get("dateWeightList") or []:
+        ts_ms = entry.get("timestampGMT") or entry.get("date")
+        if ts_ms is None:
+            continue
+        entry_date = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).date()
+        by_day.setdefault(entry_date, []).append(entry)
+    return {d: {"dateWeightList": entries} for d, entries in by_day.items()}
+
+
+def _split_activities_list_by_day(
+    payload: List[Dict[str, Any]],
+) -> Dict[date, List[Dict[str, Any]]]:
+    """
+    Split an ``ACTIVITIES_LIST`` per-range response into per-day payloads.
+
+    Each activity carries ``startTimeLocal`` (the wall clock the user perceives). Groups
+    activities by that local date so each per-day file mirrors what the legacy per-day
+    API response looked like for that user-facing day. Activities missing a parseable
+    ``startTimeLocal`` are skipped.
+
+    :param payload: Full range response from ``get_activities_by_date`` (a list).
+    :return: Mapping ``{date: [...that day's activities...]}``.
+    """
+    by_day: Dict[date, List[Dict[str, Any]]] = {}
+    for activity in payload or []:
+        start_local = activity.get("startTimeLocal")
+        if not isinstance(start_local, str):
+            continue
+        try:
+            # Garmin returns e.g. "2026-05-15T10:00:00.0"; the date prefix is
+            # all we need so we don't run the full fractional-seconds parser.
+            activity_date = date.fromisoformat(start_local[:10])
+        except ValueError:
+            continue
+        by_day.setdefault(activity_date, []).append(activity)
+    return by_day
+
+
+# Registry of per-day splitters: data types listed here have their per-range API
+# responses split into one file per day before write. RANGE types not listed
+# write one file stamped with end_date (current behavior — appropriate when the
+# data is per-range rather than per-day, e.g. menstrual cycle summaries where
+# the processor's wipe-and-replace policy needs atomicity across all cycles).
+_PER_DAY_SPLITTERS: Dict[str, Callable[[Any], Dict[date, Any]]] = {
+    "BODY_COMPOSITION": _split_body_composition_by_day,
+    "ACTIVITIES_LIST": _split_activities_list_by_day,
+}
 
 
 # File extensions that the downstream processor knows how to route.
@@ -441,17 +512,29 @@ class GarminExtractor:
         calendar's 92-day chunk). Calling them once per day with ``start = end``
         wastes API quota, multiplies disk I/O, and (for the menstrual cycle summary
         path) re-fires the wipe-and-replace policy per file when one pass would
-        suffice. This method takes the full requested window and calls the wrapper
-        once. Failure isolation shifts from per-date to per-range, recorded as
-        ``"{start}..{end}"`` in :attr:`failures`.
+        suffice.
 
-        The saved file's date stamp is ``end_date`` (single-date filename
-        convention preserved); the body contains all rows in the requested window.
+        After the single API call, the response is either:
+
+        - **Split per day** for data types whose rows are naturally per-day
+          (``BODY_COMPOSITION``, ``ACTIVITIES_LIST``; see ``_PER_DAY_SPLITTERS``).
+          Each day with rows lands in its own file, preserving the per-day
+          ``(user, day)`` FileSet abstraction the processor expects. Days with no
+          rows write no file.
+        - **Written as a single file stamped ``end_date``** for data types whose
+          rows are per-range / per-cycle and need to be processed atomically
+          (``MENSTRUAL_CYCLE_SUMMARY``: its wipe-and-replace policy for predicted
+          cycles must see the full new set of cycles in one transaction, so
+          splitting would re-introduce the redundant-write bug).
+
+        Failure isolation is per-range (one API call), recorded as
+        ``"{start}..{end}"`` in :attr:`failures`.
 
         :param data_type: GarminDataType with RANGE time parameter.
         :param start_date: Start date for data extraction (inclusive).
         :param end_date: End date for data extraction (inclusive).
-        :return: List of saved file paths (zero or one file).
+        :return: List of saved file paths (zero, one, or many depending on the
+            data type's splitter registration and how many days had data).
         """
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = end_date.strftime("%Y-%m-%d")
@@ -487,32 +570,38 @@ class GarminExtractor:
             )
             return []
 
-        return self._save_garmin_data(data, data_type, end_date)
+        splitter = _PER_DAY_SPLITTERS.get(data_type.name)
+        if splitter is None:
+            # Unsplittable: write one file stamped end_date, body contains all rows.
+            return self._save_garmin_data(data, data_type, end_date)
+
+        per_day = splitter(data)
+        if not per_day:
+            click.secho(
+                f"{data_type.emoji} {data_type.name}: No data for "
+                f"{start_str}..{end_str}.",
+                fg="yellow",
+            )
+            return []
+
+        saved_files: List[Path] = []
+        for day in sorted(per_day):
+            saved_files.extend(self._save_garmin_data(per_day[day], data_type, day))
+        return saved_files
 
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
         """
-        Extract Garmin data for a specific type.
-
-        ACTIVITY files use different extraction logic.
-
-        Uses the appropriate API method, handling the associated API time parameter
-        pattern (DAILY, RANGE, NO_DATE) and generates consistent filenames.
+        Extract Garmin data for a specific type, dispatching by time-param taxonomy.
 
         :param data_type: GarminDataType defining the extraction parameters.
         :param start_date: Start date for data extraction (inclusive).
         :param end_date: End date for data extraction (inclusive).
         :return: List of saved file paths.
+        :raises ValueError: If the data type's ``api_method_time_param`` is not one of
+            the four supported variants.
         """
-        # Special case: ACTIVITY and EXERCISE_SETS use different extraction logic.
-        if data_type.name in ("ACTIVITY", "EXERCISE_SETS"):
-            click.echo(
-                f"{data_type.emoji} {data_type.name} files will be handled "
-                f"separately by extract_fit_activities()."
-            )
-            return []  # Return empty list.
-
         if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
             # One API call per day, per-date error isolation.
             return self._extract_day_by_day(data_type, start_date, end_date)
@@ -544,13 +633,28 @@ class GarminExtractor:
             )
             return []
 
+        if data_type.api_method_time_param == APIMethodTimeParam.PER_ACTIVITY:
+            # PER_ACTIVITY types (ACTIVITY, EXERCISE_SETS) are iterated per
+            # activity ID by extract_fit_activities, which sources the IDs from
+            # the ACTIVITIES_LIST output. They don't fit the date-driven loop in
+            # this dispatcher, so we no-op here and let the activities pipeline
+            # handle them.
+            click.echo(
+                f"{data_type.emoji} {data_type.name} files will be handled "
+                f"separately by extract_fit_activities()."
+            )
+            return []
+
         raise ValueError(
             f"Unsupported API method time parameter: "
             f"{data_type.api_method_time_param}."
         )
 
     def _save_garmin_data(
-        self, data: dict, data_type: GarminDataType, file_date: date
+        self,
+        data: Union[Dict[str, Any], List[Any]],
+        data_type: GarminDataType,
+        file_date: date,
     ) -> List[Path]:
         """
         Save Garmin data to JSON file with standardized naming.
@@ -558,7 +662,8 @@ class GarminExtractor:
         Generates filenames with user ID, data type, and ISO 8601 timestamp for
         consistent batching. Creates midday timestamp for date-based grouping.
 
-        :param data: The data to save.
+        :param data: The data to save. Most data types return a dict; ACTIVITIES_LIST
+            returns a top-level list, so the parameter accepts either.
         :param data_type: The data type.
         :param file_date: Date for timestamp generation used in filename.
         :return: List of saved file paths.
@@ -667,12 +772,14 @@ class GarminExtractor:
         into a single deduplicated activities list.
 
         The registry-driven extract loop calls ``get_activities_by_date`` once for the
-        full requested window inside ``_extract_range`` (RANGE-typed), so a multi-day
-        window writes one ``<user_id>_ACTIVITIES_LIST_<timestamp>.json`` file covering
-        the entire range. The merge-by-``activityId`` logic still runs because users
-        upgrading from earlier versions may have multiple per-day files left over in
-        ``ingest/`` from before the per-range refactor; deduplication keeps the merged
-        result correct in that mixed-shape transitional state.
+        full requested window inside ``_extract_range`` (RANGE-typed), then the per-day
+        splitter (see ``_split_activities_list_by_day`` / ``_PER_DAY_SPLITTERS``) writes
+        one ``<user_id>_ACTIVITIES_LIST_<day>T12-00-00Z.json`` per day with activities,
+        each containing only that day's activities. Reading only the newest file would
+        silently skip activities from earlier days; instead, parse every matching file
+        and merge by ``activityId`` (last value wins for any duplicate). The dedupe also
+        covers users upgrading from earlier versions with leftover per-range or per-day
+        files of mixed shape in ``ingest/``.
 
         Falls back to ``None`` (caller hits the live API) on any read or parse error so
         a single corrupt file doesn't prevent extraction.

@@ -1308,9 +1308,49 @@ def test_extract_range_calls_api_once_for_full_window(tmp_path):
 
     Previously the extractor called all RANGE methods with ``startdate=enddate`` per
     day, wasting API quota and (for the menstrual cycle summary path) re-firing wipe-
-    and-replace per file.
+    and-replace per file. ``MENSTRUAL_CYCLE_SUMMARY`` is the unsplittable RANGE type
+    (its wipe-and-replace policy needs atomicity), so it lands as one file stamped with
+    ``end_date``.
     """
     from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("MENSTRUAL_CYCLE_SUMMARY",),
+    )
+    extractor.user_id = "test-user"
+
+    summary_type = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_SUMMARY")
+    mock_api = MagicMock(return_value={"cycleSummaries": [{"startDate": "2025-01-15"}]})
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, summary_type.api_method, mock_api)
+
+    saved = extractor._extract_range(summary_type, date(2025, 1, 1), date(2025, 1, 31))
+
+    # Exactly one API call for the 31-day window, not 31 calls.
+    assert mock_api.call_count == 1
+    mock_api.assert_called_once_with("2025-01-01", "2025-01-31")
+    # One file saved, stamped with end_date for the unsplittable RANGE type.
+    assert len(saved) == 1
+    assert "2025-01-31" in saved[0].name
+
+
+def test_extract_range_splits_body_composition_into_per_day_files(tmp_path):
+    """
+    BODY_COMPOSITION still makes one API call for the full window, but the response is
+    split into per-day files.
+
+    Each day with at least one weigh-in lands in its own file stamped with that day's
+    date, preserving the per-day FileSet semantics the processor expects. Days without
+    weigh-ins write no file.
+    """
+    from datetime import date, datetime, timezone
     from unittest.mock import MagicMock
 
     from garmin_health_data.constants import GARMIN_DATA_REGISTRY
@@ -1324,19 +1364,74 @@ def test_extract_range_calls_api_once_for_full_window(tmp_path):
     )
     extractor.user_id = "test-user"
 
+    # Three weigh-ins on two distinct UTC dates.
+    def _ms(dt: datetime) -> int:
+        return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
     body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
-    mock_api = MagicMock(return_value={"dateWeightList": [{"weight": 75000.0}]})
+    mock_api = MagicMock(
+        return_value={
+            "dateWeightList": [
+                {"timestampGMT": _ms(datetime(2025, 1, 5, 8, 0)), "weight": 75000.0},
+                {"timestampGMT": _ms(datetime(2025, 1, 5, 20, 0)), "weight": 74800.0},
+                {"timestampGMT": _ms(datetime(2025, 1, 20, 9, 0)), "weight": 74500.0},
+            ]
+        }
+    )
     extractor.garmin_client = MagicMock()
     setattr(extractor.garmin_client, body_comp.api_method, mock_api)
 
     saved = extractor._extract_range(body_comp, date(2025, 1, 1), date(2025, 1, 31))
 
-    # Exactly one API call for the 31-day window, not 31 calls.
+    # Exactly one API call (the perf win).
     assert mock_api.call_count == 1
     mock_api.assert_called_once_with("2025-01-01", "2025-01-31")
-    # One file saved, stamped with the end_date for filename consistency.
-    assert len(saved) == 1
-    assert "2025-01-31" in saved[0].name
+    # Two files (one per distinct day with weigh-ins, not 31 files and not 3).
+    assert len(saved) == 2
+    names = sorted(p.name for p in saved)
+    assert "BODY_COMPOSITION_2025-01-05" in names[0]
+    assert "BODY_COMPOSITION_2025-01-20" in names[1]
+
+
+def test_extract_range_splits_activities_list_into_per_day_files(tmp_path):
+    """
+    ACTIVITIES_LIST splits by ``startTimeLocal`` so each per-day file lands in the
+    expected day's FileSet, mirroring the pre-#62 file shape with one API call.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITIES_LIST",),
+    )
+    extractor.user_id = "test-user"
+
+    activities_list = GARMIN_DATA_REGISTRY.get_by_name("ACTIVITIES_LIST")
+    mock_api = MagicMock(
+        return_value=[
+            {"activityId": 1, "startTimeLocal": "2025-01-05T10:00:00.0"},
+            {"activityId": 2, "startTimeLocal": "2025-01-05T18:30:00.0"},
+            {"activityId": 3, "startTimeLocal": "2025-01-20T07:15:00.0"},
+        ]
+    )
+    extractor.garmin_client = MagicMock()
+    setattr(extractor.garmin_client, activities_list.api_method, mock_api)
+
+    saved = extractor._extract_range(
+        activities_list, date(2025, 1, 1), date(2025, 1, 31)
+    )
+
+    assert mock_api.call_count == 1
+    assert len(saved) == 2
+    names = sorted(p.name for p in saved)
+    assert "ACTIVITIES_LIST_2025-01-05" in names[0]
+    assert "ACTIVITIES_LIST_2025-01-20" in names[1]
 
 
 def test_extract_range_records_failure_with_range_label(tmp_path):
@@ -1487,3 +1582,114 @@ def test_garmin_client_exposes_a_delegator_for_every_registered_api_method():
         f"GarminClient has non-callable attributes for registered data "
         f"types: {not_callable}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-day splitter unit tests + PER_ACTIVITY dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_split_body_composition_by_day_groups_by_utc_date():
+    """
+    Body composition entries with timestampGMT spanning multiple UTC dates must be
+    grouped by date in the splitter's output, with each per-day payload preserving the
+    ``dateWeightList`` wrapper key so the processor parses it identically to the legacy
+    per-day API responses.
+    """
+    from datetime import datetime, timezone
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    def _ms(dt: datetime) -> int:
+        return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+    payload = {
+        "dateWeightList": [
+            {"timestampGMT": _ms(datetime(2025, 1, 5, 8, 0)), "weight": 75000.0},
+            {"timestampGMT": _ms(datetime(2025, 1, 5, 20, 0)), "weight": 74800.0},
+            {"timestampGMT": _ms(datetime(2025, 1, 7, 7, 0)), "weight": 74500.0},
+            {"timestampGMT": None, "weight": 1.0},  # Skipped: no timestamp.
+        ],
+        # Irrelevant range-wide fields the processor never reads.
+        "startDate": "2025-01-01",
+        "totalAverage": {"weight": 74766.0},
+    }
+    result = _split_body_composition_by_day(payload)
+
+    assert sorted(d.isoformat() for d in result) == ["2025-01-05", "2025-01-07"]
+    assert len(result[date(2025, 1, 5)]["dateWeightList"]) == 2
+    assert result[date(2025, 1, 7)]["dateWeightList"][0]["weight"] == 74500.0
+    # Wrapper fields not in the processor's contract are intentionally dropped.
+    assert "startDate" not in result[date(2025, 1, 5)]
+    assert "totalAverage" not in result[date(2025, 1, 5)]
+
+
+def test_split_body_composition_by_day_empty_input():
+    """
+    Empty / missing ``dateWeightList`` yields an empty mapping; ``_extract_range`` uses
+    that to write zero files (no-op for days the user did not weigh in).
+    """
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    assert _split_body_composition_by_day({}) == {}
+    assert _split_body_composition_by_day({"dateWeightList": []}) == {}
+    assert _split_body_composition_by_day({"dateWeightList": None}) == {}
+
+
+def test_split_activities_list_by_day_groups_by_local_date():
+    """
+    Activities group by ``startTimeLocal`` so each per-day file matches the user's
+    perceived day.
+
+    Malformed / missing ``startTimeLocal`` skips the activity rather than dropping the
+    whole batch.
+    """
+    from garmin_health_data.extractor import _split_activities_list_by_day
+
+    payload = [
+        {"activityId": 1, "startTimeLocal": "2025-01-05T10:00:00.0"},
+        {"activityId": 2, "startTimeLocal": "2025-01-05T18:30:00.0"},
+        {"activityId": 3, "startTimeLocal": "2025-01-20T07:15:00.0"},
+        {"activityId": 4, "startTimeLocal": "not-a-date"},  # Skipped.
+        {"activityId": 5},  # Missing field -> skipped.
+    ]
+    result = _split_activities_list_by_day(payload)
+
+    assert sorted(d.isoformat() for d in result) == ["2025-01-05", "2025-01-20"]
+    assert [a["activityId"] for a in result[date(2025, 1, 5)]] == [1, 2]
+    assert [a["activityId"] for a in result[date(2025, 1, 20)]] == [3]
+
+
+def test_extract_data_by_type_per_activity_returns_empty_list(tmp_path):
+    """
+    PER_ACTIVITY-classified data types (ACTIVITY, EXERCISE_SETS) take an activity_id at
+    the API level, not a date range.
+
+    The dispatcher must short- circuit them and let ``extract_fit_activities`` handle
+    the per-activity loop. Regression guard against accidentally routing them through
+    ``_extract_range`` (which would call the API with date params it doesn't accept).
+    """
+    from datetime import date
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY", "EXERCISE_SETS"),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    for type_name in ("ACTIVITY", "EXERCISE_SETS"):
+        data_type = GARMIN_DATA_REGISTRY.get_by_name(type_name)
+        result = extractor._extract_data_by_type(
+            data_type, date(2025, 1, 1), date(2025, 1, 31)
+        )
+        assert result == []
+    # The API methods on the client were never invoked by the dispatcher.
+    extractor.garmin_client.download_activity.assert_not_called()
+    extractor.garmin_client.get_activity_exercise_sets.assert_not_called()
