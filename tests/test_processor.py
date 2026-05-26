@@ -849,6 +849,80 @@ class TestActivityBaseDuplicateDedup:
         # Original record untouched.
         assert rows[0].activity_name == "Morning Run"
 
+    def test_fit_file_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        After ``_process_activity_base`` skips a duplicate, the per-activity file
+        processors must also skip files for that ``activity_id`` instead of FK-failing
+        on the missing parent row.
+
+        Covers the FIT path: builds a
+        correctly-named filename, registers the activity_id as skipped, and
+        asserts ``_process_fit_file`` returns early without reading the file
+        or hitting the DB (the file contents don't even need to be valid FIT
+        because the skip check fires first).
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        # Filename pattern: <user_id>_ACTIVITY_<activity_id>_<timestamp>.fit
+        fake_fit = tmp_path / "1_ACTIVITY_99999_2024-01-01T08-00-00Z.fit"
+        fake_fit.write_bytes(b"not a real fit file")
+
+        # No exception, no rows written, no Activity query executed.
+        processor._process_fit_file(fake_fit, db_session)
+        rows = db_session.execute(select(ActivityTsMetric)).scalars().all()
+        assert rows == []
+
+    def test_tcx_file_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Same as the FIT case, for the TCX path.
+
+        ``_process_tcx_file`` must skip files whose activity_id was deduped earlier in
+        the same FileSet.
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        fake_tcx = tmp_path / "1_ACTIVITY_99999_2024-01-01T08-00-00Z.tcx"
+        fake_tcx.write_bytes(b"<not><real></tcx>")
+
+        processor._process_tcx_file(fake_tcx, db_session)
+        rows = db_session.execute(select(ActivityTsMetric)).scalars().all()
+        assert rows == []
+
+    def test_exercise_sets_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Same as the FIT/TCX cases, for the EXERCISE_SETS path.
+
+        ``_process_exercise_sets`` reads activity_id from the JSON body (not the
+        filename) but the skip-tracking logic is identical.
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        fake_es = tmp_path / "1_EXERCISE_SETS_99999_2024-01-01T08-00-00Z.json"
+        fake_es.write_text(
+            json.dumps(
+                {
+                    "activityId": 99999,
+                    "exerciseSets": [{"messageIndex": 0, "setType": "ACTIVE"}],
+                }
+            )
+        )
+
+        processor._process_exercise_sets(fake_es, db_session)
+        rows = db_session.execute(select(StrengthSet)).scalars().all()
+        assert rows == []
+
     def test_reextract_same_activity_id_does_not_fire_dedup_query(
         self, db_session: Session
     ):

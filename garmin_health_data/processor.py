@@ -131,6 +131,13 @@ class GarminProcessor(Processor):
         super().__init__(*args, **kwargs)
         self.user_id = None
         self.must_update_user = False
+        # Activity IDs the per-activity processors should skip because the
+        # ACTIVITIES_LIST processor already determined they're duplicates of
+        # another activity sharing the same (user_id, start_ts). Their parent
+        # row was never inserted, so trying to write child rows (FIT / TCX
+        # time-series, splits, laps, GPS path, EXERCISE_SETS) would FK-fail
+        # and quarantine the whole FileSet. See issue #66.
+        self._skipped_activity_ids: set = set()
 
     def process_file_set(self, file_set: FileSet, session: Session):
         """
@@ -611,6 +618,10 @@ class GarminProcessor(Processor):
                 f"clean it up.",
                 fg="yellow",
             )
+            # Remember this id so the per-activity-file processors (FIT, TCX,
+            # EXERCISE_SETS) downstream in the same FileSet also skip cleanly
+            # rather than FK-failing on the missing parent row.
+            self._skipped_activity_ids.add(activity_id)
             return None
 
         # Calculate timezone offset in hours (decimal precision for half-hour zones).
@@ -1033,6 +1044,18 @@ class GarminProcessor(Processor):
         if not activity_id:
             click.secho(
                 f"⚠️ No activityId in {file_path.name}.",
+                fg="yellow",
+            )
+            return
+
+        # Skip if the parent activity was deduped (issue #66): the activity
+        # row was never inserted, so inserting StrengthSet rows referencing it
+        # would FK-fail and quarantine the FileSet.
+        if int(activity_id) in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping EXERCISE_SETS for activity {activity_id} in "
+                f"{file_path.name}: parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
                 fg="yellow",
             )
             return
@@ -2965,6 +2988,19 @@ class GarminProcessor(Processor):
 
         activity_id = int(match.groups()[1])
 
+        # Skip if the parent activity was deduped (issue #66): the activity
+        # row was never inserted, so the existence check below would raise and
+        # the FileSet would quarantine. Warn-and-skip instead so the rest of
+        # the day's data still loads.
+        if activity_id in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping FIT file for activity {activity_id} "
+                f"({file_path.name}): parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
+
         # Verify activity exists (FIT file requires a parent activity record).
         existing_activity = (
             session.execute(select(Activity).where(Activity.activity_id == activity_id))
@@ -3219,6 +3255,18 @@ class GarminProcessor(Processor):
             )
 
         activity_id = int(match.groups()[1])
+
+        # Skip if the parent activity was deduped (issue #66): same rationale
+        # as the FIT path above; the parent row was never inserted, so the
+        # existence check below would raise and quarantine the FileSet.
+        if activity_id in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping TCX file for activity {activity_id} "
+                f"({file_path.name}): parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
 
         existing_activity = (
             session.execute(select(Activity).where(Activity.activity_id == activity_id))
