@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-05-26
+
+### Fixed
+
+- **Activity processor now skips duplicate `(user_id, start_ts)` rows with a warning instead of quarantining the entire day's FileSet** ([#66](https://github.com/diegoscarabelli/garmin-health-data/issues/66)). The `activity` table's `UNIQUE (user_id, start_ts)` constraint is a sensible real-world invariant ("one user, one activity at any given instant") that Garmin Connect itself does not enforce: users can create multiple activities with identical start times (manual entries created twice, two devices recording the same workout, etc.). Previously the second activity's insert raised `IntegrityError` from the secondary UNIQUE index, the per-FileSet error handler caught it, and the whole `(user, day)` FileSet quarantined — losing sleep, HR, stress, training_readiness, training_status, intensity_minutes, floors, steps, respiration, menstrual_cycle_day, etc. for that day along with the duplicate activity. The processor now checks for an existing `(user_id, start_ts)` row with a different `activity_id` before the upsert; on hit, the duplicate is logged with a yellow warning naming both `activity_id`s and a hint to delete one in Garmin Connect, then skipped. First-seen activity wins; the rest of the day's data loads normally. Re-extracting the same `activity_id` is unaffected (the existence query excludes the same id from the conflict set). Skipped `activity_id`s are tracked on the processor so the downstream FIT, TCX, and `EXERCISE_SETS` per-activity processors also skip cleanly instead of FK-failing on the missing parent row. Discovered during PR #65 e2e testing.
+
 ## [2.11.1] - 2026-05-26
 
 ### Changed

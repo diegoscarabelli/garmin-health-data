@@ -7,7 +7,7 @@ strength training data processing.
 
 import copy
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -50,10 +50,15 @@ def processor():
     """
     Create a GarminProcessor instance for testing.
 
+    The internal MagicMock session is pre-configured so
+    ``session.execute().scalar_one_or_none()`` returns ``None`` by default, matching the
+    ``mock_session`` fixture. See that fixture's docstring for rationale.
+
     :return: GarminProcessor instance.
     """
     file_set = FileSet(file_paths=[], files={})
     session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = None
     proc = GarminProcessor(file_set, session)
     proc.user_id = 123456789
     return proc
@@ -64,9 +69,17 @@ def mock_session():
     """
     Create a mock database session.
 
+    The default ``session.execute().scalar_one_or_none()`` returns ``None`` so the
+    activity processor's duplicate-detection check (which queries for an existing
+    ``(user_id, start_ts)`` row with a different ``activity_id``) treats the activity as
+    new in mock-based tests. Tests that want to exercise the duplicate path should
+    override this on their session instance.
+
     :return: Mock session instance.
     """
-    return MagicMock()
+    session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = None
+    return session
 
 
 # --- FIT helpers ------------------------------------------------------------
@@ -626,6 +639,33 @@ class TestProcessFitFile:
 # --- Activity base upsert tests --------------------------------------------
 
 
+def _minimal_activity_json(activity_id: int, start_time_iso: str) -> dict:
+    """
+    Build the minimum activity JSON shape ``_process_activity_base`` needs to reach its
+    duplicate-detection check.
+
+    Only fields that ``pop()`` runs before the check are populated; intentionally omits
+    sport-specific aggregates and supplemental fields because the duplicate path returns
+    ``None`` before they would be read.
+
+    :param activity_id: The Garmin activity ID.
+    :param start_time_iso: ISO 8601 start timestamp (``"YYYY-MM-DDTHH:MM:SS"``, no
+        offset suffix; used for both ``startTimeGMT`` and ``startTimeLocal`` so
+        timezone_offset_hours computes to 0). End time is computed as ``start_time_iso +
+        1 hour``.
+    :return: Activity dict ready for ``_process_activity_base``.
+    """
+    end_iso = (datetime.fromisoformat(start_time_iso) + timedelta(hours=1)).isoformat()
+    return {
+        "activityId": activity_id,
+        "activityType": {"typeId": 1, "typeKey": "running"},
+        "eventType": {"typeId": 1, "typeKey": "uncategorized"},
+        "startTimeGMT": start_time_iso,
+        "startTimeLocal": start_time_iso,
+        "endTimeGMT": end_iso,
+    }
+
+
 class TestActivityBaseUpsert:
     """
     Tests for column exclusion during activity upserts.
@@ -756,6 +796,160 @@ class TestActivityBaseUpsert:
         assert "create_ts" not in update_columns
         assert "activity_name" in update_columns
         assert "update_ts" in update_columns
+
+
+class TestActivityBaseDuplicateDedup:
+    """
+    Tests for the (user_id, start_ts) duplicate-detection guard in
+    ``_process_activity_base`` (issue #66).
+
+    Garmin Connect accepts multiple activities with identical start times (manual
+    entries, two devices recording the same session, etc.) and returns each as a
+    distinct ``activityId``. The activity table's ``UNIQUE (user_id, start_ts)``
+    constraint correctly rejects the second insert — but a raw ``IntegrityError`` from
+    the upsert would quarantine the whole ``(user, day)`` FileSet, losing sleep / HR /
+    stress / etc. for that day along with the duplicate. The processor detects the
+    conflict before the upsert, skips the duplicate with a warning, and keeps processing
+    the rest of the day's data.
+    """
+
+    def test_duplicate_start_ts_with_different_activity_id_is_skipped(
+        self, db_session: Session
+    ):
+        """
+        A second activity with the same ``(user_id, start_ts)`` as a previously
+        persisted activity (but a different ``activity_id``) must be dropped
+        with a warning: ``_process_activity_base`` returns ``None``, no new row
+        lands in the activity table, and the original row stays untouched.
+        """
+        _seed_activity(db_session, activity_id=12345)
+        # Activity 12345 is now in the DB with
+        # start_ts=2024-01-01T08:00:00Z, user_id=1, name="Morning Run".
+
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+
+        dup_payload = _minimal_activity_json(
+            activity_id=99999,  # Distinct from the seeded 12345.
+            start_time_iso="2024-01-01T08:00:00",  # Identical start_ts.
+        )
+
+        result = processor._process_activity_base(dup_payload, db_session)
+        db_session.commit()
+
+        # Skip signaled to caller.
+        assert result is None
+        # Only the original activity exists; the duplicate was not inserted.
+        rows = (
+            db_session.execute(select(Activity).order_by(Activity.activity_id))
+            .scalars()
+            .all()
+        )
+        assert [r.activity_id for r in rows] == [12345]
+        # Original record untouched.
+        assert rows[0].activity_name == "Morning Run"
+
+    def test_fit_file_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        After ``_process_activity_base`` skips a duplicate, the per-activity file
+        processors must also skip files for that ``activity_id`` instead of FK-failing
+        on the missing parent row.
+
+        Covers the FIT path: builds a
+        correctly-named filename, registers the activity_id as skipped, and
+        asserts ``_process_fit_file`` returns early without reading the file
+        or hitting the DB (the file contents don't even need to be valid FIT
+        because the skip check fires first).
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        # Filename pattern: <user_id>_ACTIVITY_<activity_id>_<timestamp>.fit
+        fake_fit = tmp_path / "1_ACTIVITY_99999_2024-01-01T08-00-00Z.fit"
+        fake_fit.write_bytes(b"not a real fit file")
+
+        # No exception, no rows written, no Activity query executed.
+        processor._process_fit_file(fake_fit, db_session)
+        rows = db_session.execute(select(ActivityTsMetric)).scalars().all()
+        assert rows == []
+
+    def test_tcx_file_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Same as the FIT case, for the TCX path.
+
+        ``_process_tcx_file`` must skip files whose activity_id was deduped earlier in
+        the same FileSet.
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        fake_tcx = tmp_path / "1_ACTIVITY_99999_2024-01-01T08-00-00Z.tcx"
+        fake_tcx.write_bytes(b"<not><real></tcx>")
+
+        processor._process_tcx_file(fake_tcx, db_session)
+        rows = db_session.execute(select(ActivityTsMetric)).scalars().all()
+        assert rows == []
+
+    def test_exercise_sets_for_deduped_activity_is_skipped(
+        self, db_session: Session, tmp_path
+    ):
+        """
+        Same as the FIT/TCX cases, for the EXERCISE_SETS path.
+
+        ``_process_exercise_sets`` reads activity_id from the JSON body (not the
+        filename) but the skip-tracking logic is identical.
+        """
+        processor = GarminProcessor(FileSet(file_paths=[], files={}), db_session)
+        processor.user_id = 1
+        processor._skipped_activity_ids.add(99999)
+
+        fake_es = tmp_path / "1_EXERCISE_SETS_99999_2024-01-01T08-00-00Z.json"
+        fake_es.write_text(
+            json.dumps(
+                {
+                    "activityId": 99999,
+                    "exerciseSets": [{"messageIndex": 0, "setType": "ACTIVE"}],
+                }
+            )
+        )
+
+        processor._process_exercise_sets(fake_es, db_session)
+        rows = db_session.execute(select(StrengthSet)).scalars().all()
+        assert rows == []
+
+    def test_reextract_same_activity_id_does_not_fire_dedup_query(
+        self, db_session: Session
+    ):
+        """
+        Idempotency guard: re-processing the same ``activity_id`` with the same
+        ``start_ts`` (e.g. a user re-running ``garmin extract``) must NOT trip the
+        duplicate path. Exercised at the dedup-query level: the existence query excludes
+        rows with the same ``activity_id`` from the conflict set so the normal UPSERT-
+        by-PK path runs unchanged.
+
+        Tested directly via the same query the processor uses, rather than invoking the
+        full ``_process_activity_base`` upsert path (which is already covered by
+        ``TestActivityBaseUpsert``'s ``_seed_activity`` round-trip).
+        """
+        _seed_activity(db_session, activity_id=12345)
+
+        same_id_query_result = db_session.execute(
+            select(Activity.activity_id).where(
+                Activity.user_id == 1,
+                Activity.start_ts == datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc),
+                Activity.activity_id != 12345,  # The exclusion under test.
+            )
+        ).scalar_one_or_none()
+
+        # No "other" row exists; same activity_id is correctly excluded so the
+        # dedup check would let the upsert proceed unchanged.
+        assert same_id_query_result is None
 
 
 # --- Sleep upsert tests ----------------------------------------------------

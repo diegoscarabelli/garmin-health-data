@@ -131,6 +131,13 @@ class GarminProcessor(Processor):
         super().__init__(*args, **kwargs)
         self.user_id = None
         self.must_update_user = False
+        # Activity IDs the per-activity processors should skip because the
+        # ACTIVITIES_LIST processor already determined they're duplicates of
+        # another activity sharing the same (user_id, start_ts). Their parent
+        # row was never inserted, so trying to write child rows (FIT / TCX
+        # time-series, splits, laps, GPS path, EXERCISE_SETS) would FK-fail
+        # and quarantine the whole FileSet. See issue #66.
+        self._skipped_activity_ids: set = set()
 
     def process_file_set(self, file_set: FileSet, session: Session):
         """
@@ -537,7 +544,7 @@ class GarminProcessor(Processor):
 
     def _process_activity_base(
         self, activity_data: Dict[str, Any], session: Session
-    ) -> int:
+    ) -> Optional[int]:
         """
         Extract activity fields and process to database using upsert with composite
         primary key.
@@ -545,9 +552,15 @@ class GarminProcessor(Processor):
         Uses pop() to remove processed fields from activity_data, enabling automatic
         supplemental metrics extraction without hardcoded exclusion lists.
 
+        Returns ``None`` when the activity is skipped (empty record, or a duplicate
+        ``(user_id, start_ts)`` collision with an existing activity in the database).
+        The caller treats ``None`` as "skip the rest of the per-activity pipeline" so
+        sport-specific aggregates and supplemental metrics are not attached to a non-
+        existent parent row.
+
         :param activity_data: Activity data from JSON (will be modified by pop()).
         :param session: SQLAlchemy Session object.
-        :return: Activity ID from the processed record.
+        :return: Activity ID from the processed record, or ``None`` if skipped.
         """
         # Extract activity ID.
         activity_id = activity_data.pop("activityId")
@@ -572,6 +585,44 @@ class GarminProcessor(Processor):
         # Create timezone-aware datetimes and calculate offset.
         start_ts = self._parse_garmin_gmt(start_time_gmt_str)
         end_ts = self._parse_garmin_gmt(end_time_gmt_str)
+
+        # Activity-level deduplication. The `activity` table has a
+        # UNIQUE (user_id, start_ts) constraint expressing the real-world
+        # invariant "one user, one activity at any given instant" (a sensible
+        # guard against accidental upserts). Garmin Connect, however, does not
+        # itself enforce this: users can create multiple activities with the
+        # same start_ts (e.g. manually entering the same workout twice, or
+        # uploading from two devices that recorded the same session). When that
+        # happens the API returns both as distinct activity_ids and a naive
+        # upsert keyed on the PK would raise IntegrityError on the secondary
+        # UNIQUE constraint, quarantining the entire (user, day) FileSet -
+        # losing sleep, HR, stress, and everything else for that day. Detect
+        # the conflict and skip the duplicate with a warning so the rest of the
+        # day's data still loads. The first-seen activity for that start_ts
+        # wins; subsequent duplicates are dropped. The user can resolve the
+        # underlying duplication by deleting one entry in Garmin Connect.
+        existing_dup = session.execute(
+            select(Activity.activity_id).where(
+                Activity.user_id == int(self.user_id),
+                Activity.start_ts == start_ts,
+                Activity.activity_id != activity_id,
+            )
+        ).scalar_one_or_none()
+        if existing_dup is not None:
+            click.secho(
+                f"⚠️ Skipping duplicate activity {activity_id} for user "
+                f"{self.user_id}: another activity (activity_id={existing_dup}) "
+                f"already exists with start_ts={start_ts}. This usually means "
+                f"the same workout was entered twice (e.g. a manual entry "
+                f"created twice by accident). Delete one in Garmin Connect to "
+                f"clean it up.",
+                fg="yellow",
+            )
+            # Remember this id so the per-activity-file processors (FIT, TCX,
+            # EXERCISE_SETS) downstream in the same FileSet also skip cleanly
+            # rather than FK-failing on the missing parent row.
+            self._skipped_activity_ids.add(activity_id)
+            return None
 
         # Calculate timezone offset in hours (decimal precision for half-hour zones).
         utc_naive = self._parse_garmin_iso(start_time_gmt_str)
@@ -993,6 +1044,18 @@ class GarminProcessor(Processor):
         if not activity_id:
             click.secho(
                 f"⚠️ No activityId in {file_path.name}.",
+                fg="yellow",
+            )
+            return
+
+        # Skip if the parent activity was deduped (issue #66): the activity
+        # row was never inserted, so inserting StrengthSet rows referencing it
+        # would FK-fail and quarantine the FileSet.
+        if int(activity_id) in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping EXERCISE_SETS for activity {activity_id} in "
+                f"{file_path.name}: parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
                 fg="yellow",
             )
             return
@@ -2925,6 +2988,19 @@ class GarminProcessor(Processor):
 
         activity_id = int(match.groups()[1])
 
+        # Skip if the parent activity was deduped (issue #66): the activity
+        # row was never inserted, so the existence check below would raise and
+        # the FileSet would quarantine. Warn-and-skip instead so the rest of
+        # the day's data still loads.
+        if activity_id in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping FIT file for activity {activity_id} "
+                f"({file_path.name}): parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
+
         # Verify activity exists (FIT file requires a parent activity record).
         existing_activity = (
             session.execute(select(Activity).where(Activity.activity_id == activity_id))
@@ -3179,6 +3255,18 @@ class GarminProcessor(Processor):
             )
 
         activity_id = int(match.groups()[1])
+
+        # Skip if the parent activity was deduped (issue #66): same rationale
+        # as the FIT path above; the parent row was never inserted, so the
+        # existence check below would raise and quarantine the FileSet.
+        if activity_id in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping TCX file for activity {activity_id} "
+                f"({file_path.name}): parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
 
         existing_activity = (
             session.execute(select(Activity).where(Activity.activity_id == activity_id))
