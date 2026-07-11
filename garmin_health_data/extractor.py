@@ -715,17 +715,14 @@ class GarminExtractor:
         click.echo(f"Saved {data_type.emoji} {data_type.name}: {filename}.")
         return [filepath]
 
-    def _extract_activity_content(
-        self, activity_id: int, raw_data: bytes
-    ) -> Optional[tuple[str, bytes]]:
+    def _identify_activity_content(
+        self, activity_id: int, inner_name: str, content: bytes
+    ) -> tuple[str, bytes]:
         """
-        Extract and identify the content of a downloaded activity file.
+        Identify the format of a single extracted activity file.
 
-        Garmin's ORIGINAL download format returns a ZIP archive whose inner
-        file may be FIT, TCX, GPX, or another format depending on how the
-        activity was originally recorded or uploaded. This method extracts
-        the content and identifies the format using magic bytes, so the saved
-        filename carries the correct extension regardless of what Garmin puts
+        Uses magic bytes first, falling back to the inner filename extension, so the
+        saved filename carries the correct extension regardless of what Garmin puts
         inside the ZIP.
 
         Fallback chain when magic bytes are inconclusive:
@@ -733,37 +730,12 @@ class GarminExtractor:
         2. ``'.bin'`` — file is preserved on disk but will not be processed.
 
         :param activity_id: Garmin activity ID (used in log messages).
-        :param raw_data: Raw bytes returned by the download API.
-        :return: Tuple of ``(file_extension, content_bytes)``, or ``None``
-            if the archive is empty.
+        :param inner_name: Name of the file inside the ZIP (empty string for a bare
+            non-ZIP download), used for the filename-extension fallback and log
+            messages.
+        :param content: Raw content bytes of the file.
+        :return: Tuple of ``(file_extension, content_bytes)``.
         """
-        inner_name = ""
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(raw_data), "r") as zip_ref:
-                zip_files = zip_ref.namelist()
-                if not zip_files:
-                    click.secho(
-                        f"⚠️  Empty ZIP archive for activity {activity_id}.",
-                        fg="yellow",
-                    )
-                    return None
-
-                if len(zip_files) > 1:
-                    click.secho(
-                        f"⚠️  ZIP for activity {activity_id} contains "
-                        f"{len(zip_files)} files: {zip_files}. "
-                        f"Using first: {zip_files[0]!r}.",
-                        fg="yellow",
-                    )
-
-                inner_name = zip_files[0]
-                content = zip_ref.read(inner_name)
-
-        except zipfile.BadZipFile:
-            # Not a ZIP — probe the raw bytes directly.
-            content = raw_data
-
         file_ext = _detect_format_from_magic(content)
 
         if file_ext is not None:
@@ -795,6 +767,53 @@ class GarminExtractor:
             fg="yellow",
         )
         return "bin", content
+
+    def _extract_activity_content(
+        self, activity_id: int, raw_data: bytes
+    ) -> List[tuple[str, bytes]]:
+        """
+        Extract and identify the content of every file in a downloaded activity.
+
+        Garmin's ORIGINAL download format returns a ZIP archive. Most activities have a
+        single inner file (FIT, TCX, GPX, or another format depending on how the
+        activity was originally recorded or uploaded). Multi-sport activities
+        (duathlon/triathlon) are the exception: Garmin packs one FIT file per leg into
+        the same ZIP. This method extracts every inner file and identifies each one's
+        format via `_identify_activity_content`, so every leg is preserved instead of
+        only the first one.
+
+        :param activity_id: Garmin activity ID (used in log messages).
+        :param raw_data: Raw bytes returned by the download API.
+        :return: List of ``(file_extension, content_bytes)`` tuples, one per inner file.
+            Empty list if the archive is empty.
+        """
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_data), "r") as zip_ref:
+                zip_files = zip_ref.namelist()
+                if not zip_files:
+                    click.secho(
+                        f"⚠️  Empty ZIP archive for activity {activity_id}.",
+                        fg="yellow",
+                    )
+                    return []
+
+                if len(zip_files) > 1:
+                    click.echo(
+                        f"ℹ️  ZIP for activity {activity_id} contains "
+                        f"{len(zip_files)} files (multi-sport activity): "
+                        f"{zip_files}. Extracting every leg."
+                    )
+
+                inner_contents = [(name, zip_ref.read(name)) for name in zip_files]
+
+        except zipfile.BadZipFile:
+            # Not a ZIP — probe the raw bytes directly. Only ever a single file.
+            inner_contents = [("", raw_data)]
+
+        return [
+            self._identify_activity_content(activity_id, inner_name, content)
+            for inner_name, content in inner_contents
+        ]
 
     def _load_activities_list_from_disk(self) -> Optional[list]:
         """
@@ -961,28 +980,31 @@ class GarminExtractor:
                 )
                 continue
 
-            # Detect actual file format and extract content.
-            result = self._extract_activity_content(activity_id, raw_data)
-            if result is None:
+            # Detect actual file format(s) and extract content. Multi-sport
+            # activities (duathlon/triathlon) yield one entry per leg.
+            results = self._extract_activity_content(activity_id, raw_data)
+            if not results:
                 continue
 
-            file_ext, file_content = result
+            # Suffix each leg's filename with "_legN" (1-indexed) only when
+            # there's more than one, so ordinary single-file activities keep
+            # their existing unsuffixed filename.
+            multi_leg = len(results) > 1
+            for leg_idx, (file_ext, file_content) in enumerate(results, 1):
+                leg_suffix = f"_leg{leg_idx}" if multi_leg else ""
+                filename = (
+                    f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}"
+                    f"{leg_suffix}.{file_ext}"
+                ).replace(":", "-")
+                filepath = self.ingest_dir / filename
 
-            # Build filename using the detected extension.
-            filename = (
-                f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.{file_ext}".replace(
-                    ":", "-"
-                )
-            )
-            filepath = self.ingest_dir / filename
+                # Save to file.
+                with open(filepath, "wb") as f:
+                    f.write(file_content)
 
-            # Save to file.
-            with open(filepath, "wb") as f:
-                f.write(file_content)
-
-            file_size = filepath.stat().st_size / 1024  # KB.
-            click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
-            downloaded_files.append(filepath)
+                file_size = filepath.stat().st_size / 1024  # KB.
+                click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
+                downloaded_files.append(filepath)
 
             # Fetch exercise sets for strength training activities.
             activity_type_key = (

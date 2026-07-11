@@ -9,7 +9,7 @@ and health metrics.
 
 import json
 import re
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -210,16 +210,23 @@ class GarminProcessor(Processor):
                 # Get emoji for this data type from registry.
                 data_type = GARMIN_DATA_REGISTRY.get_by_name(enum_key.name)
                 emoji = data_type.emoji
-                for file_path in file_paths:
-                    click.echo(
-                        f"{emoji} Processing {enum_key.name} file: {file_path.name}."
-                    )
-                    # Call processor function.
-                    processor_func(file_path, session)
-                    click.echo(
-                        f"✅ Successfully processed {enum_key.name} "
-                        f"file {file_path.name}."
-                    )
+
+                if data_type_name == "ACTIVITY":
+                    # Multi-sport activities (duathlon/triathlon) are packed as
+                    # multiple FIT files sharing one activity_id; group and
+                    # merge them instead of processing each file independently.
+                    self._process_activity_files(file_paths, session, emoji)
+                else:
+                    for file_path in file_paths:
+                        click.echo(
+                            f"{emoji} Processing {enum_key.name} file: {file_path.name}."
+                        )
+                        # Call processor function.
+                        processor_func(file_path, session)
+                        click.echo(
+                            f"✅ Successfully processed {enum_key.name} "
+                            f"file {file_path.name}."
+                        )
 
         # Check for any unprocessed files in the file set.
         unprocessed_keys = set(file_set.files.keys()) - processed_enum_keys
@@ -316,7 +323,9 @@ class GarminProcessor(Processor):
         :return: Dictionary with `user_id`, `data_type`, and `timestamp`.
         :raises ValueError: If filename doesn't match expected pattern.
         """
-        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit|tcx)$"
+        pattern = (
+            r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)(?:_leg\d+)?\.(json|fit|tcx)$"
+        )
         match = re.match(pattern, filename)
 
         if not match:
@@ -2961,65 +2970,106 @@ class GarminProcessor(Processor):
                 fg="blue",
             )
 
-    def _process_fit_file(self, file_path: Path, session: Session):
-        """
-        Process a FIT file and extract time-series, split, lap, and GPS path data.
+    _ACTIVITY_FIT_FILENAME_RE = re.compile(
+        r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)(?:_leg\d+)?\.fit$"
+    )
 
-        Processes FIT file using fitdecode library, extracts record, split, and lap
-        frames, and stores metrics via delete+insert for idempotent reprocessing.
-        Activities with GPS samples also get an eagerly materialized `ActivityPath` row
-        holding an ordered [lon, lat] array sorted by timestamp, ready for downstream
-        path-layer visualization. Updates `ts_data_available` flag based on whether
-        time-series records were found.
+    def _process_activity_files(
+        self, file_paths: List[Path], session: Session, emoji: str
+    ) -> None:
+        """
+        Process all downloaded ACTIVITY files for a file set.
+
+        Groups FIT files by the activity_id encoded in their filename. Multi-sport
+        activities (duathlon/triathlon) are packed by Garmin as one FIT file per leg
+        inside the same download ZIP (see `extractor._extract_activity_content`), all
+        sharing one parent activity_id; those legs are merged and persisted together via
+        `_process_multi_leg_fit_files` instead of each leg triggering an independent
+        delete+insert that would clobber the others. Single-FIT activities and all other
+        formats (TCX, GPX, etc.) are dispatched unchanged via `_process_activity_file`.
+
+        :param file_paths: All ACTIVITY file paths in the file set.
+        :param session: SQLAlchemy Session object.
+        :param emoji: Emoji prefix for log messages (from the ACTIVITY data type).
+        """
+        fit_paths_by_activity: Dict[int, List[Path]] = defaultdict(list)
+        other_paths: List[Path] = []
+
+        for file_path in file_paths:
+            match = self._ACTIVITY_FIT_FILENAME_RE.match(file_path.name)
+            if match:
+                fit_paths_by_activity[int(match.group(2))].append(file_path)
+            else:
+                other_paths.append(file_path)
+
+for activity_id in sorted(fit_paths_by_activity):
+    paths = fit_paths_by_activity[activity_id]
+    # Deterministic leg order: sort by numeric leg index so "_leg10" follows "_leg9".
+    paths.sort(
+        key=lambda p: int(re.search(r"_leg(\d+)", p.stem).group(1)) if "_leg" in p.stem else 0
+    )
+            if len(paths) == 1:
+                click.echo(f"{emoji} Processing ACTIVITY file: {paths[0].name}.")
+                self._process_fit_file(paths[0], session)
+                click.echo(f"✅ Successfully processed ACTIVITY file {paths[0].name}.")
+            else:
+                leg_names = [p.name for p in paths]
+                click.echo(
+                    f"{emoji} Processing {len(paths)} FIT files for multi-sport "
+                    f"activity {activity_id}: {leg_names}."
+                )
+                self._process_multi_leg_fit_files(paths, session)
+                click.echo(
+                    f"✅ Successfully processed multi-sport activity {activity_id} "
+                    f"({len(paths)} legs)."
+                )
+
+        for file_path in other_paths:
+            click.echo(f"{emoji} Processing ACTIVITY file: {file_path.name}.")
+            self._process_activity_file(file_path, session)
+            click.echo(f"✅ Successfully processed ACTIVITY file {file_path.name}.")
+
+    def _parse_fit_file_frames(
+        self,
+        file_path: Path,
+        activity_id: int,
+        lap_idx_offset: int = 0,
+        split_idx_offset: int = 0,
+    ) -> tuple[
+        List[ActivityTsMetric],
+        List[ActivitySplitMetric],
+        List[ActivityLapMetric],
+        List[tuple],
+        int,
+        int,
+    ]:
+        """
+        Parse a single FIT file's record/split/lap frames.
+
+        Pure parsing step factored out of `_process_fit_file` so multi-leg (multi-sport)
+        activities can parse each leg's FIT file independently and merge the results
+        before a single `_persist_activity_metrics` call, instead of each leg triggering
+        its own delete+insert and clobbering the others (see
+        `_process_multi_leg_fit_files`). ``lap_idx_offset``/``split_idx_offset`` let
+        callers chain lap/split numbering across legs so merged rows don't collide on
+        the ``(activity_id, lap_idx, name)`` / ``(activity_id, split_idx, name)``
+        primary keys.
 
         :param file_path: Path to the FIT file.
-        :param session: SQLAlchemy Session object.
+        :param activity_id: Activity ID to stamp onto every parsed metric row.
+        :param lap_idx_offset: Starting lap index (0 for a single-file activity; the
+            previous leg's final lap index when chaining multiple legs).
+        :param split_idx_offset: Starting split index, same chaining rationale as
+            ``lap_idx_offset``.
+        :return: Tuple of ``(ts_metrics, split_metrics, lap_metrics, gps_records_deg,
+            final_lap_idx, final_split_idx)``.
         """
-        # Extract `activity_id` from filename.
-        # FIT files have format: {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
-        # Use regex to extract activity_id directly from filename.
-        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.fit$"
-        match = re.match(pattern, file_path.name)
-
-        if not match:
-            raise ValueError(
-                f"Cannot extract activity_id from filename: {file_path.name}"
-            )
-
-        activity_id = int(match.groups()[1])
-
-        # Skip if the parent activity was deduped (issue #66): the activity
-        # row was never inserted, so the existence check below would raise and
-        # the FileSet would quarantine. Warn-and-skip instead so the rest of
-        # the day's data still loads.
-        if activity_id in self._skipped_activity_ids:
-            click.secho(
-                f"⚠️ Skipping FIT file for activity {activity_id} "
-                f"({file_path.name}): parent activity was deduped (duplicate "
-                f"(user_id, start_ts)).",
-                fg="yellow",
-            )
-            return
-
-        # Verify activity exists (FIT file requires a parent activity record).
-        existing_activity = (
-            session.execute(select(Activity).where(Activity.activity_id == activity_id))
-            .scalars()
-            .first()
-        )
-
-        if not existing_activity:
-            raise ValueError(
-                f"Activity {activity_id} not found in database. "
-                f"FIT file processing requires existing activity record."
-            )
-
         # Initialize metric lists and counters.
         ts_metrics = []
         split_metrics = []
         lap_metrics = []
-        split_idx = 0
-        lap_idx = 0
+        split_idx = split_idx_offset
+        lap_idx = lap_idx_offset
 
         # Collect per-frame GPS samples for activity_path materialization.
         # Each element is (timestamp, lon_semicircles, lat_semicircles).
@@ -3198,6 +3248,74 @@ class GarminProcessor(Processor):
             for ts, lon_semi, lat_semi in gps_records
         ]
 
+        return (
+            ts_metrics,
+            split_metrics,
+            lap_metrics,
+            gps_records_deg,
+            lap_idx,
+            split_idx,
+        )
+
+    def _process_fit_file(self, file_path: Path, session: Session):
+        """
+        Process a FIT file and extract time-series, split, lap, and GPS path data.
+
+        Parses the FIT file via `_parse_fit_file_frames` and stores metrics via
+        delete+insert for idempotent reprocessing. Activities with GPS samples also get
+        an eagerly materialized `ActivityPath` row holding an ordered [lon, lat] array
+        sorted by timestamp, ready for downstream path-layer visualization. Updates
+        `ts_data_available` flag based on whether time-series records were found.
+
+        For multi-sport activities (multiple FIT files sharing one activity_id), use
+        `_process_multi_leg_fit_files` instead so all legs are merged into a single
+        delete+insert pass.
+
+        :param file_path: Path to the FIT file.
+        :param session: SQLAlchemy Session object.
+        """
+        # Extract `activity_id` from filename.
+        # FIT files have format: {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
+        # (optionally with a "_legN" suffix for one leg of a multi-sport activity).
+        match = self._ACTIVITY_FIT_FILENAME_RE.match(file_path.name)
+
+        if not match:
+            raise ValueError(
+                f"Cannot extract activity_id from filename: {file_path.name}"
+            )
+
+        activity_id = int(match.group(2))
+
+        # Skip if the parent activity was deduped (issue #66): the activity
+        # row was never inserted, so the existence check below would raise and
+        # the FileSet would quarantine. Warn-and-skip instead so the rest of
+        # the day's data still loads.
+        if activity_id in self._skipped_activity_ids:
+            click.secho(
+                f"⚠️ Skipping FIT file for activity {activity_id} "
+                f"({file_path.name}): parent activity was deduped (duplicate "
+                f"(user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
+
+        # Verify activity exists (FIT file requires a parent activity record).
+        existing_activity = (
+            session.execute(select(Activity).where(Activity.activity_id == activity_id))
+            .scalars()
+            .first()
+        )
+
+        if not existing_activity:
+            raise ValueError(
+                f"Activity {activity_id} not found in database. "
+                f"FIT file processing requires existing activity record."
+            )
+
+        ts_metrics, split_metrics, lap_metrics, gps_records_deg, _, _ = (
+            self._parse_fit_file_frames(file_path, activity_id)
+        )
+
         self._persist_activity_metrics(
             activity_id=activity_id,
             file_path=file_path,
@@ -3207,6 +3325,91 @@ class GarminProcessor(Processor):
             gps_records_deg=gps_records_deg,
             session=session,
             split_metrics=split_metrics,
+        )
+
+    def _process_multi_leg_fit_files(
+        self, file_paths: List[Path], session: Session
+    ) -> None:
+        """
+        Process multiple FIT files that share one parent activity_id.
+
+        Multi-sport activities (duathlon/triathlon) are recorded by Garmin as multiple
+        FIT files -- one per leg -- inside a single download ZIP, all describing the
+        same parent activity_id. Parses every leg via `_parse_fit_file_frames` and
+        persists all of them in a single `_persist_activity_metrics` call, so later legs
+        don't wipe out earlier ones (that method deletes existing rows for `activity_id`
+        before inserting). Lap/split indices are chained across legs so merged rows
+        don't collide on the `(activity_id, lap_idx, name)` / `(activity_id, split_idx,
+        name)` primary keys.
+
+        :param file_paths: FIT file paths for every leg of one multi-sport activity, all
+            sharing the same activity_id, sorted in recording order.
+        :param session: SQLAlchemy Session object.
+        """
+        match = self._ACTIVITY_FIT_FILENAME_RE.match(file_paths[0].name)
+        if not match:
+            raise ValueError(
+                f"Cannot extract activity_id from filename: {file_paths[0].name}"
+            )
+        activity_id = int(match.group(2))
+
+        if activity_id in self._skipped_activity_ids:
+            leg_names = [p.name for p in file_paths]
+            click.secho(
+                f"⚠️ Skipping {len(file_paths)} FIT file(s) for activity "
+                f"{activity_id} ({leg_names}): parent activity was deduped "
+                f"(duplicate (user_id, start_ts)).",
+                fg="yellow",
+            )
+            return
+
+        existing_activity = (
+            session.execute(select(Activity).where(Activity.activity_id == activity_id))
+            .scalars()
+            .first()
+        )
+
+        if not existing_activity:
+            raise ValueError(
+                f"Activity {activity_id} not found in database. "
+                f"FIT file processing requires existing activity record."
+            )
+
+        all_ts_metrics: List[ActivityTsMetric] = []
+        all_split_metrics: List[ActivitySplitMetric] = []
+        all_lap_metrics: List[ActivityLapMetric] = []
+        all_gps_records_deg: List[tuple] = []
+        lap_offset = 0
+        split_offset = 0
+
+        for file_path in file_paths:
+            (
+                ts_metrics,
+                split_metrics,
+                lap_metrics,
+                gps_records_deg,
+                lap_offset,
+                split_offset,
+            ) = self._parse_fit_file_frames(
+                file_path,
+                activity_id,
+                lap_idx_offset=lap_offset,
+                split_idx_offset=split_offset,
+            )
+            all_ts_metrics.extend(ts_metrics)
+            all_split_metrics.extend(split_metrics)
+            all_lap_metrics.extend(lap_metrics)
+            all_gps_records_deg.extend(gps_records_deg)
+
+        self._persist_activity_metrics(
+            activity_id=activity_id,
+            file_path=file_paths[-1],
+            existing_activity=existing_activity,
+            ts_metrics=all_ts_metrics,
+            lap_metrics=all_lap_metrics,
+            gps_records_deg=all_gps_records_deg,
+            session=session,
+            split_metrics=all_split_metrics,
         )
 
     def _process_activity_file(self, file_path: Path, session: Session):
@@ -3246,7 +3449,7 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy Session object.
         """
         # TCX files share the same naming convention as FIT files.
-        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.tcx$"
+        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)(?:_leg\d+)?\.tcx$"
         match = re.match(pattern, file_path.name)
 
         if not match:

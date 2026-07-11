@@ -525,6 +525,20 @@ def _make_zip(inner_filename: str, content: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _make_multi_zip(entries: list) -> bytes:
+    """
+    Build an in-memory ZIP containing multiple files (e.g. multi-sport legs).
+
+    :param entries: List of ``(inner_filename, content)`` tuples.
+    :return: ZIP archive bytes.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for inner_filename, content in entries:
+            zf.writestr(inner_filename, content)
+    return buf.getvalue()
+
+
 class TestDetectFormatFromMagic:
     """
     Unit tests for ``_detect_format_from_magic``.
@@ -618,48 +632,48 @@ class TestExtractActivityContent:
 
     def test_fit_zip_returns_fit_extension(self, extractor: GarminExtractor) -> None:
         """
-        ZIP containing a FIT file returns ('fit', content).
+        ZIP containing a FIT file returns [('fit', content)].
 
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
         raw = _make_zip("12345_ACTIVITY.fit", _FIT_MAGIC)
         result = extractor._extract_activity_content(12345, raw)
-        assert result is not None
-        ext, content = result
+        assert len(result) == 1
+        ext, content = result[0]
         assert ext == "fit"
         assert content == _FIT_MAGIC
 
     def test_tcx_zip_returns_tcx_extension(self, extractor: GarminExtractor) -> None:
         """
-        ZIP containing a TCX file returns ('tcx', content).
+        ZIP containing a TCX file returns [('tcx', content)].
 
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
         raw = _make_zip("12345.tcx", _TCX_CONTENT)
         result = extractor._extract_activity_content(12345, raw)
-        assert result is not None
-        ext, content = result
+        assert len(result) == 1
+        ext, content = result[0]
         assert ext == "tcx"
         assert content == _TCX_CONTENT
 
     def test_gpx_zip_returns_gpx_extension(self, extractor: GarminExtractor) -> None:
         """
-        ZIP containing a GPX file returns ('gpx', content).
+        ZIP containing a GPX file returns [('gpx', content)].
 
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
         raw = _make_zip("12345.gpx", _GPX_CONTENT)
         result = extractor._extract_activity_content(12345, raw)
-        assert result is not None
-        ext, content = result
+        assert len(result) == 1
+        ext, content = result[0]
         assert ext == "gpx"
 
-    def test_empty_zip_returns_none(self, extractor: GarminExtractor) -> None:
+    def test_empty_zip_returns_empty_list(self, extractor: GarminExtractor) -> None:
         """
-        Empty ZIP archive returns None (activity is skipped).
+        Empty ZIP archive returns an empty list (activity is skipped).
 
         :param extractor: GarminExtractor fixture.
         :return: None.
@@ -668,18 +682,18 @@ class TestExtractActivityContent:
         with zipfile.ZipFile(buf, "w"):
             pass
         result = extractor._extract_activity_content(12345, buf.getvalue())
-        assert result is None
+        assert result == []
 
     def test_non_zip_raw_fit_bytes(self, extractor: GarminExtractor) -> None:
         """
-        Non-ZIP bytes that are a valid FIT file are returned as 'fit'.
+        Non-ZIP bytes that are a valid FIT file are returned as [('fit', content)].
 
         :param extractor: GarminExtractor fixture.
         :return: None.
         """
         result = extractor._extract_activity_content(12345, _FIT_MAGIC)
-        assert result is not None
-        ext, content = result
+        assert len(result) == 1
+        ext, content = result[0]
         assert ext == "fit"
         assert content == _FIT_MAGIC
 
@@ -695,8 +709,8 @@ class TestExtractActivityContent:
         unknown_content = b"UNKNOWN_FORMAT_BYTES"
         raw = _make_zip("activity.tcx", unknown_content)
         result = extractor._extract_activity_content(12345, raw)
-        assert result is not None
-        ext, content = result
+        assert len(result) == 1
+        ext, content = result[0]
         assert ext == "tcx"
         assert content == unknown_content
 
@@ -712,9 +726,32 @@ class TestExtractActivityContent:
         unknown_content = b"MYSTERY_BYTES"
         raw = _make_zip("activity.xyz", unknown_content)
         result = extractor._extract_activity_content(12345, raw)
-        assert result is not None
-        ext, _ = result
+        assert len(result) == 1
+        ext, _ = result[0]
         assert ext == "bin"
+
+    def test_multi_sport_zip_returns_every_leg(
+        self, extractor: GarminExtractor
+    ) -> None:
+        """
+        A ZIP with multiple FIT files (multi-sport activity legs) returns every leg's
+        content, in ZIP entry order, instead of discarding all but the first.
+
+        :param extractor: GarminExtractor fixture.
+        :return: None.
+        """
+        leg1_content = _FIT_MAGIC + b"leg1"
+        leg2_content = _FIT_MAGIC + b"leg2"
+        raw = _make_multi_zip(
+            [
+                ("12345_1.fit", leg1_content),
+                ("12345_2.fit", leg2_content),
+            ]
+        )
+        result = extractor._extract_activity_content(12345, raw)
+        assert len(result) == 2
+        assert result[0] == ("fit", leg1_content)
+        assert result[1] == ("fit", leg2_content)
 
 
 @patch("garmin_health_data.extractor.time.sleep")
