@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Extractor no longer discards non-first entries from a multi-file activity ZIP** ([#72](https://github.com/diegoscarabelli/garmin-health-data/issues/72)). Garmin's `ORIGINAL` download for a multi-sport activity can be a ZIP containing one FIT file per leg; `_extract_activity_content` previously kept only `zip_files[0]` and silently dropped every other leg, with only a warning logged. Every entry is now extracted and saved (suffixed `_legN` when there's more than one), and `GarminProcessor` groups same-activity FIT files and merges all legs' `record`/`split`/`lap` frames into a single delete+insert pass — processing each leg's file independently would let a later leg silently wipe out an earlier leg's rows via the existing idempotent delete+insert. Lap/split indices are chained across legs to avoid `(activity_id, lap_idx, name)` / `(activity_id, split_idx, name)` primary-key collisions. Note: re-verified against all 5 multi-sport activities on the reporting account and none actually exercised this ZIP-truncation path (each was a single FIT file with multiple internal `session` frames); this is a correct defensive fix for the code path described in the issue, not a confirmed root-cause fix for that account. The issue's second bug — no `multi_sport` dispatch branch, so `running_agg_metrics`/`swimming_agg_metrics`/`cycling_agg_metrics` stay empty — remains open.
+
 ## [2.11.2] - 2026-05-26
 
 ### Fixed
