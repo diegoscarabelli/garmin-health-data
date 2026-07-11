@@ -636,6 +636,143 @@ class TestProcessFitFile:
         assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
 
 
+class TestProcessMultiLegFitFiles:
+    """
+    Tests for _process_multi_leg_fit_files: multi-sport activities (duathlon/ triathlon)
+    whose legs must be merged into a single delete+insert pass instead of each leg
+    clobbering the previous one's rows.
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        file_set = FileSet(file_paths=[], files={})
+        return GarminProcessor(file_set=file_set, session=MagicMock())
+
+    def test_merges_laps_from_both_legs_without_clobbering(self, db_session: Session):
+        """
+        Both legs' laps survive in the DB, with lap_idx chained across legs (leg 2
+        continues where leg 1 left off) instead of restarting at 1 and colliding on the
+        (activity_id, lap_idx, name) primary key.
+        """
+        _seed_activity(db_session, activity_id=12345)
+
+        leg1_lap = _make_frame("lap", [_make_field("total_elapsed_time", 300.0, "s")])
+        leg2_lap = _make_frame("lap", [_make_field("total_elapsed_time", 400.0, "s")])
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.side_effect = [
+                _mock_fit_reader([leg1_lap]),
+                _mock_fit_reader([leg2_lap]),
+            ]
+            processor._process_multi_leg_fit_files(
+                [
+                    Path("1_ACTIVITY_12345_2024-01-01T08:00:00Z_leg1.fit"),
+                    Path("1_ACTIVITY_12345_2024-01-01T08:00:00Z_leg2.fit"),
+                ],
+                db_session,
+            )
+        db_session.commit()
+
+        laps = (
+            db_session.execute(
+                select(ActivityLapMetric).where(ActivityLapMetric.activity_id == 12345)
+            )
+            .scalars()
+            .all()
+        )
+        lap_values = sorted(
+            (lap.lap_idx, lap.value) for lap in laps if lap.name == "total_elapsed_time"
+        )
+        assert lap_values == [(1, 300.0), (2, 400.0)]
+
+
+class TestProcessActivityFilesGrouping:
+    """
+    Tests for _process_activity_files: grouping FIT files by activity_id so multi-sport
+    legs are merged instead of processed independently.
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        return GarminProcessor(FileSet(file_paths=[], files={}), MagicMock())
+
+    def test_single_fit_file_uses_process_fit_file(self, tmp_path: Path):
+        """
+        A single FIT file for an activity_id is dispatched to _process_fit_file, not the
+        multi-leg path.
+        """
+        proc = self._make_processor()
+        fit_path = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z.fit"
+        fit_path.touch()
+        session = MagicMock()
+
+        with (
+            patch.object(proc, "_process_fit_file") as mock_fit,
+            patch.object(proc, "_process_multi_leg_fit_files") as mock_multi,
+        ):
+            proc._process_activity_files([fit_path], session, "🏃")
+
+        mock_fit.assert_called_once_with(fit_path, session)
+        mock_multi.assert_not_called()
+
+    def test_multiple_legs_grouped_by_activity_id_use_multi_leg_path(
+        self, tmp_path: Path
+    ):
+        """
+        Two FIT files sharing an activity_id are dispatched together, in sorted
+        (recording) order, to _process_multi_leg_fit_files.
+        """
+        proc = self._make_processor()
+        leg2 = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z_leg2.fit"
+        leg1 = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z_leg1.fit"
+        leg2.touch()
+        leg1.touch()
+        session = MagicMock()
+
+        with (
+            patch.object(proc, "_process_fit_file") as mock_fit,
+            patch.object(proc, "_process_multi_leg_fit_files") as mock_multi,
+        ):
+            # Passed in reverse order; grouping must still sort legs correctly.
+            proc._process_activity_files([leg2, leg1], session, "🏃")
+
+        mock_fit.assert_not_called()
+        mock_multi.assert_called_once_with([leg1, leg2], session)
+
+    def test_different_activity_ids_not_merged(self, tmp_path: Path):
+        """
+        FIT files for two different activities are each processed independently, not
+        merged together even though both are single files.
+        """
+        proc = self._make_processor()
+        fit_a = tmp_path / "1_ACTIVITY_111_2024-01-01T08-00-00Z.fit"
+        fit_b = tmp_path / "1_ACTIVITY_222_2024-01-01T08-00-00Z.fit"
+        fit_a.touch()
+        fit_b.touch()
+        session = MagicMock()
+
+        with patch.object(proc, "_process_fit_file") as mock_fit:
+            proc._process_activity_files([fit_a, fit_b], session, "🏃")
+
+        assert mock_fit.call_count == 2
+        mock_fit.assert_any_call(fit_a, session)
+        mock_fit.assert_any_call(fit_b, session)
+
+    def test_non_fit_file_dispatched_to_process_activity_file(self, tmp_path: Path):
+        """
+        Non-FIT activity files (e.g. TCX) fall through to _process_activity_file.
+        """
+        proc = self._make_processor()
+        tcx_path = tmp_path / "1_ACTIVITY_12345_2024-01-01T08-00-00Z.tcx"
+        tcx_path.touch()
+        session = MagicMock()
+
+        with patch.object(proc, "_process_activity_file") as mock_dispatch:
+            proc._process_activity_files([tcx_path], session, "🏃")
+
+        mock_dispatch.assert_called_once_with(tcx_path, session)
+
+
 # --- Activity base upsert tests --------------------------------------------
 
 
