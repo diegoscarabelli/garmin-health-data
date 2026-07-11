@@ -3002,9 +3002,12 @@ class GarminProcessor(Processor):
             else:
                 other_paths.append(file_path)
 
-        for activity_id, paths in fit_paths_by_activity.items():
-            # Deterministic leg order: unsuffixed name sorts before "_leg2", etc.
-            paths.sort(key=lambda p: p.name)
+for activity_id in sorted(fit_paths_by_activity):
+    paths = fit_paths_by_activity[activity_id]
+    # Deterministic leg order: sort by numeric leg index so "_leg10" follows "_leg9".
+    paths.sort(
+        key=lambda p: int(re.search(r"_leg(\d+)", p.stem).group(1)) if "_leg" in p.stem else 0
+    )
             if len(paths) == 1:
                 click.echo(f"{emoji} Processing ACTIVITY file: {paths[0].name}.")
                 self._process_fit_file(paths[0], session)
