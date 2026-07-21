@@ -1365,17 +1365,37 @@ def test_extract_range_splits_body_composition_into_per_day_files(tmp_path):
     )
     extractor.user_id = "test-user"
 
-    # Three weigh-ins on two distinct UTC dates.
+    # Three weigh-ins across two local days (two on 2025-01-05, one on 2025-01-20),
+    # in the range endpoint's ``dailyWeightSummaries[].allWeightMetrics`` shape.
     def _ms(dt: datetime) -> int:
         return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
     body_comp = GARMIN_DATA_REGISTRY.get_by_name("BODY_COMPOSITION")
     mock_api = MagicMock(
         return_value={
-            "dateWeightList": [
-                {"timestampGMT": _ms(datetime(2025, 1, 5, 8, 0)), "weight": 75000.0},
-                {"timestampGMT": _ms(datetime(2025, 1, 5, 20, 0)), "weight": 74800.0},
-                {"timestampGMT": _ms(datetime(2025, 1, 20, 9, 0)), "weight": 74500.0},
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2025-01-05",
+                    "allWeightMetrics": [
+                        {
+                            "timestampGMT": _ms(datetime(2025, 1, 5, 8, 0)),
+                            "weight": 75000.0,
+                        },
+                        {
+                            "timestampGMT": _ms(datetime(2025, 1, 5, 20, 0)),
+                            "weight": 74800.0,
+                        },
+                    ],
+                },
+                {
+                    "summaryDate": "2025-01-20",
+                    "allWeightMetrics": [
+                        {
+                            "timestampGMT": _ms(datetime(2025, 1, 20, 9, 0)),
+                            "weight": 74500.0,
+                        },
+                    ],
+                },
             ]
         }
     )
@@ -1671,12 +1691,17 @@ def test_garmin_client_exposes_a_delegator_for_every_registered_api_method():
 # ---------------------------------------------------------------------------
 
 
-def test_split_body_composition_by_day_groups_by_utc_date():
+def test_split_body_composition_keeps_multiple_same_day_weighins():
     """
-    Body composition entries with timestampGMT spanning multiple UTC dates must be
-    grouped by date in the splitter's output, with each per-day payload preserving the
-    ``dateWeightList`` wrapper key so the processor parses it identically to the legacy
-    per-day API responses.
+    Regression for #69: a local day with more than one weigh-in must keep every weigh-
+    in.
+
+    The range endpoint groups all of a local day's weigh-ins under one
+    ``dailyWeightSummaries`` entry (keyed by ``summaryDate``) in ``allWeightMetrics``.
+    Two weigh-ins logged on the same local day must land together in that day's file
+    even when their UTC ``timestampGMT`` values straddle midnight (morning local vs.
+    late-evening local), so grouping is by the local ``summaryDate`` rather than the UTC
+    timestamp.
     """
     from datetime import date, datetime, timezone
 
@@ -1686,15 +1711,70 @@ def test_split_body_composition_by_day_groups_by_utc_date():
         return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
     payload = {
-        "dateWeightList": [
-            {"timestampGMT": _ms(datetime(2025, 1, 5, 8, 0)), "weight": 75000.0},
-            {"timestampGMT": _ms(datetime(2025, 1, 5, 20, 0)), "weight": 74800.0},
-            {"timestampGMT": _ms(datetime(2025, 1, 7, 7, 0)), "weight": 74500.0},
-            {"timestampGMT": None, "weight": 1.0},  # Skipped: no timestamp.
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2026-06-06",
+                "numOfWeightEntries": 2,
+                "allWeightMetrics": [
+                    # Morning weigh-in: 2026-06-06 in UTC.
+                    {
+                        "timestampGMT": _ms(datetime(2026, 6, 6, 23, 0)),
+                        "weight": 75000.0,
+                        "sourceType": "MANUAL",
+                    },
+                    # Evening weigh-in: rolls to 2026-06-07 in UTC, but same local day.
+                    {
+                        "timestampGMT": _ms(datetime(2026, 6, 7, 1, 0)),
+                        "weight": 74800.0,
+                        "sourceType": "MANUAL",
+                    },
+                ],
+            }
         ],
-        # Irrelevant range-wide fields the processor never reads.
-        "startDate": "2025-01-01",
+        "totalAverage": {"weight": 74900.0},
+    }
+    result = _split_body_composition_by_day(payload)
+
+    # Both weigh-ins survive, in a single file for the local day (not split across
+    # 06-06 / 06-07 by UTC, and not collapsed to a single representative weigh-in).
+    assert list(result) == [date(2026, 6, 6)]
+    assert len(result[date(2026, 6, 6)]["dateWeightList"]) == 2
+    weights = {e["weight"] for e in result[date(2026, 6, 6)]["dateWeightList"]}
+    assert weights == {75000.0, 74800.0}
+
+
+def test_split_body_composition_by_day_groups_by_summary_date():
+    """
+    Each ``dailyWeightSummaries`` entry becomes one per-day file keyed by its
+    ``summaryDate`` (the user-facing local day), with the day's ``allWeightMetrics`` re-
+    wrapped under the ``dateWeightList`` key so the processor parses it identically to
+    the legacy per-day API responses.
+
+    Range-level wrapper fields are dropped.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    payload = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    {"timestampGMT": 1736064000000, "weight": 75000.0},
+                    {"timestampGMT": 1736107200000, "weight": 74800.0},
+                ],
+            },
+            {
+                "summaryDate": "2025-01-07",
+                "allWeightMetrics": [
+                    {"timestampGMT": 1736233200000, "weight": 74500.0},
+                ],
+            },
+        ],
+        # Range-wide wrapper fields the processor never reads.
         "totalAverage": {"weight": 74766.0},
+        "previousDateWeight": {"weight": None},
     }
     result = _split_body_composition_by_day(payload)
 
@@ -1702,53 +1782,127 @@ def test_split_body_composition_by_day_groups_by_utc_date():
     assert len(result[date(2025, 1, 5)]["dateWeightList"]) == 2
     assert result[date(2025, 1, 7)]["dateWeightList"][0]["weight"] == 74500.0
     # Wrapper fields not in the processor's contract are intentionally dropped.
-    assert "startDate" not in result[date(2025, 1, 5)]
     assert "totalAverage" not in result[date(2025, 1, 5)]
+    assert "previousDateWeight" not in result[date(2025, 1, 5)]
 
 
 def test_split_body_composition_by_day_empty_input():
     """
-    Empty / missing ``dateWeightList`` yields an empty mapping; ``_extract_range`` uses
-    that to write zero files (no-op for days the user did not weigh in).
+    Empty / missing ``dailyWeightSummaries`` yields an empty mapping; ``_extract_range``
+    uses that to write zero files (no-op for ranges the user did not weigh in).
     """
     from garmin_health_data.extractor import _split_body_composition_by_day
 
     assert _split_body_composition_by_day({}) == {}
-    assert _split_body_composition_by_day({"dateWeightList": []}) == {}
-    assert _split_body_composition_by_day({"dateWeightList": None}) == {}
+    assert _split_body_composition_by_day({"dailyWeightSummaries": []}) == {}
+    assert _split_body_composition_by_day({"dailyWeightSummaries": None}) == {}
 
 
-def test_split_body_composition_by_day_drops_malformed_timestamps():
+def test_split_body_composition_by_day_drops_unusable_summaries():
     """
-    Non-numeric, out-of-range, or otherwise unconvertible ``timestampGMT`` values are
-    silently dropped rather than raising.
+    Malformed summaries are skipped rather than raising, so one bad entry can't abort
+    the whole RANGE extraction and lose the well-formed days in the same window.
 
-    The Garmin API has always returned a numeric millisecond timestamp, so this is
-    purely defensive: a future API shape change (e.g. ISO-string timestamps) shouldn't
-    abort the whole RANGE extraction for that data type and lose every weigh-in in the
-    window.
+    Covers empty/missing/non-list ``allWeightMetrics``, unparseable/missing
+    ``summaryDate``, non-dict summary entries, and summaries whose weigh-in entries are
+    all non-dict.
     """
-    from datetime import date, datetime, timezone
+    from datetime import date
 
     from garmin_health_data.extractor import _split_body_composition_by_day
 
-    valid_ts = int(datetime(2025, 1, 5, 8, 0, tzinfo=timezone.utc).timestamp() * 1000)
     payload = {
-        "dateWeightList": [
-            {"timestampGMT": valid_ts, "weight": 75000.0},
-            {"timestampGMT": "not-a-number", "weight": 1.0},  # ValueError on int().
-            {"timestampGMT": 10**18, "weight": 2.0},  # Overflow / OSError.
-            {"timestampGMT": [123], "weight": 4.0},  # TypeError on int().
-            {"timestampGMT": "2025-01-05T08:00:00Z", "weight": 3.0},  # ValueError.
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    {"timestampGMT": 1736064000000, "weight": 75000.0}
+                ],
+            },
+            {"summaryDate": "2025-01-06", "allWeightMetrics": []},  # No weigh-ins.
+            {"summaryDate": "2025-01-07"},  # Missing allWeightMetrics.
+            {"summaryDate": "not-a-date", "allWeightMetrics": [{"weight": 1.0}]},
+            {"allWeightMetrics": [{"weight": 2.0}]},  # Missing summaryDate.
+            {"summaryDate": "2025-01-08", "allWeightMetrics": {"weight": 3.0}},  # Dict.
+            "not-a-dict-summary",  # Non-dict summary entry.
+            None,  # Null summary entry.
+            {"summaryDate": "2025-01-09", "allWeightMetrics": [None, "x", 5]},  # Junk.
+            # Dict entries but no numeric timestamp -> all dropped -> summary skipped.
+            {
+                "summaryDate": "2025-01-10",
+                "allWeightMetrics": [{"weight": 5.0}, {"timestampGMT": "nope"}],
+            },
         ]
     }
     result = _split_body_composition_by_day(payload)
 
-    # Only the valid entry survives; the malformed ones are silently dropped
-    # rather than crashing the splitter.
+    # Only the one well-formed summary survives; the rest are silently dropped.
     assert list(result.keys()) == [date(2025, 1, 5)]
     assert len(result[date(2025, 1, 5)]["dateWeightList"]) == 1
-    assert result[date(2025, 1, 5)]["dateWeightList"][0]["weight"] == 75000.0
+
+
+def test_split_body_composition_filters_non_dict_weighin_entries():
+    """
+    Within an otherwise valid summary, non-dict weigh-in entries are filtered out so the
+    processor never receives a non-dict it would crash on, while the valid dict entries
+    on that day are preserved.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    payload = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    None,
+                    "not-a-dict",
+                    {"timestampGMT": 1736064000000, "weight": 75000.0},
+                    {"timestampGMT": 1736107200000, "weight": 75200.0},
+                ],
+            }
+        ]
+    }
+    result = _split_body_composition_by_day(payload)
+
+    entries = result[date(2025, 1, 5)]["dateWeightList"]
+    assert len(entries) == 2
+    assert all(isinstance(e, dict) for e in entries)
+    assert [e["weight"] for e in entries] == [75000.0, 75200.0]
+
+
+def test_split_body_composition_filters_non_numeric_timestamps():
+    """
+    Weigh-in dicts whose timestamp is missing or non-numeric are filtered out, since the
+    processor divides ``timestampGMT``/``date`` and would crash (and quarantine the
+    whole FileSet) on a non-numeric value.
+
+    Valid entries on the same day are preserved; the ``date`` fallback and a bool (int
+    subclass but never a real timestamp) are exercised.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    payload = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    {"timestampGMT": "not-a-number", "weight": 1.0},  # Non-numeric.
+                    {"weight": 2.0},  # No timestamp at all.
+                    {"timestampGMT": True, "weight": 3.0},  # bool, not a timestamp.
+                    {"timestampGMT": 1736064000000, "weight": 75000.0},  # Valid.
+                    {"date": 1736107200000, "weight": 75200.0},  # Valid via fallback.
+                ],
+            }
+        ]
+    }
+    result = _split_body_composition_by_day(payload)
+
+    entries = result[date(2025, 1, 5)]["dateWeightList"]
+    assert [e["weight"] for e in entries] == [75000.0, 75200.0]
 
 
 def test_split_activities_list_by_day_groups_by_local_date():

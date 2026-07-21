@@ -13,7 +13,7 @@ import zipfile
 import io
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -118,52 +118,86 @@ class ExtractionFailure:
     error: str
 
 
+def _weighin_has_numeric_timestamp(entry: Dict[str, Any]) -> bool:
+    """
+    Report whether a weigh-in entry has a numeric epoch-ms timestamp.
+
+    Mirrors how ``_process_body_composition`` reads the timestamp (``timestampGMT``
+    falling back to ``date``) and does arithmetic on it (``ts_ms / 1000``). An entry
+    this rejects is exactly one the processor would crash on (TypeError / OverflowError
+    / OSError), quarantining the whole per-day FileSet. ``bool`` is excluded because it
+    is an ``int`` subclass but never a real timestamp.
+
+    :param entry: A single ``allWeightMetrics`` weigh-in dict.
+    :return:``True`` if the timestamp is a usable ``int``/``float``.
+    """
+    ts = entry.get("timestampGMT") or entry.get("date")
+    return isinstance(ts, (int, float)) and not isinstance(ts, bool)
+
+
 def _split_body_composition_by_day(
     payload: Dict[str, Any],
 ) -> Dict[date, Dict[str, Any]]:
     """
     Split a ``BODY_COMPOSITION`` per-range response into per-day payloads.
 
-    Each entry in ``dateWeightList`` carries its own ``timestampGMT`` (milliseconds
-    since epoch). Groups entries by their UTC calendar date. Days without entries
-    yield no key in the returned dict. The per-day payload preserves the
-    ``dateWeightList`` wrapper key so the downstream body-composition processor
-    parses it identically to the legacy per-day API responses. The other
-    range-level wrapper fields (``startDate``, ``endDate``, ``totalAverage``) are
-    intentionally dropped: they describe the full range and are not consumed by
-    the processor.
+    The range endpoint (``/weight-service/weight/range/{start}/{end}?includeAll=true``)
+    returns one ``dailyWeightSummaries`` entry per local calendar day that has data. Each
+    summary carries *every* weigh-in for that day under ``allWeightMetrics`` (a user may
+    weigh more than once per day) and the user-facing local day under ``summaryDate``.
 
-    Malformed entries (no usable timestamp) are silently dropped: they cannot be
-    grouped into any day's bucket and they never reach the processor (the splitter
-    is the only place such an entry can be skipped, so any downstream warning would
-    never fire). Real-world responses haven't shown this shape in practice; the
-    guard is defensive.
+    Groups by Garmin's own ``summaryDate`` rather than by each weigh-in's UTC
+    ``timestampGMT`` so that two weigh-ins on the same local day land in one per-day file
+    even when their UTC timestamps straddle midnight (e.g. a late-evening weigh-in in a
+    timezone behind UTC). This mirrors the ``ACTIVITIES_LIST`` splitter, which groups by
+    the user's local date for the same reason. Each per-day payload is re-wrapped under
+    the ``dateWeightList`` key so the downstream body-composition processor parses it
+    identically to the legacy per-day API responses; the ``allWeightMetrics`` entries
+    carry the same field names (``timestampGMT``, ``weight``, ``bmi``, ...) the processor
+    reads. The range-level wrapper fields (``totalAverage``, ``previousDateWeight``,
+    ``nextDateWeight``) are intentionally dropped: they describe the full range and are
+    not consumed by the processor.
+
+    Malformed summaries are skipped rather than aborting the whole range split: a
+    non-dict summary, a non-list ``allWeightMetrics``, or an unparseable
+    ``summaryDate`` cannot anchor a per-day file and never reaches the processor.
+    Weigh-in entries that are non-dict or lack a numeric timestamp are filtered out
+    (the processor reads each via ``entry.get(...)`` and divides the timestamp); a
+    summary is skipped once no usable entries remain.
 
     :param payload: Full range response from ``get_body_composition``.
-    :return: Mapping ``{date: {"dateWeightList": [...that day's entries...]}}``.
+    :return: Mapping ``{date: {"dateWeightList": [...that day's weigh-ins...]}}``.
     """
     by_day: Dict[date, List[Dict[str, Any]]] = {}
-    for entry in payload.get("dateWeightList") or []:
-        # Use `is not None` rather than truthiness so a valid epoch-zero
-        # timestamp (Unix Jan 1 1970) wouldn't be silently treated as missing
-        # and replaced by the `date` fallback. Realistically Garmin will never
-        # return that, but the explicit check matches the dropped-entry
-        # docstring contract.
-        ts_ms = entry.get("timestampGMT")
-        if ts_ms is None:
-            ts_ms = entry.get("date")
-        if ts_ms is None:
+    for summary in payload.get("dailyWeightSummaries") or []:
+        # Type-guard each summary so a single malformed entry (non-dict summary,
+        # or ``allWeightMetrics`` that isn't a list) is skipped rather than
+        # aborting the whole range split, per the "skipped" contract above.
+        if not isinstance(summary, dict):
+            continue
+        metrics = summary.get("allWeightMetrics")
+        if not isinstance(metrics, list):
+            continue
+        # Keep only dict weigh-in entries with a numeric timestamp: the processor
+        # reads each via ``entry.get(...)`` and divides the timestamp, so a non-dict
+        # element or a missing/non-numeric timestamp would crash it and quarantine the
+        # whole FileSet. Skip the summary if nothing usable remains.
+        metrics = [
+            m
+            for m in metrics
+            if isinstance(m, dict) and _weighin_has_numeric_timestamp(m)
+        ]
+        if not metrics:
+            continue
+        summary_date = summary.get("summaryDate")
+        if not isinstance(summary_date, str):
             continue
         try:
-            entry_date = datetime.fromtimestamp(
-                int(ts_ms) / 1000, tz=timezone.utc
-            ).date()
-        except (TypeError, ValueError, OverflowError, OSError):
-            # Non-numeric, out-of-range, or otherwise unconvertible timestamp.
-            # Drop the entry rather than abort the whole RANGE extraction; matches
-            # the docstring's "malformed entries are silently dropped" contract.
+            # ``summaryDate`` is the local calendar day as ``YYYY-MM-DD``.
+            day = date.fromisoformat(summary_date[:10])
+        except ValueError:
             continue
-        by_day.setdefault(entry_date, []).append(entry)
+        by_day.setdefault(day, []).extend(metrics)
     return {d: {"dateWeightList": entries} for d, entries in by_day.items()}
 
 
@@ -524,8 +558,8 @@ class GarminExtractor:
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
         """
-        Extract a RANGE-typed Garmin data type with a single API call covering the
-        full window, instead of one call per day.
+        Extract a RANGE-typed Garmin data type with a single API call covering the full
+        window, instead of one call per day.
 
         The Garmin endpoints behind RANGE-typed wrappers each accept a native date
         range and return all matching rows in one response (the wrappers paginate
