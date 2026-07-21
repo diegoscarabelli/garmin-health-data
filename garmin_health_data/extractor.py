@@ -118,6 +118,41 @@ class ExtractionFailure:
     error: str
 
 
+# Data types whose already-extracted past days can change retroactively when the user
+# edits history in Garmin Connect (e.g. moving a menstrual period start recomputes
+# ``dayInCycle`` for every following day). Such types must re-fetch a trailing window on
+# every run so the upsert refreshes stale rows, not just the incremental slice. Maps the
+# data type name to its look-back length in days. 90 days comfortably covers a full
+# cycle's worth of cascade (a retroactive edit can reach back to the previous cycle
+# start) with margin for irregular cycles.
+_RETROACTIVE_LOOKBACK_DAYS: Dict[str, int] = {
+    "MENSTRUAL_CYCLE_DAY": 90,
+}
+
+
+def _retroactive_lookback_start(
+    data_type: GarminDataType, start_date: date, end_date: date
+) -> date:
+    """
+    Extend ``start_date`` backward for data types that need a retroactive-edit refresh.
+
+    For a data type registered in ``_RETROACTIVE_LOOKBACK_DAYS``, returns the earlier of
+    the requested ``start_date`` and ``end_date - lookback`` so each run re-fetches a
+    trailing window. The result only ever moves the start *earlier*, never later, so an
+    explicit wider range (e.g. a full-history backfill) is left untouched. Data types not
+    in the registry are returned unchanged.
+
+    :param data_type: The data type being extracted.
+    :param start_date: The requested (e.g. incremental) start date.
+    :param end_date: The extraction end date.
+    :return: The effective start date to extract from.
+    """
+    lookback = _RETROACTIVE_LOOKBACK_DAYS.get(data_type.name)
+    if lookback is None:
+        return start_date
+    return min(start_date, end_date - timedelta(days=lookback))
+
+
 def _weighin_has_numeric_timestamp(entry: Dict[str, Any]) -> bool:
     """
     Report whether a weigh-in entry has a numeric epoch-ms timestamp.
@@ -667,8 +702,13 @@ class GarminExtractor:
             the four supported variants.
         """
         if data_type.api_method_time_param == APIMethodTimeParam.DAILY:
-            # One API call per day, per-date error isolation.
-            return self._extract_day_by_day(data_type, start_date, end_date)
+            # One API call per day, per-date error isolation. Data types whose past days
+            # can change retroactively (e.g. MENSTRUAL_CYCLE_DAY) extend the start back a
+            # fixed window so those edits are re-fetched, not just the incremental slice.
+            effective_start = _retroactive_lookback_start(
+                data_type, start_date, end_date
+            )
+            return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
             # One API call for the full window (wrappers paginate internally

@@ -1964,3 +1964,72 @@ def test_extract_data_by_type_per_activity_returns_empty_list(tmp_path):
     # The API methods on the client were never invoked by the dispatcher.
     extractor.garmin_client.download_activity.assert_not_called()
     extractor.garmin_client.get_activity_exercise_sets.assert_not_called()
+
+
+def test_retroactive_lookback_extends_menstrual_cycle_day_start():
+    """
+    MENSTRUAL_CYCLE_DAY re-fetches a trailing 90-day window so retroactive period
+    edits refresh past days: a recent requested start is pushed back to end - 90 days.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import _retroactive_lookback_start
+
+    mc_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+    end = date(2026, 7, 21)
+    # Requested start is "yesterday" (typical incremental window).
+    result = _retroactive_lookback_start(mc_day, date(2026, 7, 20), end)
+    assert result == date(2026, 4, 22)  # end - 90 days.
+
+
+def test_retroactive_lookback_does_not_shrink_older_start():
+    """
+    An explicit start earlier than end - 90 (e.g. a full-history backfill) is left
+    unchanged: the look-back only ever extends backward, never forward.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import _retroactive_lookback_start
+
+    mc_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+    result = _retroactive_lookback_start(mc_day, date(2020, 1, 1), date(2026, 7, 21))
+    assert result == date(2020, 1, 1)  # Unchanged.
+
+
+def test_retroactive_lookback_noop_for_non_registered_type():
+    """
+    Data types without a retroactive look-back (e.g. SLEEP) keep their requested start
+    exactly, so their extraction window is unaffected.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import _retroactive_lookback_start
+
+    sleep = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+    result = _retroactive_lookback_start(sleep, date(2026, 7, 20), date(2026, 7, 21))
+    assert result == date(2026, 7, 20)  # Unchanged.
+
+
+def test_extract_data_by_type_applies_lookback_for_menstrual_cycle_day(tmp_path):
+    """
+    _extract_data_by_type dispatches MENSTRUAL_CYCLE_DAY to the day-by-day extractor
+    with the start extended back 90 days, so retroactively-changed past days are re-
+    fetched and their stale rows overwritten by the upsert.
+    """
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 7, 20),
+        end_date=date(2026, 7, 21),
+        ingest_dir=tmp_path,
+        data_types=("MENSTRUAL_CYCLE_DAY",),
+    )
+    extractor.user_id = "test-user"
+    extractor.garmin_client = MagicMock()
+
+    mc_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+    with patch.object(extractor, "_extract_day_by_day", return_value=[]) as mock_day:
+        extractor._extract_data_by_type(mc_day, date(2026, 7, 20), date(2026, 7, 21))
+
+    mock_day.assert_called_once_with(mc_day, date(2026, 4, 22), date(2026, 7, 21))
