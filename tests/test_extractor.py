@@ -1804,7 +1804,8 @@ def test_split_body_composition_by_day_drops_unusable_summaries():
     the whole RANGE extraction and lose the well-formed days in the same window.
 
     Covers empty/missing/non-list ``allWeightMetrics``, unparseable/missing
-    ``summaryDate``, and non-dict summary entries.
+    ``summaryDate``, non-dict summary entries, and summaries whose weigh-in entries are
+    all non-dict.
     """
     from datetime import date
 
@@ -1825,6 +1826,7 @@ def test_split_body_composition_by_day_drops_unusable_summaries():
             {"summaryDate": "2025-01-08", "allWeightMetrics": {"weight": 3.0}},  # Dict.
             "not-a-dict-summary",  # Non-dict summary entry.
             None,  # Null summary entry.
+            {"summaryDate": "2025-01-09", "allWeightMetrics": [None, "x", 5]},  # Junk.
         ]
     }
     result = _split_body_composition_by_day(payload)
@@ -1832,6 +1834,37 @@ def test_split_body_composition_by_day_drops_unusable_summaries():
     # Only the one well-formed summary survives; the rest are silently dropped.
     assert list(result.keys()) == [date(2025, 1, 5)]
     assert len(result[date(2025, 1, 5)]["dateWeightList"]) == 1
+
+
+def test_split_body_composition_filters_non_dict_weighin_entries():
+    """
+    Within an otherwise valid summary, non-dict weigh-in entries are filtered out so the
+    processor never receives a non-dict it would crash on, while the valid dict entries
+    on that day are preserved.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    payload = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    None,
+                    "not-a-dict",
+                    {"timestampGMT": 1736064000000, "weight": 75000.0},
+                    {"timestampGMT": 1736107200000, "weight": 75200.0},
+                ],
+            }
+        ]
+    }
+    result = _split_body_composition_by_day(payload)
+
+    entries = result[date(2025, 1, 5)]["dateWeightList"]
+    assert len(entries) == 2
+    assert all(isinstance(e, dict) for e in entries)
+    assert [e["weight"] for e in entries] == [75000.0, 75200.0]
     assert result[date(2025, 1, 5)]["dateWeightList"][0]["weight"] == 75000.0
 
 

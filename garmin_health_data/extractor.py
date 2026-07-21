@@ -142,8 +142,10 @@ def _split_body_composition_by_day(
     not consumed by the processor.
 
     Malformed summaries are skipped rather than aborting the whole range split: a
-    non-dict summary, a non-list or empty ``allWeightMetrics``, or an unparseable
+    non-dict summary, a non-list ``allWeightMetrics``, or an unparseable
     ``summaryDate`` cannot anchor a per-day file and never reaches the processor.
+    Non-dict weigh-in entries within a summary are filtered out (the processor reads
+    each via ``entry.get(...)``); a summary is skipped once no usable entries remain.
 
     :param payload: Full range response from ``get_body_composition``.
     :return: Mapping ``{date: {"dateWeightList": [...that day's weigh-ins...]}}``.
@@ -156,7 +158,13 @@ def _split_body_composition_by_day(
         if not isinstance(summary, dict):
             continue
         metrics = summary.get("allWeightMetrics")
-        if not isinstance(metrics, list) or not metrics:
+        if not isinstance(metrics, list):
+            continue
+        # Keep only dict weigh-in entries; the processor reads each via
+        # ``entry.get(...)`` and a non-dict element (None, str) would crash it and
+        # quarantine the whole FileSet. Skip the summary if nothing usable remains.
+        metrics = [m for m in metrics if isinstance(m, dict)]
+        if not metrics:
             continue
         summary_date = summary.get("summaryDate")
         if not isinstance(summary_date, str):
