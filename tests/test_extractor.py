@@ -1800,9 +1800,11 @@ def test_split_body_composition_by_day_empty_input():
 
 def test_split_body_composition_by_day_drops_unusable_summaries():
     """
-    Summaries with no weigh-ins or an unparseable ``summaryDate`` are skipped rather
-    than raising, so one malformed summary can't abort the whole RANGE extraction and
-    lose the well-formed days in the same window.
+    Malformed summaries are skipped rather than raising, so one bad entry can't abort
+    the whole RANGE extraction and lose the well-formed days in the same window.
+
+    Covers empty/missing/non-list ``allWeightMetrics``, unparseable/missing
+    ``summaryDate``, and non-dict summary entries.
     """
     from datetime import date
 
@@ -1820,6 +1822,9 @@ def test_split_body_composition_by_day_drops_unusable_summaries():
             {"summaryDate": "2025-01-07"},  # Missing allWeightMetrics.
             {"summaryDate": "not-a-date", "allWeightMetrics": [{"weight": 1.0}]},
             {"allWeightMetrics": [{"weight": 2.0}]},  # Missing summaryDate.
+            {"summaryDate": "2025-01-08", "allWeightMetrics": {"weight": 3.0}},  # Dict.
+            "not-a-dict-summary",  # Non-dict summary entry.
+            None,  # Null summary entry.
         ]
     }
     result = _split_body_composition_by_day(payload)
