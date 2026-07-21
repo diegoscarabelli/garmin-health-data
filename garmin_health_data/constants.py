@@ -175,7 +175,7 @@ class GarminDataRegistry:
                 "BODY_COMPOSITION",
                 "get_body_composition",
                 APIMethodTimeParam.RANGE,
-                "/weight-service/weight/daterangesnapshot",
+                "/weight-service/weight/range/{start}/{end}",
                 "Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, "
                 "muscle mass, physique rating, visceral fat, metabolic age. Multiple "
                 "entries per day if the user weighs more than once.",

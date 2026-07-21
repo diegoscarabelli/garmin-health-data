@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`BODY_COMPOSITION` now captures every weigh-in on days with more than one** ([#69](https://github.com/diegoscarabelli/garmin-health-data/issues/69)). Extraction hit `/weight-service/weight/daterangesnapshot`, the endpoint behind Garmin Connect's weight *trend chart*, which returns only one representative weigh-in per calendar day. Users who weigh more than once a day (e.g. morning and evening) silently lost all but one weigh-in at the API boundary, regardless of the `(user_id, timestamp)` primary key on `body_composition` that was meant to hold multiple. This predates the per-day split in [#65](https://github.com/diegoscarabelli/garmin-health-data/pull/65): the endpoint was `daterangesnapshot` from the feature's introduction in [#49](https://github.com/diegoscarabelli/garmin-health-data/pull/49), and #65 only changed the call cadence (day-by-day → one range call + split), not the endpoint, so the "multiple weigh-ins per day are preserved" claim was never actually true end-to-end. Extraction now uses `/weight-service/weight/range/{start}/{end}` with `includeAll=true`, which returns every weigh-in grouped under `dailyWeightSummaries[].allWeightMetrics`. The per-day file splitter reads that shape and groups by Garmin's own `summaryDate` (the user-facing local day) rather than each weigh-in's UTC `timestampGMT`, so two weigh-ins on the same local day land in one per-day file even when their UTC timestamps straddle midnight (matching how the `ACTIVITIES_LIST` splitter groups by local date). Still one API call per window (the #65 optimization is preserved), and the per-day file shape at the processor boundary is unchanged (`allWeightMetrics` entries carry the same field names the processor already reads), so `_process_body_composition` is untouched. Verified end-to-end on a real account: a day with a morning and an evening weigh-in now writes two `body_composition` rows instead of one.
+
 ## [2.11.2] - 2026-05-26
 
 ### Fixed
