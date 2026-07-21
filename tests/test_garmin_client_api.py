@@ -57,7 +57,7 @@ class TestGetBodyComposition:
         assert result is payload
         client._connectapi.assert_called_once_with(
             f"{api.WEIGHT_RANGE_URL}/2026-04-15/2026-04-15",
-            params={"includeAll": True},
+            params={"includeAll": "true"},
         )
 
     def test_returns_none_when_summaries_empty(self) -> None:
@@ -120,7 +120,7 @@ class TestGetBodyComposition:
 
         client._connectapi.assert_called_once_with(
             f"{api.WEIGHT_RANGE_URL}/2026-04-15/2026-04-15",
-            params={"includeAll": True},
+            params={"includeAll": "true"},
         )
 
 

@@ -304,7 +304,10 @@ def get_body_composition(
     else:
         enddate = _validate_date_format(enddate, "enddate")
     url = f"{WEIGHT_RANGE_URL}/{startdate}/{enddate}"
-    result = client._connectapi(url, params={"includeAll": True})
+    # Send the literal lowercase string so the wire format matches the documented
+    # ``includeAll=true`` param; ``requests`` would serialize a Python bool as
+    # ``includeAll=True`` (capitalized), relying on Garmin's case-insensitive parsing.
+    result = client._connectapi(url, params={"includeAll": "true"})
     if result and result.get("dailyWeightSummaries"):
         return result
     return None
