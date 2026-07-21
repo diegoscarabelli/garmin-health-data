@@ -118,6 +118,23 @@ class ExtractionFailure:
     error: str
 
 
+def _weighin_has_numeric_timestamp(entry: Dict[str, Any]) -> bool:
+    """
+    Report whether a weigh-in entry has a numeric epoch-ms timestamp.
+
+    Mirrors how ``_process_body_composition`` reads the timestamp (``timestampGMT``
+    falling back to ``date``) and does arithmetic on it (``ts_ms / 1000``). An entry
+    this rejects is exactly one the processor would crash on (TypeError / OverflowError
+    / OSError), quarantining the whole per-day FileSet. ``bool`` is excluded because it
+    is an ``int`` subclass but never a real timestamp.
+
+    :param entry: A single ``allWeightMetrics`` weigh-in dict.
+    :return:``True`` if the timestamp is a usable ``int``/``float``.
+    """
+    ts = entry.get("timestampGMT") or entry.get("date")
+    return isinstance(ts, (int, float)) and not isinstance(ts, bool)
+
+
 def _split_body_composition_by_day(
     payload: Dict[str, Any],
 ) -> Dict[date, Dict[str, Any]]:
@@ -144,8 +161,9 @@ def _split_body_composition_by_day(
     Malformed summaries are skipped rather than aborting the whole range split: a
     non-dict summary, a non-list ``allWeightMetrics``, or an unparseable
     ``summaryDate`` cannot anchor a per-day file and never reaches the processor.
-    Non-dict weigh-in entries within a summary are filtered out (the processor reads
-    each via ``entry.get(...)``); a summary is skipped once no usable entries remain.
+    Weigh-in entries that are non-dict or lack a numeric timestamp are filtered out
+    (the processor reads each via ``entry.get(...)`` and divides the timestamp); a
+    summary is skipped once no usable entries remain.
 
     :param payload: Full range response from ``get_body_composition``.
     :return: Mapping ``{date: {"dateWeightList": [...that day's weigh-ins...]}}``.
@@ -160,10 +178,15 @@ def _split_body_composition_by_day(
         metrics = summary.get("allWeightMetrics")
         if not isinstance(metrics, list):
             continue
-        # Keep only dict weigh-in entries; the processor reads each via
-        # ``entry.get(...)`` and a non-dict element (None, str) would crash it and
-        # quarantine the whole FileSet. Skip the summary if nothing usable remains.
-        metrics = [m for m in metrics if isinstance(m, dict)]
+        # Keep only dict weigh-in entries with a numeric timestamp: the processor
+        # reads each via ``entry.get(...)`` and divides the timestamp, so a non-dict
+        # element or a missing/non-numeric timestamp would crash it and quarantine the
+        # whole FileSet. Skip the summary if nothing usable remains.
+        metrics = [
+            m
+            for m in metrics
+            if isinstance(m, dict) and _weighin_has_numeric_timestamp(m)
+        ]
         if not metrics:
             continue
         summary_date = summary.get("summaryDate")

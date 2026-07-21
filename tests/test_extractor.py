@@ -1827,6 +1827,11 @@ def test_split_body_composition_by_day_drops_unusable_summaries():
             "not-a-dict-summary",  # Non-dict summary entry.
             None,  # Null summary entry.
             {"summaryDate": "2025-01-09", "allWeightMetrics": [None, "x", 5]},  # Junk.
+            # Dict entries but no numeric timestamp -> all dropped -> summary skipped.
+            {
+                "summaryDate": "2025-01-10",
+                "allWeightMetrics": [{"weight": 5.0}, {"timestampGMT": "nope"}],
+            },
         ]
     }
     result = _split_body_composition_by_day(payload)
@@ -1865,7 +1870,39 @@ def test_split_body_composition_filters_non_dict_weighin_entries():
     assert len(entries) == 2
     assert all(isinstance(e, dict) for e in entries)
     assert [e["weight"] for e in entries] == [75000.0, 75200.0]
-    assert result[date(2025, 1, 5)]["dateWeightList"][0]["weight"] == 75000.0
+
+
+def test_split_body_composition_filters_non_numeric_timestamps():
+    """
+    Weigh-in dicts whose timestamp is missing or non-numeric are filtered out, since the
+    processor divides ``timestampGMT``/``date`` and would crash (and quarantine the
+    whole FileSet) on a non-numeric value.
+
+    Valid entries on the same day are preserved; the ``date`` fallback and a bool (int
+    subclass but never a real timestamp) are exercised.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_body_composition_by_day
+
+    payload = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2025-01-05",
+                "allWeightMetrics": [
+                    {"timestampGMT": "not-a-number", "weight": 1.0},  # Non-numeric.
+                    {"weight": 2.0},  # No timestamp at all.
+                    {"timestampGMT": True, "weight": 3.0},  # bool, not a timestamp.
+                    {"timestampGMT": 1736064000000, "weight": 75000.0},  # Valid.
+                    {"date": 1736107200000, "weight": 75200.0},  # Valid via fallback.
+                ],
+            }
+        ]
+    }
+    result = _split_body_composition_by_day(payload)
+
+    entries = result[date(2025, 1, 5)]["dateWeightList"]
+    assert [e["weight"] for e in entries] == [75000.0, 75200.0]
 
 
 def test_split_activities_list_by_day_groups_by_local_date():
