@@ -2010,8 +2010,8 @@ def test_retroactive_lookback_noop_for_non_registered_type():
 def test_extract_data_by_type_applies_lookback_for_menstrual_cycle_day(tmp_path):
     """
     _extract_data_by_type dispatches MENSTRUAL_CYCLE_DAY to the day-by-day extractor
-    with the start extended back 90 days, so retroactively-changed past days are re-
-    fetched and their stale rows overwritten by the upsert.
+    with the start extended back 90 days, so past days changed by a retroactive edit are
+    fetched again and their stale rows overwritten by the upsert.
     """
     from datetime import date
     from unittest.mock import MagicMock, patch
@@ -2033,3 +2033,20 @@ def test_extract_data_by_type_applies_lookback_for_menstrual_cycle_day(tmp_path)
         extractor._extract_data_by_type(mc_day, date(2026, 7, 20), date(2026, 7, 21))
 
     mock_day.assert_called_once_with(mc_day, date(2026, 4, 22), date(2026, 7, 21))
+
+
+def test_retroactive_lookback_refreshes_even_when_incremental_window_empty():
+    """
+    When the DB is already current through today, the auto-detected start is "tomorrow"
+    (after end), so a normal type would fetch nothing.
+
+    MENSTRUAL_CYCLE_DAY still re-fetches its trailing 90-day window so a retroactive
+    edit made since the last run is caught.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+    from garmin_health_data.extractor import _retroactive_lookback_start
+
+    mc_day = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+    # start (tomorrow) is after end (today): the incremental window is empty.
+    result = _retroactive_lookback_start(mc_day, date(2026, 7, 22), date(2026, 7, 21))
+    assert result == date(2026, 4, 22)  # still end - 90 days.
