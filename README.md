@@ -354,6 +354,8 @@ Using the maximum (rather than per-table latest) means each automatic run covers
 
 **Example:** if your database has sleep data through Dec 20 but activities only through Dec 18 (you didn't exercise on Dec 19-20), the next extraction starts from Dec 21. Sleep data for Dec 19-20 was already extracted, no activity data exists for those days, and the Dec 21 run picks up everything.
 
+**Retroactively-editable data:** `MENSTRUAL_CYCLE_DAY` is re-fetched over a trailing 90-day window on every run, independent of the auto-detected start (the start is only ever extended backward, so explicit full-history ranges are unaffected). When a period start is edited after the fact in Garmin Connect, Garmin recomputes `day_in_cycle` for every following day; re-fetching a fixed recent window keeps those already-stored rows in sync via the upsert instead of leaving them stale. Days outside any cycle window return empty payloads and are skipped, so the extra calls are cheap.
+
 </details>
 
 <details>
