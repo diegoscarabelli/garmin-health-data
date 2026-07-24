@@ -468,6 +468,14 @@ def migrate_multisport(
         after the rebuild).
     :raises FileNotFoundError: when ``db_path`` does not exist.
     """
+    # This migration runs before create_tables (its partial index references the new
+    # column), so gate on the SQLite version here too — otherwise an unsupported build
+    # would fail with a cryptic PRAGMA/partial-index error instead of the clear message.
+    # Local import avoids a circular import at module load.
+    from garmin_health_data.db import check_sqlite_version
+
+    check_sqlite_version()
+
     db_file = Path(db_path).expanduser().resolve()
     if not db_file.exists():
         raise FileNotFoundError(f"Database file not found: {db_file}")
