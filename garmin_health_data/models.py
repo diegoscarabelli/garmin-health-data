@@ -127,8 +127,17 @@ class Activity(Base, UpsertBase):
 
     __tablename__ = "activity"
     __table_args__ = (
-        UniqueConstraint(
-            "user_id", "start_ts", name="activity_user_id_start_ts_unique"
+        # Partial unique index matching tables.ddl: uniqueness of (user_id, start_ts)
+        # is enforced only for non-leg rows. A multi-sport leg (parent_activity_id IS
+        # NOT NULL) may share a start instant with an independently-recorded standalone
+        # activity, so leg rows are excluded (#72). Not an unconditional
+        # UniqueConstraint, which would reject those legs.
+        Index(
+            "activity_user_id_start_ts_unique_idx",
+            "user_id",
+            "start_ts",
+            unique=True,
+            sqlite_where=text("parent_activity_id IS NULL"),
         ),
     )
 
