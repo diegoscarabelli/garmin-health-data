@@ -2631,17 +2631,22 @@ class GarminProcessor(Processor):
             )
             return False
 
-        start_ts = self._parse_garmin_iso(start_gmt)
-        local_ts = self._parse_garmin_iso(start_local)
+        # Store start/end as UTC-aware datetimes (like _process_single_activity), so
+        # multi-sport legs match the timezone-aware start_ts of standalone activities.
+        start_ts = self._parse_garmin_gmt(start_gmt)
         duration = summary.get("duration")
         end_gmt = summary.get("endTimeGMT")
         if end_gmt:
-            end_ts = self._parse_garmin_iso(end_gmt)
+            end_ts = self._parse_garmin_gmt(end_gmt)
         elif duration is not None:
             end_ts = start_ts + timedelta(seconds=duration)
         else:
             end_ts = start_ts
-        timezone_offset_hours = (local_ts - start_ts).total_seconds() / 3600
+        # The timezone offset is the naive GMT-vs-local difference; parse both naive so
+        # the subtraction does not mix aware and naive datetimes.
+        utc_naive = self._parse_garmin_iso(start_gmt)
+        local_naive = self._parse_garmin_iso(start_local)
+        timezone_offset_hours = (local_naive - utc_naive).total_seconds() / 3600
 
         activity_row = Activity(
             activity_id=activity_id,

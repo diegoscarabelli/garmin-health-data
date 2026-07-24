@@ -3199,7 +3199,7 @@ def test_process_multisport_child_running_builds_row_and_agg(processor):
     assert act.activity_id == 999
     assert act.parent_activity_id == 22824120751
     assert act.activity_type_key == "running"
-    assert act.start_ts == datetime(2026, 5, 9, 16, 41, 14)
+    assert act.start_ts == datetime(2026, 5, 9, 16, 41, 14, tzinfo=timezone.utc)
     assert agg.avg_running_cadence == 169.1
     assert agg.avg_ground_contact_time == 231.0
     assert agg.avg_power == 355.0

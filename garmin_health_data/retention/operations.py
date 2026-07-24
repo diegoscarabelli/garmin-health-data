@@ -540,8 +540,15 @@ def migrate_multisport(
         try:
             cur.execute("ALTER TABLE activity RENAME TO activity__migrate_old")
             # Single-statement execute() (not executescript) so BEGIN/COMMIT actually
-            # wrap the dance; see _migrate_one_table for the executescript footgun.
-            assert ";" not in new_create.rstrip().rstrip(";")
+            # wrap the dance; see _migrate_one_table for the executescript footgun. Use
+            # an explicit raise (not assert, which -O would strip) so this safety check
+            # always runs.
+            if ";" in new_create.rstrip().rstrip(";"):
+                raise RuntimeError(
+                    "The extracted activity CREATE TABLE is a multi-statement string; "
+                    "refusing to run it via single-statement execute() (would break "
+                    "the transaction's atomicity)."
+                )
             cur.execute(new_create.rstrip().rstrip(";"))
             cur.execute(
                 f"INSERT INTO activity ({col_list}) "
