@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.12.0] - 2026-07-23
+## [2.12.0] - 2026-07-24
 
 ### Added
 
@@ -430,7 +430,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.4...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.2...v2.12.0
 [2.7.4]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.3...v2.7.4
 [2.7.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...v2.7.2
