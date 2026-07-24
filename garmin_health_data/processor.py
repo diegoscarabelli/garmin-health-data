@@ -2670,11 +2670,34 @@ class GarminProcessor(Processor):
             average_hr=summary.get("averageHR"),
             max_hr=summary.get("maxHR"),
         )
+        # Scope the on-conflict update to the columns a leg actually manages, so a
+        # re-extract does not overwrite any other activity columns with NULL/defaults.
         upsert_model_instances(
             session=session,
             model_instances=[activity_row],
             conflict_columns=["activity_id"],
             on_conflict_update=True,
+            update_columns=[
+                "parent_activity_id",
+                "user_id",
+                "activity_type_id",
+                "activity_type_key",
+                "event_type_id",
+                "event_type_key",
+                "start_ts",
+                "end_ts",
+                "timezone_offset_hours",
+                "activity_name",
+                "duration",
+                "elapsed_duration",
+                "moving_duration",
+                "distance",
+                "average_speed",
+                "max_speed",
+                "calories",
+                "average_hr",
+                "max_hr",
+            ],
         )
 
         self._write_multisport_leg_agg(activity_id, type_key, summary, session)
@@ -2706,13 +2729,22 @@ class GarminProcessor(Processor):
             # Transitions and any other leg type have no sport-specific table.
             return
 
-        values = {col: summary.get(field) for col, field in mapping.items()}
+        # Only set fields present in the summary; scope the on-conflict update to those
+        # same columns so a missing field on a later run never clears a stored value.
+        values = {
+            col: summary.get(field)
+            for col, field in mapping.items()
+            if summary.get(field) is not None
+        }
+        if not values:
+            return
         record = model(activity_id=activity_id, **values)
         upsert_model_instances(
             session=session,
             model_instances=[record],
             conflict_columns=["activity_id"],
             on_conflict_update=True,
+            update_columns=list(values.keys()),
         )
 
     def _process_floors(self, file_path: Path, session: Session):

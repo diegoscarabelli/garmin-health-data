@@ -1023,6 +1023,17 @@ class GarminExtractor:
 
         downloaded_files = []
 
+        # This per-activity loop backs three PER_ACTIVITY data types. Gate each sub-fetch
+        # on whether its type was requested so, e.g., `--data-types MULTISPORT_CHILDREN`
+        # only fetches legs (not every activity's FIT) rather than downloading everything.
+        want_activity = self.data_types is None or "ACTIVITY" in self.data_types
+        want_exercise_sets = (
+            self.data_types is None or "EXERCISE_SETS" in self.data_types
+        )
+        want_multisport = (
+            self.data_types is None or "MULTISPORT_CHILDREN" in self.data_types
+        )
+
         for activity in activities:
             activity_id = activity["activityId"]
 
@@ -1036,63 +1047,62 @@ class GarminExtractor:
             )
             timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
 
-            # Download activity file (ORIGINAL format = ZIP archive).
-            # A 404 means the activity exists in the list but has no
-            # downloadable file (manually entered activity, deleted upload,
-            # or a very old activity whose file is no longer retained by
-            # Garmin). Skip and continue rather than aborting the run.
-            try:
-                raw_data = _with_retries(
-                    self.garmin_client.download_activity,
-                    activity_id,
-                    dl_fmt=ActivityDownloadFormat.ORIGINAL,
-                )
-            except Exception as e:
-                # Broaden from GarminConnectionError to Exception so unexpected
-                # errors (parse failures, transient SDK bugs) on one activity
-                # don't abort the loop. Record the failure for the summary.
-                click.secho(
-                    f"⚠️  Skipping activity {activity_id}: {type(e).__name__}: {e}.",
-                    fg="yellow",
-                )
-                self.failures.append(
-                    ExtractionFailure(
-                        data_type="ACTIVITY",
-                        date="",
-                        activity_id=str(activity_id),
-                        error=f"{type(e).__name__}: {e}",
+            # Download and save the activity file (ORIGINAL = ZIP archive), only when
+            # ACTIVITY is requested. A 404 means the activity has no downloadable file
+            # (manual entry, deleted upload, or an old activity Garmin no longer
+            # retains); record it and fall through so the exercise-set / leg fetches
+            # below still run for this activity.
+            if want_activity:
+                raw_data = None
+                try:
+                    raw_data = _with_retries(
+                        self.garmin_client.download_activity,
+                        activity_id,
+                        dl_fmt=ActivityDownloadFormat.ORIGINAL,
                     )
+                except Exception as e:
+                    # Broaden from GarminConnectionError to Exception so unexpected
+                    # errors (parse failures, transient SDK bugs) on one activity
+                    # don't abort the loop. Record the failure for the summary.
+                    click.secho(
+                        f"⚠️  Skipping activity {activity_id}: "
+                        f"{type(e).__name__}: {e}.",
+                        fg="yellow",
+                    )
+                    self.failures.append(
+                        ExtractionFailure(
+                            data_type="ACTIVITY",
+                            date="",
+                            activity_id=str(activity_id),
+                            error=f"{type(e).__name__}: {e}",
+                        )
+                    )
+
+                # Detect the actual file format, extract content, and save.
+                result = (
+                    self._extract_activity_content(activity_id, raw_data)
+                    if raw_data is not None
+                    else None
                 )
-                continue
+                if result is not None:
+                    file_ext, file_content = result
+                    filename = (
+                        f"{self.user_id}_ACTIVITY_{activity_id}_"
+                        f"{timestamp}.{file_ext}"
+                    ).replace(":", "-")
+                    filepath = self.ingest_dir / filename
+                    with open(filepath, "wb") as f:
+                        f.write(file_content)
+                    file_size = filepath.stat().st_size / 1024  # KB.
+                    click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
+                    downloaded_files.append(filepath)
 
-            # Detect actual file format and extract content.
-            result = self._extract_activity_content(activity_id, raw_data)
-            if result is None:
-                continue
-
-            file_ext, file_content = result
-
-            # Build filename using the detected extension.
-            filename = (
-                f"{self.user_id}_ACTIVITY_{activity_id}_{timestamp}.{file_ext}".replace(
-                    ":", "-"
-                )
-            )
-            filepath = self.ingest_dir / filename
-
-            # Save to file.
-            with open(filepath, "wb") as f:
-                f.write(file_content)
-
-            file_size = filepath.stat().st_size / 1024  # KB.
-            click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
-            downloaded_files.append(filepath)
-
-            # Fetch exercise sets for strength training activities.
+            # Fetch exercise sets for strength training activities (when EXERCISE_SETS
+            # or ACTIVITY is requested).
             activity_type_key = (
                 activity.get("activityType", {}).get("typeKey", "").lower()
             )
-            if activity_type_key in (
+            if (want_activity or want_exercise_sets) and activity_type_key in (
                 "strength_training",
                 "fitness_equipment",
             ):
@@ -1101,11 +1111,12 @@ class GarminExtractor:
                 if exercise_sets_file:
                     downloaded_files.append(exercise_sets_file)
 
-            # Fetch the leg (child) activities of a multi-sport parent. The flat
-            # `parent` flag marks any activity that has child legs (structural
-            # signal, not a hardcoded type name); the authoritative child list
-            # comes from the detail endpoint's metadataDTO.childIds.
-            if activity.get("parent") is True:
+            # Fetch the leg (child) activities of a multi-sport parent (when
+            # MULTISPORT_CHILDREN or ACTIVITY is requested). The flat `parent` flag
+            # marks any activity that has child legs (structural signal, not a
+            # hardcoded type name); the authoritative child list comes from the detail
+            # endpoint's metadataDTO.childIds.
+            if (want_activity or want_multisport) and activity.get("parent") is True:
                 time.sleep(0.1)
                 children_file = self._extract_multisport_children(
                     activity_id, timestamp
