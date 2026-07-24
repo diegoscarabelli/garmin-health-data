@@ -266,7 +266,7 @@ def _split_activities_list_by_day(
 
 
 def _split_running_tolerance_by_day(
-    payload: List[Dict[str, Any]],
+    payload: Optional[List[Dict[str, Any]]],
 ) -> Dict[date, List[Dict[str, Any]]]:
     """
     Split a ``RUNNING_TOLERANCE`` per-range response into per-day payloads.
@@ -1377,7 +1377,9 @@ def extract(
             # Extract FIT activity files (if requested).
             activity_files = []
             if data_types is None or (
-                data_types and {"ACTIVITY", "EXERCISE_SETS"} & set(data_types)
+                data_types
+                and {"ACTIVITY", "EXERCISE_SETS", "MULTISPORT_CHILDREN"}
+                & set(data_types)
             ):
                 if progress_callback:
                     progress_callback(

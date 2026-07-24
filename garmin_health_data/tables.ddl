@@ -494,9 +494,9 @@ CREATE TABLE IF NOT EXISTS running_tolerance (
     , total_impact_load INTEGER            -- Cumulative biomechanical (musculoskeletal) running load accumulated on this day.
     , total_distance FLOAT                 -- Total distance run on this day, in meters.
     , tolerance INTEGER                    -- Tolerated running-load ceiling Garmin models for the week containing this day.
-    , start_of_week DATE                   -- First day of the week this row''s tolerance is computed over (startOfWeek).
+    , start_of_week DATE                   -- First day of the week that this tolerance value is computed over (startOfWeek).
     , end_of_week DATE                     -- Last populated day of that week (endOfWeek).
-    , week_index INTEGER                   -- Garmin''s monotonic week counter (weekIndex).
+    , week_index INTEGER                   -- Monotonic week counter from Garmin (weekIndex).
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
     , PRIMARY KEY (user_id, date)

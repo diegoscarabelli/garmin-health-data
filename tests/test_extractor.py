@@ -2093,7 +2093,7 @@ def test_extract_multisport_children_fetches_and_saves_legs(tmp_path):
     and saves them under `children` with the parentActivityId.
     """
     import json
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
 
     from garmin_health_data.extractor import GarminExtractor
 
@@ -2118,7 +2118,8 @@ def test_extract_multisport_children_fetches_and_saves_legs(tmp_path):
         child_627,
     ]
 
-    result = extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z")
+    with patch("garmin_health_data.extractor.time.sleep"):
+        result = extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z")
 
     assert result is not None
     payload = json.loads(result.read_text())
