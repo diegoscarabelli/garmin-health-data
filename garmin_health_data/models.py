@@ -212,7 +212,11 @@ class Activity(Base, UpsertBase):
 
     # For a leg of a multi-sport activity, the activity_id of the parent multi_sport
     # activity; NULL for standalone activities and the multi_sport parent itself.
-    parent_activity_id = Column(BigInteger, ForeignKey("activity.activity_id"))
+    # ON DELETE CASCADE so deleting a parent removes its legs (matches the other
+    # activity-child tables).
+    parent_activity_id = Column(
+        BigInteger, ForeignKey("activity.activity_id", ondelete="CASCADE")
+    )
 
 
 class SwimmingAggMetrics(Base, UpsertBase):

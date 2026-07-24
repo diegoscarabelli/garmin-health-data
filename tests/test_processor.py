@@ -3276,3 +3276,34 @@ def test_process_multisport_child_skips_when_missing_required_fields(processor):
         ok = processor._process_multisport_child(child, 111, MagicMock())
     assert ok is False
     up.assert_not_called()
+
+
+def test_process_running_tolerance_skips_unparseable_date(processor, tmp_path):
+    """
+    A row with an unparseable calendarDate is skipped, not fatal to the FileSet.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            [
+                {"calendarDate": "not-a-date", "tolerance": 1},
+                {"calendarDate": "2026-03-15", "tolerance": 60914},
+            ]
+        )
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_running_tolerance(f, MagicMock())
+    records = up.call_args.kwargs["model_instances"]
+    assert len(records) == 1  # bad-date row skipped, good row kept.
+    assert records[0].date == date(2026, 3, 15)
+
+
+def test_process_multisport_children_skips_non_dict_payload(processor, tmp_path):
+    """
+    A corrupted (non-dict) MULTISPORT_CHILDREN file is skipped without raising.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(json.dumps(["not", "a", "dict"]))
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, MagicMock())
+    up.assert_not_called()

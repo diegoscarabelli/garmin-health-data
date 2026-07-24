@@ -2487,8 +2487,10 @@ class GarminProcessor(Processor):
                 continue
             start_of_week = row.get("startOfWeek")
             end_of_week = row.get("endOfWeek")
-            records.append(
-                RunningTolerance(
+            # Guard the date parses so a malformed date in one row (or a replayed
+            # corrupted file) skips that row rather than aborting the whole FileSet.
+            try:
+                record = RunningTolerance(
                     user_id=int(self.user_id),
                     date=self._parse_date_string(calendar_date),
                     total_impact_load=row.get("totalImpactLoad"),
@@ -2504,7 +2506,14 @@ class GarminProcessor(Processor):
                     ),
                     week_index=row.get("weekIndex"),
                 )
-            )
+            except (ValueError, TypeError) as e:
+                click.secho(
+                    f"⚠️ Skipping running tolerance row with unparseable date "
+                    f"({e}): {row}.",
+                    fg="yellow",
+                )
+                continue
+            records.append(record)
 
         if records:
             upsert_model_instances(
@@ -2531,8 +2540,23 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy Session object.
         """
         payload = self._load_json_file(file_path)
+        # Guard against an empty/corrupted file that isn't the expected wrapper dict.
+        if not isinstance(payload, dict):
+            click.secho(
+                f"⚠️ Skipping malformed MULTISPORT_CHILDREN file {file_path.name}: "
+                f"expected a JSON object, got {type(payload).__name__}.",
+                fg="yellow",
+            )
+            return
         parent_id = payload.get("parentActivityId")
-        children = payload.get("children") or []
+        children = payload.get("children")
+        if not isinstance(children, list):
+            click.secho(
+                f"⚠️ Skipping MULTISPORT_CHILDREN file {file_path.name}: "
+                f"'children' is not a list.",
+                fg="yellow",
+            )
+            return
 
         processed = 0
         for child in children:

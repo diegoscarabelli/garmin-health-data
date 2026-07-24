@@ -105,7 +105,9 @@ CREATE TABLE IF NOT EXISTS activity (
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
-    , FOREIGN KEY (parent_activity_id) REFERENCES activity (activity_id)
+    , FOREIGN KEY (parent_activity_id) REFERENCES activity (
+        activity_id
+    ) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS activity_user_id_start_ts_idx

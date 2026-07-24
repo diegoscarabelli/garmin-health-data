@@ -245,31 +245,43 @@ def extract(
     if not process_only:
         ensure_authenticated()
 
-    # Initialize or migrate database schema.
-    if not database_exists(db_path):
-        click.echo()
-        click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
-        initialize_database(db_path)
-        click.echo()
-    else:
-        # Existing tables that changed shape cannot be updated by
-        # CREATE TABLE IF NOT EXISTS. Run the idempotent multi-sport migration
-        # FIRST so the activity table gains parent_activity_id and swaps its
-        # full (user_id, start_ts) uniqueness for the partial index (#72). This
-        # must precede create_tables, whose partial index references the new
-        # column and would fail on a pre-#72 activity table. Backs up and
-        # rebuilds only on the first run; a no-op afterwards.
-        ms_result = migrate_multisport(db_path)
-        if ms_result.get("migrated"):
-            click.secho(
-                f"🗄️  Migrated activity table for multi-sport support "
-                f"({ms_result['rows']} rows preserved; backup at "
-                f"{ms_result['backup_path']}).",
-                fg="cyan",
-            )
-        # Idempotent: creates new tables if schema was updated (e.g.
-        # running_tolerance); existing tables are untouched.
-        create_tables(db_path)
+    # Initialize or migrate the database schema under the lifecycle lock. The
+    # multi-sport migration rebuilds the activity table in place, so it must hold
+    # the same advisory lock as the retention and migrate-multisport commands to
+    # avoid racing with a concurrent run (#72). setup_lifecycle_dirs creates the
+    # directory the lock file lives in; it and the lock are re-run/re-acquired by
+    # the main pipeline block below (both idempotent, sequential — not nested).
+    schema_files_root = Path(db_path).expanduser().resolve().parent / "garmin_files"
+    setup_lifecycle_dirs(schema_files_root)
+    try:
+        with acquire_lock(schema_files_root):
+            if not database_exists(db_path):
+                click.echo()
+                click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
+                initialize_database(db_path)
+                click.echo()
+            else:
+                # Existing tables that changed shape cannot be updated by
+                # CREATE TABLE IF NOT EXISTS. Run the idempotent multi-sport
+                # migration FIRST so the activity table gains parent_activity_id
+                # and swaps its full (user_id, start_ts) uniqueness for the
+                # partial index (#72), before create_tables (whose partial index
+                # references the new column and would fail on a pre-#72 table).
+                # Backs up and rebuilds only on the first run; a no-op afterwards.
+                ms_result = migrate_multisport(db_path)
+                if ms_result.get("migrated"):
+                    click.secho(
+                        f"🗄️  Migrated activity table for multi-sport support "
+                        f"({ms_result['rows']} rows preserved; backup at "
+                        f"{ms_result['backup_path']}).",
+                        fg="cyan",
+                    )
+                # Idempotent: creates new tables if schema was updated (e.g.
+                # running_tolerance); existing tables are untouched.
+                create_tables(db_path)
+    except LockHeldError as e:
+        click.secho(f"❌ {e}", fg="red")
+        raise click.Abort() from e
 
     # Date auto-detection and extract-only logging are skipped when running
     # in --process-only mode (no API calls, dates would be unused).
