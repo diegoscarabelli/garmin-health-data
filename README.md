@@ -270,7 +270,7 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
 | [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
 | [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-downsample-migrate-cascade) |
-| `garmin migrate-multisport` | Add `activity.parent_activity_id` and relax the `(user_id, start_ts)` uniqueness to a partial index (multi-sport support). Runs automatically on `extract`; available for explicit control (e.g. `--dry-run`). | — |
+| [`garmin migrate-multisport`](#garmin-migrate-multisport) | Add `activity.parent_activity_id` and relax the `(user_id, start_ts)` uniqueness to a partial index (multi-sport support). Runs automatically on `extract`; available for explicit control (e.g. `--dry-run`). | — |
 
 All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
 
@@ -497,6 +497,20 @@ The 2.9 retention features only delete from one childless table (`activity_ts_me
 
 The command is **idempotent** (skips tables that already have cascade), runs a pre-flight `PRAGMA foreign_key_check` (refuses to migrate a database with existing FK violations), and is marked for removal in a future major version once enough users have run it.
 
+#### `garmin migrate-multisport`
+
+Brings a pre-2.12 `activity` table up to date for multi-sport support (#72): adds the nullable `parent_activity_id` column and replaces the table-level `UNIQUE (user_id, start_ts)` constraint with a partial unique index scoped to non-leg rows (`WHERE parent_activity_id IS NULL`). `CREATE TABLE IF NOT EXISTS` cannot alter an existing table and SQLite cannot drop a table constraint in place, so the table is rebuilt via the standard recreate dance, preserving all rows (existing rows get `parent_activity_id = NULL`) and child foreign keys.
+
+This **runs automatically at the start of `garmin extract`** (under the lifecycle lock, backing up and rebuilding only on the first run), so most users never invoke it directly. It is exposed for explicit control — e.g. a `--dry-run` preview.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
+| `--dry-run` | Flag | Plan the migration without modifying the database. |
+| `--no-backup` | Flag | Skip the pre-migration backup. Default copies the DB to `<db>.bak.<timestamp>`. |
+
+The command is **idempotent** (a database that already has `parent_activity_id` is skipped) and runs a pre-flight `PRAGMA foreign_key_check`.
+
 ## Data Catalog
 
 ### Data Types
@@ -525,7 +539,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 
 ### Database Schema
 
-The SQLite database contains 38 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 39 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -594,6 +608,8 @@ activity (main activity records)
 
 *Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
 
+Multi-sport activities (duathlon/triathlon) are stored as a family: the parent `multi_sport` row plus one `activity` row per leg (swim/bike/run and transitions), each linking back to the parent via a nullable `activity.parent_activity_id` (self-referential FK, `ON DELETE CASCADE`). Each leg carries its own sport-specific aggregates (`running_agg_metrics` / `cycling_agg_metrics` / `swimming_agg_metrics`). Because a leg can legitimately share a start instant with an independently-recorded standalone activity of the same event, `(user_id, start_ts)` uniqueness is enforced by a partial index that excludes leg rows (`WHERE parent_activity_id IS NULL`).
+
 **Sleep Metrics (7 tables)**
 
 ```
@@ -623,13 +639,14 @@ body_composition (scale weigh-ins: weight, BMI, body fat, etc.)
 
 *Foreign keys: all tables → `user.user_id`*
 
-**Training Metrics (4 tables)**
+**Training Metrics (5 tables)**
 
 ```
 vo2_max (VO2 max estimates)
 acclimation (heat/altitude acclimation)
 training_load (training load metrics)
 training_readiness (daily readiness scores)
+running_tolerance (daily biomechanical running load and tolerated ceiling)
 ```
 
 *Foreign keys: all tables → `user.user_id`*
