@@ -2146,3 +2146,26 @@ def test_extract_multisport_children_no_childids_returns_none(tmp_path):
     extractor.garmin_client.get_activity_details.return_value = {"metadataDTO": {}}
 
     assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None
+
+
+def test_extract_multisport_children_non_list_childids_returns_none(tmp_path):
+    """
+    A childIds that is a truthy non-list (e.g. dict) is treated as no legs.
+    """
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activity_details.return_value = {
+        "metadataDTO": {"childIds": {"unexpected": "dict"}}
+    }
+
+    assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None

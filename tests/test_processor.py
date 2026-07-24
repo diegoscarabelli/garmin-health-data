@@ -3307,3 +3307,48 @@ def test_process_multisport_children_skips_non_dict_payload(processor, tmp_path)
     with patch("garmin_health_data.processor.upsert_model_instances") as up:
         processor._process_multisport_children(f, MagicMock())
     up.assert_not_called()
+
+
+def test_process_multisport_children_skips_when_parent_missing(processor, tmp_path):
+    """
+    When the parent activity row is absent (e.g. skipped by the duplicate guard), the
+    legs are skipped rather than FK-failing and quarantining the FileSet.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            {
+                "parentActivityId": 751,
+                "children": [_multisport_child("running", 1, {"averagePower": 355.0})],
+            }
+        )
+    )
+    session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = (
+        None  # Parent absent.
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, session)
+    up.assert_not_called()
+
+
+def test_process_multisport_children_processes_when_parent_present(processor, tmp_path):
+    """
+    When the parent row exists, the legs are processed.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            {
+                "parentActivityId": 751,
+                "children": [_multisport_child("running", 1, {"averagePower": 355.0})],
+            }
+        )
+    )
+    session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = (
+        751  # Parent present.
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, session)
+    assert up.called

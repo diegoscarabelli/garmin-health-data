@@ -1193,10 +1193,10 @@ class GarminExtractor:
             )
             return None
 
-        child_ids = ((parent_detail or {}).get("metadataDTO") or {}).get(
-            "childIds"
-        ) or []
-        if not child_ids:
+        child_ids = ((parent_detail or {}).get("metadataDTO") or {}).get("childIds")
+        # Only a non-empty list of ids is usable; a truthy non-list (dict/str) would be
+        # iterated element-by-element and fetch garbage ids.
+        if not isinstance(child_ids, list) or not child_ids:
             click.echo(f"No child legs for multi-sport activity {parent_activity_id}.")
             return None
 

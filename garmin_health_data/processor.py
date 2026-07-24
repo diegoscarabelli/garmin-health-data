@@ -2558,6 +2558,25 @@ class GarminProcessor(Processor):
             )
             return
 
+        # Legs FK-reference the parent activity row via parent_activity_id. If the
+        # parent is absent — it was skipped by the duplicate (user_id, start_ts) guard,
+        # or its ACTIVITIES_LIST file is missing — inserting legs would raise an
+        # IntegrityError and quarantine the whole FileSet. Skip the legs instead.
+        parent_exists = (
+            parent_id is not None
+            and session.execute(
+                select(Activity.activity_id).where(Activity.activity_id == parent_id)
+            ).scalar_one_or_none()
+            is not None
+        )
+        if not parent_exists:
+            click.secho(
+                f"⚠️ Skipping multi-sport legs in {file_path.name}: parent activity "
+                f"{parent_id} is not present (skipped duplicate or missing).",
+                fg="yellow",
+            )
+            return
+
         processed = 0
         for child in children:
             if isinstance(child, dict) and self._process_multisport_child(
