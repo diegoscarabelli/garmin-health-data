@@ -3097,3 +3097,258 @@ class TestGarminFileTypesActivityPattern:
         processable, backup_only = _partition_processable_and_backup([gpx])
         assert gpx in backup_only
         assert gpx not in processable
+
+
+def test_process_running_tolerance_upserts_rows(processor, tmp_path):
+    """
+    _process_running_tolerance builds a RunningTolerance record per daily row and
+    upserts them keyed by (user_id, date) with on_conflict_update=True.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            [
+                {
+                    "calendarDate": "2026-03-15",
+                    "totalImpactLoad": 53800,
+                    "totalDistance": 49615.0,
+                    "tolerance": 60914,
+                    "startOfWeek": "2026-03-11",
+                    "endOfWeek": "2026-03-15",
+                    "weekIndex": 1889,
+                }
+            ]
+        )
+    )
+    session = MagicMock()
+    with patch("garmin_health_data.processor.upsert_model_instances") as mock_upsert:
+        processor._process_running_tolerance(f, session)
+
+    records = mock_upsert.call_args.kwargs["model_instances"]
+    assert len(records) == 1
+    r = records[0]
+    assert r.user_id == 123456789
+    assert r.date == date(2026, 3, 15)
+    assert r.total_impact_load == 53800
+    assert r.total_distance == 49615.0
+    assert r.tolerance == 60914
+    assert r.start_of_week == date(2026, 3, 11)
+    assert r.end_of_week == date(2026, 3, 15)
+    assert r.week_index == 1889
+    assert mock_upsert.call_args.kwargs["conflict_columns"] == ["user_id", "date"]
+    assert mock_upsert.call_args.kwargs["on_conflict_update"] is True
+
+
+def test_process_running_tolerance_skips_rows_without_date(processor, tmp_path):
+    """
+    Rows without a calendarDate are skipped; a file with only such rows upserts nothing.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(json.dumps([{"totalImpactLoad": 1}, "junk"]))
+    session = MagicMock()
+    with patch("garmin_health_data.processor.upsert_model_instances") as mock_upsert:
+        processor._process_running_tolerance(f, session)
+
+    mock_upsert.assert_not_called()
+
+
+def _multisport_child(type_key, type_id, summary):
+    """
+    Build a minimal multi-sport leg detail dict for tests.
+    """
+    return {
+        "activityId": 999,
+        "activityName": f"{type_key} leg",
+        "activityTypeDTO": {"typeId": type_id, "typeKey": type_key},
+        "eventTypeDTO": {"typeId": 9, "typeKey": "uncategorized"},
+        "summaryDTO": {
+            "startTimeGMT": "2026-05-09T16:41:14.0",
+            "startTimeLocal": "2026-05-09T09:41:14.0",
+            "duration": 2593.0,
+            "distance": 9396.0,
+            "averageHR": 160.0,
+            **summary,
+        },
+    }
+
+
+def test_process_multisport_child_running_builds_row_and_agg(processor):
+    """
+    A running leg yields a linked activity row plus running_agg_metrics from summary.
+    """
+    from garmin_health_data.models import Activity, RunningAggMetrics
+
+    child = _multisport_child(
+        "running",
+        1,
+        {
+            "averageRunCadence": 169.1,
+            "verticalOscillation": 9.19,
+            "groundContactTime": 231.0,
+            "averagePower": 355.0,
+            "normalizedPower": 360.0,
+        },
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        ok = processor._process_multisport_child(child, 22824120751, MagicMock())
+
+    assert ok is True
+    inserted = [call.kwargs["model_instances"][0] for call in up.call_args_list]
+    act = next(r for r in inserted if isinstance(r, Activity))
+    agg = next(r for r in inserted if isinstance(r, RunningAggMetrics))
+    assert act.activity_id == 999
+    assert act.parent_activity_id == 22824120751
+    assert act.activity_type_key == "running"
+    assert act.start_ts == datetime(2026, 5, 9, 16, 41, 14, tzinfo=timezone.utc)
+    assert agg.avg_running_cadence == 169.1
+    assert agg.avg_ground_contact_time == 231.0
+    assert agg.avg_power == 355.0
+    assert agg.normalized_power == 360.0
+
+
+def test_process_multisport_child_openwater_swim_leaves_pool_fields_null(processor):
+    """
+    An open-water swim leg maps SWOLF/strokes; pool-length fields stay None.
+    """
+    from garmin_health_data.models import SwimmingAggMetrics
+
+    child = _multisport_child(
+        "open_water_swimming",
+        26,
+        {
+            "averageSWOLF": 45.0,
+            "averageSwimCadence": 32.0,
+            "averageStrokeDistance": 1.6,
+            "totalNumberOfStrokes": 919.0,
+        },
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_child(child, 111, MagicMock())
+
+    agg = next(
+        r
+        for call in up.call_args_list
+        for r in call.kwargs["model_instances"]
+        if isinstance(r, SwimmingAggMetrics)
+    )
+    assert agg.avg_swolf == 45.0
+    assert agg.strokes == 919.0
+    assert agg.avg_swim_cadence == 32.0
+    assert agg.pool_length is None  # Open water: no pool lengths.
+    assert agg.active_lengths is None
+    assert agg.avg_strokes is None
+
+
+def test_process_multisport_child_transition_writes_no_agg(processor):
+    """
+    A transition leg gets an activity row but no sport-specific aggregate table.
+    """
+    from garmin_health_data.models import (
+        Activity,
+        RunningAggMetrics,
+        CyclingAggMetrics,
+        SwimmingAggMetrics,
+    )
+
+    child = _multisport_child("transition_v2", 1000, {"averageHR": 140.0})
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_child(child, 111, MagicMock())
+
+    inserted = [r for call in up.call_args_list for r in call.kwargs["model_instances"]]
+    assert any(isinstance(r, Activity) for r in inserted)
+    assert not any(
+        isinstance(r, (RunningAggMetrics, CyclingAggMetrics, SwimmingAggMetrics))
+        for r in inserted
+    )
+
+
+def test_process_multisport_child_skips_when_missing_required_fields(processor):
+    """
+    A leg missing its sport type / start is skipped without writing anything.
+    """
+    child = {
+        "activityId": 5,
+        "activityTypeDTO": {},
+        "eventTypeDTO": {},
+        "summaryDTO": {},
+    }
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        ok = processor._process_multisport_child(child, 111, MagicMock())
+    assert ok is False
+    up.assert_not_called()
+
+
+def test_process_running_tolerance_skips_unparseable_date(processor, tmp_path):
+    """
+    A row with an unparseable calendarDate is skipped, not fatal to the FileSet.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            [
+                {"calendarDate": "not-a-date", "tolerance": 1},
+                {"calendarDate": "2026-03-15", "tolerance": 60914},
+            ]
+        )
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_running_tolerance(f, MagicMock())
+    records = up.call_args.kwargs["model_instances"]
+    assert len(records) == 1  # bad-date row skipped, good row kept.
+    assert records[0].date == date(2026, 3, 15)
+
+
+def test_process_multisport_children_skips_non_dict_payload(processor, tmp_path):
+    """
+    A corrupted (non-dict) MULTISPORT_CHILDREN file is skipped without raising.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(json.dumps(["not", "a", "dict"]))
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, MagicMock())
+    up.assert_not_called()
+
+
+def test_process_multisport_children_skips_when_parent_missing(processor, tmp_path):
+    """
+    When the parent activity row is absent (e.g. skipped by the duplicate guard), the
+    legs are skipped rather than FK-failing and quarantining the FileSet.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            {
+                "parentActivityId": 751,
+                "children": [_multisport_child("running", 1, {"averagePower": 355.0})],
+            }
+        )
+    )
+    session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = (
+        None  # Parent absent.
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, session)
+    up.assert_not_called()
+
+
+def test_process_multisport_children_processes_when_parent_present(processor, tmp_path):
+    """
+    When the parent row exists, the legs are processed.
+    """
+    f = tmp_path / "123456789_MULTISPORT_CHILDREN_751_2026-05-09T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            {
+                "parentActivityId": 751,
+                "children": [_multisport_child("running", 1, {"averagePower": 355.0})],
+            }
+        )
+    )
+    session = MagicMock()
+    session.execute.return_value.scalar_one_or_none.return_value = (
+        751  # Parent present.
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_children(f, session)
+    assert up.called

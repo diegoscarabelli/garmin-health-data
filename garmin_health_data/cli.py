@@ -44,6 +44,7 @@ from garmin_health_data.processor_helpers import FileSet
 from garmin_health_data.retention.operations import (
     downsample_activities,
     migrate_cascade,
+    migrate_multisport,
     prune_ts_metrics,
 )
 from garmin_health_data.retention.parsers import DURATION, TIME_GRAIN
@@ -244,16 +245,43 @@ def extract(
     if not process_only:
         ensure_authenticated()
 
-    # Initialize or migrate database schema.
-    if not database_exists(db_path):
-        click.echo()
-        click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
-        initialize_database(db_path)
-        click.echo()
-    else:
-        # Idempotent migration: creates new tables if schema was
-        # updated, existing tables are untouched.
-        create_tables(db_path)
+    # Initialize or migrate the database schema under the lifecycle lock. The
+    # multi-sport migration rebuilds the activity table in place, so it must hold
+    # the same advisory lock as the retention and migrate-multisport commands to
+    # avoid racing with a concurrent run (#72). setup_lifecycle_dirs creates the
+    # directory the lock file lives in; it and the lock are re-run/re-acquired by
+    # the main pipeline block below (both idempotent, sequential — not nested).
+    schema_files_root = Path(db_path).expanduser().resolve().parent / "garmin_files"
+    setup_lifecycle_dirs(schema_files_root)
+    try:
+        with acquire_lock(schema_files_root):
+            if not database_exists(db_path):
+                click.echo()
+                click.echo(click.style("🗄️  Initializing new database...", fg="cyan"))
+                initialize_database(db_path)
+                click.echo()
+            else:
+                # Existing tables that changed shape cannot be updated by
+                # CREATE TABLE IF NOT EXISTS. Run the idempotent multi-sport
+                # migration FIRST so the activity table gains parent_activity_id
+                # and swaps its full (user_id, start_ts) uniqueness for the
+                # partial index (#72), before create_tables (whose partial index
+                # references the new column and would fail on a pre-#72 table).
+                # Backs up and rebuilds only on the first run; a no-op afterwards.
+                ms_result = migrate_multisport(db_path)
+                if ms_result.get("migrated"):
+                    click.secho(
+                        f"🗄️  Migrated activity table for multi-sport support "
+                        f"({ms_result['rows']} rows preserved; backup at "
+                        f"{ms_result['backup_path']}).",
+                        fg="cyan",
+                    )
+                # Idempotent: creates new tables if schema was updated (e.g.
+                # running_tolerance); existing tables are untouched.
+                create_tables(db_path)
+    except LockHeldError as e:
+        click.secho(f"❌ {e}", fg="red")
+        raise click.Abort() from e
 
     # Date auto-detection and extract-only logging are skipped when running
     # in --process-only mode (no API calls, dates would be unused).
@@ -1260,6 +1288,74 @@ def migrate_cascade_cmd(db_path: str, dry_run: bool, no_backup: bool):
         click.echo("Migrated:")
         for name in result["migrated"]:
             click.echo(f"  • {name}")
+
+
+@cli.command(name="migrate-multisport")
+@click.option(
+    "--db-path",
+    type=click.Path(),
+    default="garmin_data.db",
+    help="Path to SQLite database file.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Plan the migration without modifying the database.",
+)
+@click.option(
+    "--no-backup",
+    is_flag=True,
+    default=False,
+    help="Skip the pre-migration backup file. Default behavior copies the "
+    "database to <db>.bak.<timestamp> before any writes.",
+)
+def migrate_multisport_cmd(db_path: str, dry_run: bool, no_backup: bool):
+    """
+    Add activity.parent_activity_id and relax (user_id, start_ts) uniqueness (#72).
+
+    Pre-#72 databases have the activity table with a table-level
+    UNIQUE (user_id, start_ts) constraint and no parent_activity_id column, which
+    CREATE TABLE IF NOT EXISTS cannot update. This rebuilds the activity table to
+    match the current schema, adding the nullable parent_activity_id column and
+    replacing the full unique constraint with a partial unique index that excludes
+    multi-sport leg rows. Existing rows are preserved with parent_activity_id = NULL.
+
+    Runs automatically during 'garmin extract'; this command exists for explicit
+    control (e.g. a dry run). Idempotent: an already-migrated database is skipped.
+    """
+
+    def _run():
+        try:
+            return migrate_multisport(
+                db_path,
+                dry_run=dry_run,
+                backup=not no_backup,
+            )
+        except RuntimeError as e:
+            click.secho(f"❌ {e}", fg="red")
+            raise click.Abort() from e
+
+    # Acquire the lifecycle lock so the in-place table rewrite cannot race with a
+    # concurrent extract or another retention command.
+    result = _run_under_db_lock(db_path, _run)
+
+    if result["dry_run"]:
+        click.secho(
+            f"🔍 Dry run: {result['reason']} "
+            f"({format_count(result['rows'])} activity rows).",
+            fg="cyan",
+        )
+    elif result["migrated"]:
+        click.secho(
+            f"✅ Migrated activity table "
+            f"({format_count(result['rows'])} rows preserved).",
+            fg="green",
+        )
+        if result["backup_path"]:
+            click.echo(f"💾 Backup: {result['backup_path']}")
+    else:
+        click.secho(f"ℹ️  Nothing to do: {result['reason']}.", fg="cyan")
 
 
 if __name__ == "__main__":

@@ -2050,3 +2050,123 @@ def test_retroactive_lookback_refreshes_even_when_incremental_window_empty():
     # start (tomorrow) is after end (today): the incremental window is empty.
     result = _retroactive_lookback_start(mc_day, date(2026, 7, 22), date(2026, 7, 21))
     assert result == date(2026, 4, 22)  # still end - 90 days.
+
+
+def test_split_running_tolerance_groups_by_calendar_date():
+    """
+    RUNNING_TOLERANCE daily rows are grouped by ``calendarDate`` into per-day payloads;
+    rows that are non-dict, missing, or have an unparseable ``calendarDate`` are
+    skipped.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_running_tolerance_by_day
+
+    payload = [
+        {"calendarDate": "2026-03-15", "totalImpactLoad": 53800, "tolerance": 60914},
+        {"calendarDate": "2026-03-15", "totalImpactLoad": 100},  # same day -> grouped.
+        {"calendarDate": "2026-03-18", "totalImpactLoad": 14610},
+        {"totalImpactLoad": 1},  # No calendarDate -> skipped.
+        {"calendarDate": "not-a-date"},  # Unparseable -> skipped.
+        "junk",  # Non-dict -> skipped.
+    ]
+    result = _split_running_tolerance_by_day(payload)
+
+    assert sorted(result.keys()) == [date(2026, 3, 15), date(2026, 3, 18)]
+    assert len(result[date(2026, 3, 15)]) == 2
+    assert result[date(2026, 3, 18)][0]["totalImpactLoad"] == 14610
+
+
+def test_split_running_tolerance_empty_payload():
+    """
+    An empty or None payload yields an empty mapping (no per-day files written).
+    """
+    from garmin_health_data.extractor import _split_running_tolerance_by_day
+
+    assert _split_running_tolerance_by_day([]) == {}
+    assert _split_running_tolerance_by_day(None) == {}
+
+
+def test_extract_multisport_children_fetches_and_saves_legs(tmp_path):
+    """
+    _extract_multisport_children reads the parent's childIds, fetches each leg's detail,
+    and saves them under `children` with the parentActivityId.
+    """
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+
+    parent_detail = {"metadataDTO": {"childIds": [625, 627]}}
+    child_625 = {
+        "activityId": 625,
+        "activityTypeDTO": {"typeKey": "open_water_swimming"},
+    }
+    child_627 = {"activityId": 627, "activityTypeDTO": {"typeKey": "cycling"}}
+    extractor.garmin_client.get_activity_details.side_effect = [
+        parent_detail,
+        child_625,
+        child_627,
+    ]
+
+    with patch("garmin_health_data.extractor.time.sleep"):
+        result = extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z")
+
+    assert result is not None
+    payload = json.loads(result.read_text())
+    assert payload["parentActivityId"] == 751
+    assert [c["activityId"] for c in payload["children"]] == [625, 627]
+    assert "MULTISPORT_CHILDREN_751" in result.name
+
+
+def test_extract_multisport_children_no_childids_returns_none(tmp_path):
+    """
+    A parent whose detail has no childIds writes no file.
+    """
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activity_details.return_value = {"metadataDTO": {}}
+
+    assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None
+
+
+def test_extract_multisport_children_non_list_childids_returns_none(tmp_path):
+    """
+    A childIds that is a truthy non-list (e.g. dict) is treated as no legs.
+    """
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activity_details.return_value = {
+        "metadataDTO": {"childIds": {"unexpected": "dict"}}
+    }
+
+    assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None

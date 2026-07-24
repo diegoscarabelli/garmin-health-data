@@ -182,6 +182,17 @@ class GarminDataRegistry:
                 "⚖️",
             ),
             GarminDataType(
+                "RUNNING_TOLERANCE",
+                "get_running_tolerance",
+                APIMethodTimeParam.RANGE,
+                "/metrics-service/metrics/runningtolerance/stats"
+                "?startDate={start}&endDate={end}&aggregation=daily",
+                "Daily running tolerance: biomechanical impact load, running distance, "
+                "tolerated running-load ceiling, and week grouping. Empty for accounts "
+                "without a compatible watch.",
+                "🏃",
+            ),
+            GarminDataType(
                 "MENSTRUAL_CYCLE_SUMMARY",
                 "get_menstrual_calendar_data",
                 APIMethodTimeParam.RANGE,
@@ -244,6 +255,16 @@ class GarminDataRegistry:
                 "ML-classified exercises, reps, weight, duration, "
                 "and set type.",
                 "💪",
+            ),
+            GarminDataType(
+                "MULTISPORT_CHILDREN",
+                "get_activity_details",
+                APIMethodTimeParam.PER_ACTIVITY,
+                "/activity-service/activity/{activity_id}",
+                "Per-leg child activities of a multi-sport (duathlon/triathlon) "
+                "parent, fetched via the parent's metadataDTO.childIds. Each leg "
+                "carries its own sport-specific summary metrics.",
+                "🔀",
             ),
             GarminDataType(
                 "ACTIVITY",

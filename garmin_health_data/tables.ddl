@@ -101,14 +101,29 @@ CREATE TABLE IF NOT EXISTS activity (
     , pr BOOLEAN NOT NULL DEFAULT 0            -- Whether this activity contains a personal record.
     , auto_calc_calories BOOLEAN NOT NULL DEFAULT 0 -- Whether calorie calculation was performed automatically.
     , ts_data_available BOOLEAN NOT NULL DEFAULT 0  -- Whether time-series data from FIT file has been processed for this activity.
+    , parent_activity_id BIGINT               -- For a leg of a multi-sport (duathlon/triathlon) activity, the activity_id of the parent multi_sport activity, linking legs to their parent. NULL for standalone activities and for the multi_sport parent itself.
     , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
     , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP           -- Timestamp when the record was last modified in the database.
     , FOREIGN KEY (user_id) REFERENCES user (user_id)
-    , UNIQUE (user_id, start_ts)
+    , FOREIGN KEY (parent_activity_id) REFERENCES activity (
+        activity_id
+    ) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS activity_user_id_start_ts_idx
 ON activity (user_id, start_ts DESC);
+
+CREATE INDEX IF NOT EXISTS activity_parent_activity_id_idx
+ON activity (parent_activity_id);
+
+-- Uniqueness of (user_id, start_ts) is enforced only for non-child activities. A
+-- multi-sport leg (parent_activity_id IS NOT NULL) may legitimately share a start
+-- instant with an independently-recorded standalone activity of the same event, so leg
+-- rows are excluded from the constraint. Standalone activities and multi_sport parents
+-- remain uniquely constrained, preserving the duplicate guard from #66/#67.
+CREATE UNIQUE INDEX IF NOT EXISTS activity_user_id_start_ts_unique_idx
+ON activity (user_id, start_ts)
+WHERE parent_activity_id IS NULL;
 
 -- Swimming-specific metrics including stroke data, SWOLF, and pool information. Each record corresponds to a specific swimming activity.
 CREATE TABLE IF NOT EXISTS swimming_agg_metrics (
@@ -471,6 +486,25 @@ CREATE TABLE IF NOT EXISTS training_readiness (
 
 CREATE INDEX IF NOT EXISTS training_readiness_user_id_timestamp_idx
 ON training_readiness (user_id, timestamp DESC);
+
+-- Daily running tolerance from Garmin's biomechanical running-load model. One row per calendar day, sourced from the metrics-service runningtolerance/stats endpoint (aggregation=daily). Captures the day's cumulative impact load and running distance, the tolerated running-load ceiling Garmin computes for the containing week, and that week's grouping. Only populated for accounts with a compatible watch; others return no rows.
+CREATE TABLE IF NOT EXISTS running_tolerance (
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this running tolerance data belongs to.
+    , date DATE NOT NULL                   -- Calendar date (calendarDate) this daily row summarizes.
+    , total_impact_load INTEGER            -- Cumulative biomechanical (musculoskeletal) running load accumulated on this day.
+    , total_distance FLOAT                 -- Total distance run on this day, in meters.
+    , tolerance INTEGER                    -- Tolerated running-load ceiling Garmin models for the week containing this day.
+    , start_of_week DATE                   -- First day of the week that this tolerance value is computed over (startOfWeek).
+    , end_of_week DATE                     -- Last populated day of that week (endOfWeek).
+    , week_index INTEGER                   -- Monotonic week counter from Garmin (weekIndex).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (user_id, date)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS running_tolerance_user_id_date_idx
+ON running_tolerance (user_id, date DESC);
 
 -- Stress level measurements at regular 3-minute intervals throughout the day. Stress values typically range from 0-100, with negative values indicating unmeasurable periods.
 CREATE TABLE IF NOT EXISTS stress (

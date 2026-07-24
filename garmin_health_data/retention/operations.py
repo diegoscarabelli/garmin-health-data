@@ -53,6 +53,12 @@ def _ensure_schema_current(db_path: Path) -> None:
     # needs to be reachable at call time.
     from garmin_health_data.db import create_tables
 
+    # The activity table gained parent_activity_id and a partial unique index
+    # referencing it (#72). CREATE INDEX IF NOT EXISTS in the DDL fails on a
+    # pre-#72 activity table that lacks the column, so the multi-sport migration
+    # (which rebuilds the table to add the column) must run first. Idempotent:
+    # a no-op once the column exists.
+    migrate_multisport(str(db_path))
     create_tables(str(db_path))
 
 
@@ -425,6 +431,161 @@ def migrate_cascade(
         "skipped": skipped,
         "backup_path": backup_path,
         "dry_run": dry_run,
+    }
+
+
+def migrate_multisport(
+    db_path: str,
+    *,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> dict[str, Any]:
+    """
+    Add ``activity.parent_activity_id`` and relax the ``(user_id, start_ts)`` uniqueness
+    to a partial index (multi-sport support, #72).
+
+    Databases created before #72 have the ``activity`` table with a table-level
+    ``UNIQUE (user_id, start_ts)`` constraint and no ``parent_activity_id`` column.
+    ``CREATE TABLE IF NOT EXISTS`` cannot alter an existing table, and SQLite cannot drop
+    a table-level constraint in place, so the ``activity`` table is rebuilt via the
+    standard 12-step dance to match the current DDL: a nullable ``parent_activity_id``
+    column is added and the full unique constraint becomes a partial unique index that
+    excludes multi-sport leg rows. Existing rows get ``parent_activity_id = NULL``.
+
+    The rebuild targets the *parent* table (child tables carry FKs referencing it), so it
+    runs with ``legacy_alter_table = ON`` to stop the rename from rewriting those child
+    FK references, and with ``foreign_keys = OFF`` per SQLite's recipe. A post-migration
+    ``PRAGMA foreign_key_check`` verifies integrity before the change is kept.
+
+    Idempotent: a database that already has ``parent_activity_id`` is left untouched.
+
+    :param db_path: Path to the SQLite database file.
+    :param dry_run: When True, report the plan without modifying the database.
+    :param backup: When True (default), copy the database before any writes.
+    :return: Summary dict with keys ``migrated`` (bool), ``reason`` (str), ``rows`` (int
+        activity rows preserved), ``backup_path`` (str|None), ``dry_run`` (bool).
+    :raises RuntimeError: when a ``PRAGMA foreign_key_check`` finds orphan rows (before or
+        after the rebuild).
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    """
+    # This migration runs before create_tables (its partial index references the new
+    # column), so gate on the SQLite version here too — otherwise an unsupported build
+    # would fail with a cryptic PRAGMA/partial-index error instead of the clear message.
+    # Local import avoids a circular import at module load.
+    from garmin_health_data.db import check_sqlite_version
+
+    check_sqlite_version()
+
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+
+    conn = sqlite3.connect(str(db_file))
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        has_activity = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity'"
+        ).fetchone()
+        if has_activity is None:
+            # Fresh/empty database: create_tables will build the current schema.
+            return {
+                "migrated": False,
+                "reason": "no activity table (nothing to migrate)",
+                "rows": 0,
+                "backup_path": None,
+                "dry_run": dry_run,
+            }
+        old_cols = [r[1] for r in conn.execute("PRAGMA table_info(activity)")]
+        if "parent_activity_id" in old_cols:
+            return {
+                "migrated": False,
+                "reason": "already migrated",
+                "rows": 0,
+                "backup_path": None,
+                "dry_run": dry_run,
+            }
+        orphans = _orphan_check(conn)
+        if orphans:
+            raise RuntimeError(
+                "PRAGMA foreign_key_check reported orphan rows; refusing to migrate a "
+                f"database with existing FK violations. Offending rows: {orphans!r}."
+            )
+        row_count = conn.execute("SELECT count(*) FROM activity").fetchone()[0]
+    finally:
+        conn.close()
+
+    if dry_run:
+        return {
+            "migrated": False,
+            "reason": "dry run",
+            "rows": row_count,
+            "backup_path": None,
+            "dry_run": True,
+        }
+
+    backup_path = str(_backup_db(db_file)) if backup else None
+
+    ddl_text = _load_ddl_text()
+    new_create = _extract_table_ddl(ddl_text, "activity")
+    if new_create is None:
+        raise RuntimeError(
+            "Could not extract the activity CREATE TABLE from tables.ddl."
+        )
+    new_indexes = _extract_indexes_ddl(ddl_text, "activity")
+    # Copy only the columns the old table has; parent_activity_id defaults to NULL.
+    col_list = ", ".join(old_cols)
+
+    conn = sqlite3.connect(str(db_file))
+    try:
+        # These pragmas cannot be changed inside a transaction, so set them first.
+        # foreign_keys=OFF per SQLite's table-rebuild recipe; legacy_alter_table=ON so
+        # renaming the parent table does not rewrite the child tables' FK references
+        # (which point at "activity" by name).
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        try:
+            cur.execute("ALTER TABLE activity RENAME TO activity__migrate_old")
+            # Single-statement execute() (not executescript) so BEGIN/COMMIT actually
+            # wrap the dance; see _migrate_one_table for the executescript footgun. Use
+            # an explicit raise (not assert, which -O would strip) so this safety check
+            # always runs.
+            if ";" in new_create.rstrip().rstrip(";"):
+                raise RuntimeError(
+                    "The extracted activity CREATE TABLE is a multi-statement string; "
+                    "refusing to run it via single-statement execute() (would break "
+                    "the transaction's atomicity)."
+                )
+            cur.execute(new_create.rstrip().rstrip(";"))
+            cur.execute(
+                f"INSERT INTO activity ({col_list}) "
+                f"SELECT {col_list} FROM activity__migrate_old"
+            )
+            cur.execute("DROP TABLE activity__migrate_old")
+            for index_sql in new_indexes:
+                cur.execute(index_sql.rstrip().rstrip(";"))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        orphans = _orphan_check(conn)
+        if orphans:
+            raise RuntimeError(
+                "Post-migration PRAGMA foreign_key_check found orphan rows: "
+                f"{orphans!r}. The database backup is at {backup_path}."
+            )
+        conn.execute("PRAGMA foreign_keys = ON")
+    finally:
+        conn.close()
+
+    return {
+        "migrated": True,
+        "reason": "rebuilt activity table",
+        "rows": row_count,
+        "backup_path": backup_path,
+        "dry_run": False,
     }
 
 

@@ -120,6 +120,7 @@ WEIGHT_RANGE_URL = "/weight-service/weight/range"
 TRAINING_READINESS_URL = "/metrics-service/metrics/trainingreadiness"
 TRAINING_STATUS_URL = "/metrics-service/metrics/trainingstatus/aggregated"
 RACE_PREDICTOR_URL = "/metrics-service/metrics/racepredictions"
+RUNNING_TOLERANCE_URL = "/metrics-service/metrics/runningtolerance/stats"
 
 # Personal records.
 PERSONAL_RECORD_URL = "/personalrecord-service/personalrecord/prs"

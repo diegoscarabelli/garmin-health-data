@@ -419,3 +419,98 @@ class TestGetMenstrualCalendarData:
         client = MagicMock()
         with pytest.raises(ValueError, match="on or after"):
             api.get_menstrual_calendar_data(client, "2026-05-25", "2026-05-01")
+
+
+class TestGetRunningTolerance:
+    """
+    Tests for :func:`api.get_running_tolerance` endpoint, params, and empty-response
+    normalization.
+    """
+
+    def test_calls_endpoint_with_params(self) -> None:
+        """
+        The wrapper hits ``/metrics-service/metrics/runningtolerance/stats`` with
+        ``startDate`` / ``endDate`` / ``aggregation`` query params and returns the list.
+        """
+        payload = [{"calendarDate": "2026-03-15", "tolerance": 60914}]
+        client = MagicMock()
+        client._connectapi.return_value = payload
+
+        result = api.get_running_tolerance(
+            client, "2026-03-15", "2026-03-18", aggregation="daily"
+        )
+
+        assert result is payload
+        client._connectapi.assert_called_once_with(
+            api.RUNNING_TOLERANCE_URL,
+            params={
+                "startDate": "2026-03-15",
+                "endDate": "2026-03-18",
+                "aggregation": "daily",
+            },
+        )
+
+    def test_empty_list_normalized_to_none(self) -> None:
+        """
+        Accounts without a compatible watch get an empty array; it is normalized to
+        ``None`` so the extractor skips the file write.
+        """
+        client = MagicMock()
+        client._connectapi.return_value = []
+
+        assert api.get_running_tolerance(client, "2026-03-15", "2026-03-18") is None
+
+    def test_none_response_returns_none(self) -> None:
+        """
+        A ``None`` response passes through as ``None`` rather than raising.
+        """
+        client = MagicMock()
+        client._connectapi.return_value = None
+
+        assert api.get_running_tolerance(client, "2026-03-15", "2026-03-18") is None
+
+    def test_default_enddate_and_aggregation(self) -> None:
+        """
+        Omitting ``enddate`` uses ``startdate`` for both bounds; ``aggregation``
+        defaults to ``"daily"``.
+        """
+        client = MagicMock()
+        client._connectapi.return_value = [{"calendarDate": "2026-03-15"}]
+
+        api.get_running_tolerance(client, "2026-03-15")
+
+        client._connectapi.assert_called_once_with(
+            api.RUNNING_TOLERANCE_URL,
+            params={
+                "startDate": "2026-03-15",
+                "endDate": "2026-03-15",
+                "aggregation": "daily",
+            },
+        )
+
+
+class TestGetActivityDetails:
+    """
+    Tests for :func:`api.get_activity_details`.
+    """
+
+    def test_calls_activity_endpoint(self) -> None:
+        """
+        Fetches ``/activity-service/activity/{id}`` and returns the detail dict.
+        """
+        payload = {"activityId": 111, "metadataDTO": {"childIds": [1, 2]}}
+        client = MagicMock()
+        client._connectapi.return_value = payload
+
+        result = api.get_activity_details(client, 111)
+
+        assert result is payload
+        client._connectapi.assert_called_once_with(f"{api.ACTIVITY_URL}/111")
+
+    def test_none_response_returns_none(self) -> None:
+        """
+        A falsy response passes through as ``None``.
+        """
+        client = MagicMock()
+        client._connectapi.return_value = None
+        assert api.get_activity_details(client, 111) is None

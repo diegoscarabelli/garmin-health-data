@@ -127,8 +127,17 @@ class Activity(Base, UpsertBase):
 
     __tablename__ = "activity"
     __table_args__ = (
-        UniqueConstraint(
-            "user_id", "start_ts", name="activity_user_id_start_ts_unique"
+        # Partial unique index matching tables.ddl: uniqueness of (user_id, start_ts)
+        # is enforced only for non-leg rows. A multi-sport leg (parent_activity_id IS
+        # NOT NULL) may share a start instant with an independently-recorded standalone
+        # activity, so leg rows are excluded (#72). Not an unconditional
+        # UniqueConstraint, which would reject those legs.
+        Index(
+            "activity_user_id_start_ts_unique_idx",
+            "user_id",
+            "start_ts",
+            unique=True,
+            sqlite_where=text("parent_activity_id IS NULL"),
         ),
     )
 
@@ -209,6 +218,14 @@ class Activity(Base, UpsertBase):
     pr = Column(Boolean, nullable=False, server_default=text("0"))
     auto_calc_calories = Column(Boolean, nullable=False, server_default=text("0"))
     ts_data_available = Column(Boolean, nullable=False, server_default=text("0"))
+
+    # For a leg of a multi-sport activity, the activity_id of the parent multi_sport
+    # activity; NULL for standalone activities and the multi_sport parent itself.
+    # ON DELETE CASCADE so deleting a parent removes its legs (matches the other
+    # activity-child tables).
+    parent_activity_id = Column(
+        BigInteger, ForeignKey("activity.activity_id", ondelete="CASCADE")
+    )
 
 
 class SwimmingAggMetrics(Base, UpsertBase):
@@ -713,6 +730,28 @@ class TrainingReadiness(Base, UpsertBase):
     acwr_factor_feedback_phrase = Column(String)
     recovery_time_factor_feedback_phrase = Column(String)
     sleep_score_factor_feedback_phrase = Column(String)
+
+
+class RunningTolerance(Base, UpsertBase):
+    """
+    Daily running tolerance from Garmin's biomechanical running-load model.
+
+    One row per calendar day keyed by ``(user_id, date)``. Captures the day's cumulative
+    impact load and running distance, plus the tolerated running-load ceiling and week
+    grouping Garmin computes for the containing week. Only populated for accounts with a
+    compatible watch.
+    """
+
+    __tablename__ = "running_tolerance"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    date = Column(Date, primary_key=True)
+    total_impact_load = Column(Integer)
+    total_distance = Column(Float)
+    tolerance = Column(Integer)
+    start_of_week = Column(Date)
+    end_of_week = Column(Date)
+    week_index = Column(Integer)
 
 
 class Stress(Base, InsertBase):
