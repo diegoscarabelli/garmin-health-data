@@ -432,6 +432,13 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 
 [Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...HEAD
 [2.12.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.2...v2.12.0
+[2.11.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.1...v2.11.2
+[2.11.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.0...v2.11.1
+[2.11.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.10.0...v2.11.0
+[2.10.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.9.1...v2.10.0
+[2.9.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.9.0...v2.9.1
+[2.9.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.8.0...v2.9.0
+[2.8.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.4...v2.8.0
 [2.7.4]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.3...v2.7.4
 [2.7.3]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.2...v2.7.3
 [2.7.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.7.1...v2.7.2
