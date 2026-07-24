@@ -514,6 +514,7 @@ The command is **idempotent** (skips tables that already have cascade), runs a p
 | **MENSTRUAL_CYCLE_DAY** | Per-day cycle state: phase, day-in-cycle, period length, plus the user's symptoms / moods / discharge tags, flow, sex drive, sexual activity, notes, ovulation flag on logged days | Per day inside any observed or predicted cycle window |
 | **MENSTRUAL_CYCLE_SUMMARY** | Per-cycle summaries (observed + predicted): start date, period length | Per cycle |
 | **BODY_COMPOSITION** | Scale weigh-ins: weight, BMI, body fat %, body water %, bone mass, muscle mass | Per weigh-in |
+| **RUNNING_TOLERANCE** | Biomechanical running load: daily impact load, running distance, tolerated load ceiling (requires a compatible watch) | Daily |
 | **ACTIVITIES_LIST** | Detailed activity summaries | Per activity |
 | **EXERCISE_SETS** | Per-set strength training data: reps, weight, ML-classified exercise name | Per activity |
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |

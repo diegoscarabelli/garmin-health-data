@@ -43,6 +43,7 @@ from .constants import (
     MENSTRUAL_DAYVIEW_URL,
     PERSONAL_RECORD_URL,
     RACE_PREDICTOR_URL,
+    RUNNING_TOLERANCE_URL,
     TCX_DOWNLOAD_URL,
     TRAINING_READINESS_URL,
     TRAINING_STATUS_URL,
@@ -309,6 +310,52 @@ def get_body_composition(
     # ``includeAll=True`` (capitalized), relying on Garmin's case-insensitive parsing.
     result = client._connectapi(url, params={"includeAll": "true"})
     if result and result.get("dailyWeightSummaries"):
+        return result
+    return None
+
+
+def get_running_tolerance(
+    client: "GarminClient",
+    startdate: str,
+    enddate: Optional[str] = None,
+    aggregation: str = "daily",
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Fetch Garmin's biomechanical running tolerance data for a date range.
+
+    Uses the ``/metrics-service/metrics/runningtolerance/stats`` endpoint with
+    ``startDate`` / ``endDate`` / ``aggregation`` query params. Returns a list of
+    per-period objects, one per calendar day for ``aggregation="daily"`` (each carrying
+    ``calendarDate``, ``totalImpactLoad``, ``totalDistance``, ``tolerance``, and the
+    ``startOfWeek`` / ``endOfWeek`` / ``weekIndex`` grouping of the containing week).
+
+    Running tolerance requires a compatible Garmin watch. Accounts without one get an
+    empty array from the endpoint, which this function normalizes to ``None`` so the
+    extractor's ``if data:`` truthiness check skips the file write (matching the other
+    RANGE-typed endpoints).
+
+    :param client: GarminClient instance.
+    :param startdate: Start date in ``YYYY-MM-DD`` format.
+    :param enddate: Optional end date in ``YYYY-MM-DD`` format. Defaults to
+        ``startdate``.
+    :param aggregation: ``"daily"`` (one row per day) or ``"weekly"`` (one row per
+        week). Defaults to ``"daily"``.
+    :return: List of running tolerance rows, or ``None`` if none were recorded.
+    """
+    startdate = _validate_date_format(startdate, "startdate")
+    if enddate is None:
+        enddate = startdate
+    else:
+        enddate = _validate_date_format(enddate, "enddate")
+    result = client._connectapi(
+        RUNNING_TOLERANCE_URL,
+        params={
+            "startDate": startdate,
+            "endDate": enddate,
+            "aggregation": aggregation,
+        },
+    )
+    if result:
         return result
     return None
 

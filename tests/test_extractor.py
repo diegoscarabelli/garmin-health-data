@@ -2050,3 +2050,38 @@ def test_retroactive_lookback_refreshes_even_when_incremental_window_empty():
     # start (tomorrow) is after end (today): the incremental window is empty.
     result = _retroactive_lookback_start(mc_day, date(2026, 7, 22), date(2026, 7, 21))
     assert result == date(2026, 4, 22)  # still end - 90 days.
+
+
+def test_split_running_tolerance_groups_by_calendar_date():
+    """
+    RUNNING_TOLERANCE daily rows are grouped by ``calendarDate`` into per-day payloads;
+    rows that are non-dict, missing, or have an unparseable ``calendarDate`` are
+    skipped.
+    """
+    from datetime import date
+
+    from garmin_health_data.extractor import _split_running_tolerance_by_day
+
+    payload = [
+        {"calendarDate": "2026-03-15", "totalImpactLoad": 53800, "tolerance": 60914},
+        {"calendarDate": "2026-03-15", "totalImpactLoad": 100},  # same day -> grouped.
+        {"calendarDate": "2026-03-18", "totalImpactLoad": 14610},
+        {"totalImpactLoad": 1},  # No calendarDate -> skipped.
+        {"calendarDate": "not-a-date"},  # Unparseable -> skipped.
+        "junk",  # Non-dict -> skipped.
+    ]
+    result = _split_running_tolerance_by_day(payload)
+
+    assert sorted(result.keys()) == [date(2026, 3, 15), date(2026, 3, 18)]
+    assert len(result[date(2026, 3, 15)]) == 2
+    assert result[date(2026, 3, 18)][0]["totalImpactLoad"] == 14610
+
+
+def test_split_running_tolerance_empty_payload():
+    """
+    An empty or None payload yields an empty mapping (no per-day files written).
+    """
+    from garmin_health_data.extractor import _split_running_tolerance_by_day
+
+    assert _split_running_tolerance_by_day([]) == {}
+    assert _split_running_tolerance_by_day(None) == {}

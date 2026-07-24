@@ -472,6 +472,25 @@ CREATE TABLE IF NOT EXISTS training_readiness (
 CREATE INDEX IF NOT EXISTS training_readiness_user_id_timestamp_idx
 ON training_readiness (user_id, timestamp DESC);
 
+-- Daily running tolerance from Garmin's biomechanical running-load model. One row per calendar day, sourced from the metrics-service runningtolerance/stats endpoint (aggregation=daily). Captures the day's cumulative impact load and running distance, the tolerated running-load ceiling Garmin computes for the containing week, and that week's grouping. Only populated for accounts with a compatible watch; others return no rows.
+CREATE TABLE IF NOT EXISTS running_tolerance (
+    user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this running tolerance data belongs to.
+    , date DATE NOT NULL                   -- Calendar date (calendarDate) this daily row summarizes.
+    , total_impact_load INTEGER            -- Cumulative biomechanical (musculoskeletal) running load accumulated on this day.
+    , total_distance FLOAT                 -- Total distance run on this day, in meters.
+    , tolerance INTEGER                    -- Tolerated running-load ceiling Garmin models for the week containing this day.
+    , start_of_week DATE                   -- First day of the week this row''s tolerance is computed over (startOfWeek).
+    , end_of_week DATE                     -- Last populated day of that week (endOfWeek).
+    , week_index INTEGER                   -- Garmin''s monotonic week counter (weekIndex).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , update_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was last modified in the database.
+    , PRIMARY KEY (user_id, date)
+    , FOREIGN KEY (user_id) REFERENCES user (user_id)
+);
+
+CREATE INDEX IF NOT EXISTS running_tolerance_user_id_date_idx
+ON running_tolerance (user_id, date DESC);
+
 -- Stress level measurements at regular 3-minute intervals throughout the day. Stress values typically range from 0-100, with negative values indicating unmeasurable periods.
 CREATE TABLE IF NOT EXISTS stress (
     user_id BIGINT NOT NULL              -- References user(user_id). Identifies which user this stress measurement belongs to.

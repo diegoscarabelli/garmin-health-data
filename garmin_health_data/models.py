@@ -715,6 +715,28 @@ class TrainingReadiness(Base, UpsertBase):
     sleep_score_factor_feedback_phrase = Column(String)
 
 
+class RunningTolerance(Base, UpsertBase):
+    """
+    Daily running tolerance from Garmin's biomechanical running-load model.
+
+    One row per calendar day keyed by ``(user_id, date)``. Captures the day's cumulative
+    impact load and running distance, plus the tolerated running-load ceiling and week
+    grouping Garmin computes for the containing week. Only populated for accounts with a
+    compatible watch.
+    """
+
+    __tablename__ = "running_tolerance"
+
+    user_id = Column(BigInteger, ForeignKey("user.user_id"), primary_key=True)
+    date = Column(Date, primary_key=True)
+    total_impact_load = Column(Integer)
+    total_distance = Column(Float)
+    tolerance = Column(Integer)
+    start_of_week = Column(Date)
+    end_of_week = Column(Date)
+    week_index = Column(Integer)
+
+
 class Stress(Base, InsertBase):
     """
     Stress level timeseries data capturing stress measurements throughout the day.

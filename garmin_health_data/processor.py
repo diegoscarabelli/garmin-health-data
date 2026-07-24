@@ -53,6 +53,7 @@ from garmin_health_data.models import (
     RacePredictions,
     Respiration,
     RunningAggMetrics,
+    RunningTolerance,
     Sleep,
     SleepLevel,
     SleepMovement,
@@ -176,6 +177,7 @@ class GarminProcessor(Processor):
                 ("ACTIVITIES_LIST", self._process_activities),
                 ("EXERCISE_SETS", self._process_exercise_sets),
                 ("BODY_COMPOSITION", self._process_body_composition),
+                ("RUNNING_TOLERANCE", self._process_running_tolerance),
                 ("FLOORS", self._process_floors),
                 ("HEART_RATE", self._process_heart_rate),
                 ("INTENSITY_MINUTES", self._process_intensity_minutes),
@@ -2392,6 +2394,64 @@ class GarminProcessor(Processor):
             click.echo(f"Processed {len(records)} body composition records.")
         else:
             click.secho("⚠️ No body composition data found.", fg="yellow")
+
+    def _process_running_tolerance(self, file_path: Path, session: Session):
+        """
+        Process a RUNNING_TOLERANCE file containing one day's running-tolerance rows.
+
+        The per-day file holds a list of daily running-tolerance objects (usually one).
+        Each is upserted into the ``running_tolerance`` table keyed by ``(user_id,
+        date)``. Rows without a ``calendarDate`` are skipped with a warning.
+
+        :param file_path: Path to the RUNNING_TOLERANCE JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        rows = payload if isinstance(payload, list) else []
+
+        records = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            calendar_date = row.get("calendarDate")
+            if not calendar_date:
+                click.secho(
+                    f"⚠️ Skipping running tolerance row with no calendarDate: "
+                    f"{row}.",
+                    fg="yellow",
+                )
+                continue
+            start_of_week = row.get("startOfWeek")
+            end_of_week = row.get("endOfWeek")
+            records.append(
+                RunningTolerance(
+                    user_id=int(self.user_id),
+                    date=self._parse_date_string(calendar_date),
+                    total_impact_load=row.get("totalImpactLoad"),
+                    total_distance=row.get("totalDistance"),
+                    tolerance=row.get("tolerance"),
+                    start_of_week=(
+                        self._parse_date_string(start_of_week)
+                        if start_of_week
+                        else None
+                    ),
+                    end_of_week=(
+                        self._parse_date_string(end_of_week) if end_of_week else None
+                    ),
+                    week_index=row.get("weekIndex"),
+                )
+            )
+
+        if records:
+            upsert_model_instances(
+                session=session,
+                model_instances=records,
+                conflict_columns=["user_id", "date"],
+                on_conflict_update=True,
+            )
+            click.echo(f"Processed {len(records)} running tolerance record(s).")
+        else:
+            click.secho("⚠️ No running tolerance data found.", fg="yellow")
 
     def _process_floors(self, file_path: Path, session: Session):
         """

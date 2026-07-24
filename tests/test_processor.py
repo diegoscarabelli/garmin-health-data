@@ -3097,3 +3097,56 @@ class TestGarminFileTypesActivityPattern:
         processable, backup_only = _partition_processable_and_backup([gpx])
         assert gpx in backup_only
         assert gpx not in processable
+
+
+def test_process_running_tolerance_upserts_rows(processor, tmp_path):
+    """
+    _process_running_tolerance builds a RunningTolerance record per daily row and
+    upserts them keyed by (user_id, date) with on_conflict_update=True.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(
+        json.dumps(
+            [
+                {
+                    "calendarDate": "2026-03-15",
+                    "totalImpactLoad": 53800,
+                    "totalDistance": 49615.0,
+                    "tolerance": 60914,
+                    "startOfWeek": "2026-03-11",
+                    "endOfWeek": "2026-03-15",
+                    "weekIndex": 1889,
+                }
+            ]
+        )
+    )
+    session = MagicMock()
+    with patch("garmin_health_data.processor.upsert_model_instances") as mock_upsert:
+        processor._process_running_tolerance(f, session)
+
+    records = mock_upsert.call_args.kwargs["model_instances"]
+    assert len(records) == 1
+    r = records[0]
+    assert r.user_id == 123456789
+    assert r.date == date(2026, 3, 15)
+    assert r.total_impact_load == 53800
+    assert r.total_distance == 49615.0
+    assert r.tolerance == 60914
+    assert r.start_of_week == date(2026, 3, 11)
+    assert r.end_of_week == date(2026, 3, 15)
+    assert r.week_index == 1889
+    assert mock_upsert.call_args.kwargs["conflict_columns"] == ["user_id", "date"]
+    assert mock_upsert.call_args.kwargs["on_conflict_update"] is True
+
+
+def test_process_running_tolerance_skips_rows_without_date(processor, tmp_path):
+    """
+    Rows without a calendarDate are skipped; a file with only such rows upserts nothing.
+    """
+    f = tmp_path / "123456789_RUNNING_TOLERANCE_2026-03-15T12-00-00Z.json"
+    f.write_text(json.dumps([{"totalImpactLoad": 1}, "junk"]))
+    session = MagicMock()
+    with patch("garmin_health_data.processor.upsert_model_instances") as mock_upsert:
+        processor._process_running_tolerance(f, session)
+
+    mock_upsert.assert_not_called()

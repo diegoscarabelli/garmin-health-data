@@ -265,6 +265,35 @@ def _split_activities_list_by_day(
     return by_day
 
 
+def _split_running_tolerance_by_day(
+    payload: List[Dict[str, Any]],
+) -> Dict[date, List[Dict[str, Any]]]:
+    """
+    Split a ``RUNNING_TOLERANCE`` per-range response into per-day payloads.
+
+    The ``aggregation=daily`` endpoint returns a list of per-day objects, each carrying
+    a ``calendarDate``. Groups rows by that calendar date so each per-day file mirrors
+    the per-day ``(user, day)`` FileSet abstraction the processor expects. Rows that are
+    non-dict or lack a parseable ``calendarDate`` are skipped.
+
+    :param payload: Full range response from ``get_running_tolerance`` (a list).
+    :return: Mapping ``{date: [...that day's running-tolerance rows...]}``.
+    """
+    by_day: Dict[date, List[Dict[str, Any]]] = {}
+    for row in payload or []:
+        if not isinstance(row, dict):
+            continue
+        cal = row.get("calendarDate")
+        if not isinstance(cal, str):
+            continue
+        try:
+            row_date = date.fromisoformat(cal[:10])
+        except ValueError:
+            continue
+        by_day.setdefault(row_date, []).append(row)
+    return by_day
+
+
 # Registry of per-day splitters: data types listed here have their per-range API
 # responses split into one file per day before write. RANGE types not listed
 # write one file stamped with end_date (current behavior — appropriate when the
@@ -273,6 +302,7 @@ def _split_activities_list_by_day(
 _PER_DAY_SPLITTERS: Dict[str, Callable[[Any], Dict[date, Any]]] = {
     "BODY_COMPOSITION": _split_body_composition_by_day,
     "ACTIVITIES_LIST": _split_activities_list_by_day,
+    "RUNNING_TOLERANCE": _split_running_tolerance_by_day,
 }
 
 

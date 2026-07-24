@@ -182,6 +182,17 @@ class GarminDataRegistry:
                 "⚖️",
             ),
             GarminDataType(
+                "RUNNING_TOLERANCE",
+                "get_running_tolerance",
+                APIMethodTimeParam.RANGE,
+                "/metrics-service/metrics/runningtolerance/stats"
+                "?startDate={start}&endDate={end}&aggregation=daily",
+                "Daily running tolerance: biomechanical impact load, running distance, "
+                "tolerated running-load ceiling, and week grouping. Empty for accounts "
+                "without a compatible watch.",
+                "🏃",
+            ),
+            GarminDataType(
                 "MENSTRUAL_CYCLE_SUMMARY",
                 "get_menstrual_calendar_data",
                 APIMethodTimeParam.RANGE,
