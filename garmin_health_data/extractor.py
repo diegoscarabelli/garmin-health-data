@@ -1101,6 +1101,18 @@ class GarminExtractor:
                 if exercise_sets_file:
                     downloaded_files.append(exercise_sets_file)
 
+            # Fetch the leg (child) activities of a multi-sport parent. The flat
+            # `parent` flag marks any activity that has child legs (structural
+            # signal, not a hardcoded type name); the authoritative child list
+            # comes from the detail endpoint's metadataDTO.childIds.
+            if activity.get("parent") is True:
+                time.sleep(0.1)
+                children_file = self._extract_multisport_children(
+                    activity_id, timestamp
+                )
+                if children_file:
+                    downloaded_files.append(children_file)
+
             # Rate limiting between activities.
             time.sleep(0.1)
 
@@ -1150,6 +1162,79 @@ class GarminExtractor:
 
         file_size = filepath.stat().st_size / 1024  # KB.
         click.echo(f"Saved: {filename} ({file_size:.1f} KB).")
+        return filepath
+
+    def _extract_multisport_children(
+        self, parent_activity_id: int, timestamp: str
+    ) -> Optional[Path]:
+        """
+        Fetch and save the leg (child) activities of a multi-sport parent.
+
+        Reads the parent's ``metadataDTO.childIds`` from the activity detail endpoint,
+        then fetches each leg's own detail (which carries its real sport type and sport-
+        specific ``summaryDTO`` metrics). The legs are hidden under the parent and do
+        not appear in the activities list, so this is the only way to capture their per-
+        leg data. Saves one file per parent, wrapping the leg details under ``children``
+        with the ``parentActivityId`` so the processor can link them.
+
+        :param parent_activity_id: Garmin activity ID of the multi-sport parent.
+        :param timestamp: ISO 8601 timestamp for consistent filename batching.
+        :return: Path to the saved JSON file, or None when there are no legs to save.
+        """
+        try:
+            parent_detail = _with_retries(
+                self.garmin_client.get_activity_details, parent_activity_id
+            )
+        except Exception as e:
+            click.secho(
+                f"Warning: Failed to fetch detail for multi-sport parent "
+                f"{parent_activity_id}: {e}.",
+                fg="yellow",
+            )
+            return None
+
+        child_ids = ((parent_detail or {}).get("metadataDTO") or {}).get(
+            "childIds"
+        ) or []
+        if not child_ids:
+            click.echo(f"No child legs for multi-sport activity {parent_activity_id}.")
+            return None
+
+        children = []
+        for child_id in child_ids:
+            try:
+                child_detail = _with_retries(
+                    self.garmin_client.get_activity_details, child_id
+                )
+            except Exception as e:
+                click.secho(
+                    f"Warning: Failed to fetch multi-sport leg {child_id} of "
+                    f"activity {parent_activity_id}: {e}.",
+                    fg="yellow",
+                )
+                continue
+            if child_detail:
+                children.append(child_detail)
+            time.sleep(0.1)  # Rate limiting between legs.
+
+        if not children:
+            return None
+
+        filename = (
+            f"{self.user_id}_MULTISPORT_CHILDREN_"
+            f"{parent_activity_id}_{timestamp}.json"
+        ).replace(":", "-")
+        filepath = self.ingest_dir / filename
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(
+                {"parentActivityId": parent_activity_id, "children": children},
+                f,
+                indent=2,
+            )
+        click.echo(
+            f"Saved {len(children)} multi-sport leg(s) for activity "
+            f"{parent_activity_id}: {filename}."
+        )
         return filepath
 
 

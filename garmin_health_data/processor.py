@@ -115,6 +115,61 @@ _TCX_TP_EXT_FIELDS = [
     ("watts", "tcx:Extensions/ax:TPX/ax:Watts", "watts"),
 ]
 
+# Multi-sport leg aggregate mappings: {agg_column: activity-detail summaryDTO field}.
+# The detail endpoint (used for hidden multi-sport legs) names fields differently from
+# the flat activities-list the standalone-activity processors read, so legs are mapped
+# directly here. Fields absent from summaryDTO (e.g. the cycling power-curve buckets
+# max_avg_power_*, pool-length swim metrics for open-water legs) are simply left unset
+# and stay NULL. See #72.
+_MULTISPORT_RUNNING_AGG_MAP = {
+    "avg_running_cadence": "averageRunCadence",
+    "max_running_cadence": "maxRunCadence",
+    "avg_vertical_oscillation": "verticalOscillation",
+    "avg_ground_contact_time": "groundContactTime",
+    "avg_stride_length": "strideLength",
+    "avg_vertical_ratio": "verticalRatio",
+    "avg_ground_contact_balance": "groundContactBalanceLeft",
+    "avg_power": "averagePower",
+    "max_power": "maxPower",
+    "normalized_power": "normalizedPower",
+    "steps": "steps",
+    "min_respiration_rate": "minRespirationRate",
+    "max_respiration_rate": "maxRespirationRate",
+    "avg_respiration_rate": "avgRespirationRate",
+    "elevation_gain": "elevationGain",
+    "elevation_loss": "elevationLoss",
+    "min_elevation": "minElevation",
+    "max_elevation": "maxElevation",
+    "min_temperature": "minTemperature",
+    "max_temperature": "maxTemperature",
+}
+_MULTISPORT_CYCLING_AGG_MAP = {
+    "avg_power": "averagePower",
+    "max_power": "maxPower",
+    "normalized_power": "normalizedPower",
+    "max_20min_power": "maxPowerTwentyMinutes",
+    "avg_left_balance": "leftBalance",
+    "avg_biking_cadence": "averageBikeCadence",
+    "max_biking_cadence": "maxBikeCadence",
+    "training_stress_score": "trainingStressScore",
+    "intensity_factor": "intensityFactor",
+    "min_respiration_rate": "minRespirationRate",
+    "max_respiration_rate": "maxRespirationRate",
+    "avg_respiration_rate": "avgRespirationRate",
+    "elevation_gain": "elevationGain",
+    "elevation_loss": "elevationLoss",
+    "min_elevation": "minElevation",
+    "max_elevation": "maxElevation",
+    "min_temperature": "minTemperature",
+    "max_temperature": "maxTemperature",
+}
+_MULTISPORT_SWIMMING_AGG_MAP = {
+    "avg_swim_cadence": "averageSwimCadence",
+    "avg_swolf": "averageSWOLF",
+    "avg_stroke_distance": "averageStrokeDistance",
+    "strokes": "totalNumberOfStrokes",
+}
+
 
 class GarminProcessor(Processor):
     """
@@ -175,6 +230,9 @@ class GarminProcessor(Processor):
             [
                 ("USER_PROFILE", self._process_user_profile),
                 ("ACTIVITIES_LIST", self._process_activities),
+                # After ACTIVITIES_LIST so the parent multi_sport row exists before
+                # its legs (which FK-reference it via parent_activity_id) are inserted.
+                ("MULTISPORT_CHILDREN", self._process_multisport_children),
                 ("EXERCISE_SETS", self._process_exercise_sets),
                 ("BODY_COMPOSITION", self._process_body_composition),
                 ("RUNNING_TOLERANCE", self._process_running_tolerance),
@@ -603,11 +661,17 @@ class GarminProcessor(Processor):
         # day's data still loads. The first-seen activity for that start_ts
         # wins; subsequent duplicates are dropped. The user can resolve the
         # underlying duplication by deleting one entry in Garmin Connect.
+        # Only dedup against other non-child (standalone / multi_sport parent)
+        # activities. A multi-sport leg may legitimately share a start instant with an
+        # independently-recorded standalone activity of the same event, so leg rows
+        # (parent_activity_id IS NOT NULL) are excluded here, matching the partial
+        # unique index on the activity table (#72).
         existing_dup = session.execute(
             select(Activity.activity_id).where(
                 Activity.user_id == int(self.user_id),
                 Activity.start_ts == start_ts,
                 Activity.activity_id != activity_id,
+                Activity.parent_activity_id.is_(None),
             )
         ).scalar_one_or_none()
         if existing_dup is not None:
@@ -2452,6 +2516,156 @@ class GarminProcessor(Processor):
             click.echo(f"Processed {len(records)} running tolerance record(s).")
         else:
             click.secho("⚠️ No running tolerance data found.", fg="yellow")
+
+    def _process_multisport_children(self, file_path: Path, session: Session):
+        """
+        Process a MULTISPORT_CHILDREN file: the leg activities of a multi-sport parent.
+
+        The file wraps a list of leg activity details under ``children`` with the
+        ``parentActivityId``. Each leg is written as its own ``activity`` row linked to
+        the parent via ``parent_activity_id``, and its sport-specific aggregates are
+        populated directly from the leg's ``summaryDTO``. The parent row itself is
+        created by ACTIVITIES_LIST processing, which runs first.
+
+        :param file_path: Path to the MULTISPORT_CHILDREN JSON file.
+        :param session: SQLAlchemy Session object.
+        """
+        payload = self._load_json_file(file_path)
+        parent_id = payload.get("parentActivityId")
+        children = payload.get("children") or []
+
+        processed = 0
+        for child in children:
+            if isinstance(child, dict) and self._process_multisport_child(
+                child, parent_id, session
+            ):
+                processed += 1
+        click.echo(f"Processed {processed} multi-sport leg(s) for parent {parent_id}.")
+
+    def _process_multisport_child(
+        self, child: dict, parent_id: Optional[int], session: Session
+    ) -> bool:
+        """
+        Write one multi-sport leg as an ``activity`` row plus its sport-specific agg.
+
+        Reads the leg's ``activity-service`` detail shape (``activityTypeDTO`` /
+        ``eventTypeDTO`` / ``summaryDTO``) directly rather than the flat activities-list
+        shape, since hidden legs are only available from the detail endpoint. Links the
+        row to its parent via ``parent_activity_id``. Legs with a missing id, sport
+        type, event type, or start time are skipped with a warning.
+
+        :param child: A single leg's activity detail dict.
+        :param parent_id: The parent multi_sport activity_id (stored on the leg row).
+        :param session: SQLAlchemy Session object.
+        :return: True when the leg was written, False when skipped.
+        """
+        summary = child.get("summaryDTO") or {}
+        type_dto = child.get("activityTypeDTO") or {}
+        event_dto = child.get("eventTypeDTO") or {}
+        activity_id = child.get("activityId")
+
+        type_key = type_dto.get("typeKey")
+        type_id = type_dto.get("typeId")
+        event_id = event_dto.get("typeId")
+        event_key = event_dto.get("typeKey")
+        start_gmt = summary.get("startTimeGMT")
+        start_local = summary.get("startTimeLocal")
+        if not all(
+            (
+                activity_id is not None,
+                type_key,
+                type_id is not None,
+                event_id is not None,
+                event_key,
+                start_gmt,
+                start_local,
+            )
+        ):
+            click.secho(
+                f"⚠️ Skipping multi-sport leg {activity_id!r} under parent "
+                f"{parent_id}: missing required id/type/event/start fields.",
+                fg="yellow",
+            )
+            return False
+
+        start_ts = self._parse_garmin_iso(start_gmt)
+        local_ts = self._parse_garmin_iso(start_local)
+        duration = summary.get("duration")
+        end_gmt = summary.get("endTimeGMT")
+        if end_gmt:
+            end_ts = self._parse_garmin_iso(end_gmt)
+        elif duration is not None:
+            end_ts = start_ts + timedelta(seconds=duration)
+        else:
+            end_ts = start_ts
+        timezone_offset_hours = (local_ts - start_ts).total_seconds() / 3600
+
+        activity_row = Activity(
+            activity_id=activity_id,
+            user_id=int(self.user_id),
+            parent_activity_id=parent_id,
+            activity_type_id=type_id,
+            activity_type_key=type_key,
+            event_type_id=event_id,
+            event_type_key=event_key,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            timezone_offset_hours=timezone_offset_hours,
+            activity_name=child.get("activityName"),
+            duration=duration,
+            elapsed_duration=summary.get("elapsedDuration"),
+            moving_duration=summary.get("movingDuration"),
+            distance=summary.get("distance"),
+            average_speed=summary.get("averageSpeed"),
+            max_speed=summary.get("maxSpeed"),
+            calories=summary.get("calories"),
+            average_hr=summary.get("averageHR"),
+            max_hr=summary.get("maxHR"),
+        )
+        upsert_model_instances(
+            session=session,
+            model_instances=[activity_row],
+            conflict_columns=["activity_id"],
+            on_conflict_update=True,
+        )
+
+        self._write_multisport_leg_agg(activity_id, type_key, summary, session)
+        return True
+
+    def _write_multisport_leg_agg(
+        self, activity_id: int, type_key: str, summary: dict, session: Session
+    ):
+        """
+        Populate the sport-specific aggregate table for a multi-sport leg.
+
+        Dispatches on the leg's real sport type and maps the leg's ``summaryDTO`` fields
+        into the matching aggregate model. Legs without a sport-specific table (e.g.
+        ``transition_v2``) are a no-op.
+
+        :param activity_id: The leg's activity_id.
+        :param type_key: The leg's ``activityType.typeKey``.
+        :param summary: The leg's ``summaryDTO`` dict.
+        :param session: SQLAlchemy Session object.
+        """
+        tk = (type_key or "").lower()
+        if tk == "running":
+            model, mapping = RunningAggMetrics, _MULTISPORT_RUNNING_AGG_MAP
+        elif "cycling" in tk or "biking" in tk:
+            model, mapping = CyclingAggMetrics, _MULTISPORT_CYCLING_AGG_MAP
+        elif "swimming" in tk:
+            model, mapping = SwimmingAggMetrics, _MULTISPORT_SWIMMING_AGG_MAP
+        else:
+            # Transitions and any other leg type have no sport-specific table.
+            return
+
+        values = {col: summary.get(field) for col, field in mapping.items()}
+        record = model(activity_id=activity_id, **values)
+        upsert_model_instances(
+            session=session,
+            model_instances=[record],
+            conflict_columns=["activity_id"],
+            on_conflict_update=True,
+        )
 
     def _process_floors(self, file_path: Path, session: Session):
         """

@@ -3150,3 +3150,129 @@ def test_process_running_tolerance_skips_rows_without_date(processor, tmp_path):
         processor._process_running_tolerance(f, session)
 
     mock_upsert.assert_not_called()
+
+
+def _multisport_child(type_key, type_id, summary):
+    """
+    Build a minimal multi-sport leg detail dict for tests.
+    """
+    return {
+        "activityId": 999,
+        "activityName": f"{type_key} leg",
+        "activityTypeDTO": {"typeId": type_id, "typeKey": type_key},
+        "eventTypeDTO": {"typeId": 9, "typeKey": "uncategorized"},
+        "summaryDTO": {
+            "startTimeGMT": "2026-05-09T16:41:14.0",
+            "startTimeLocal": "2026-05-09T09:41:14.0",
+            "duration": 2593.0,
+            "distance": 9396.0,
+            "averageHR": 160.0,
+            **summary,
+        },
+    }
+
+
+def test_process_multisport_child_running_builds_row_and_agg(processor):
+    """
+    A running leg yields a linked activity row plus running_agg_metrics from summary.
+    """
+    from garmin_health_data.models import Activity, RunningAggMetrics
+
+    child = _multisport_child(
+        "running",
+        1,
+        {
+            "averageRunCadence": 169.1,
+            "verticalOscillation": 9.19,
+            "groundContactTime": 231.0,
+            "averagePower": 355.0,
+            "normalizedPower": 360.0,
+        },
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        ok = processor._process_multisport_child(child, 22824120751, MagicMock())
+
+    assert ok is True
+    inserted = [call.kwargs["model_instances"][0] for call in up.call_args_list]
+    act = next(r for r in inserted if isinstance(r, Activity))
+    agg = next(r for r in inserted if isinstance(r, RunningAggMetrics))
+    assert act.activity_id == 999
+    assert act.parent_activity_id == 22824120751
+    assert act.activity_type_key == "running"
+    assert act.start_ts == datetime(2026, 5, 9, 16, 41, 14)
+    assert agg.avg_running_cadence == 169.1
+    assert agg.avg_ground_contact_time == 231.0
+    assert agg.avg_power == 355.0
+    assert agg.normalized_power == 360.0
+
+
+def test_process_multisport_child_openwater_swim_leaves_pool_fields_null(processor):
+    """
+    An open-water swim leg maps SWOLF/strokes; pool-length fields stay None.
+    """
+    from garmin_health_data.models import SwimmingAggMetrics
+
+    child = _multisport_child(
+        "open_water_swimming",
+        26,
+        {
+            "averageSWOLF": 45.0,
+            "averageSwimCadence": 32.0,
+            "averageStrokeDistance": 1.6,
+            "totalNumberOfStrokes": 919.0,
+        },
+    )
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_child(child, 111, MagicMock())
+
+    agg = next(
+        r
+        for call in up.call_args_list
+        for r in call.kwargs["model_instances"]
+        if isinstance(r, SwimmingAggMetrics)
+    )
+    assert agg.avg_swolf == 45.0
+    assert agg.strokes == 919.0
+    assert agg.avg_swim_cadence == 32.0
+    assert agg.pool_length is None  # Open water: no pool lengths.
+    assert agg.active_lengths is None
+    assert agg.avg_strokes is None
+
+
+def test_process_multisport_child_transition_writes_no_agg(processor):
+    """
+    A transition leg gets an activity row but no sport-specific aggregate table.
+    """
+    from garmin_health_data.models import (
+        Activity,
+        RunningAggMetrics,
+        CyclingAggMetrics,
+        SwimmingAggMetrics,
+    )
+
+    child = _multisport_child("transition_v2", 1000, {"averageHR": 140.0})
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        processor._process_multisport_child(child, 111, MagicMock())
+
+    inserted = [r for call in up.call_args_list for r in call.kwargs["model_instances"]]
+    assert any(isinstance(r, Activity) for r in inserted)
+    assert not any(
+        isinstance(r, (RunningAggMetrics, CyclingAggMetrics, SwimmingAggMetrics))
+        for r in inserted
+    )
+
+
+def test_process_multisport_child_skips_when_missing_required_fields(processor):
+    """
+    A leg missing its sport type / start is skipped without writing anything.
+    """
+    child = {
+        "activityId": 5,
+        "activityTypeDTO": {},
+        "eventTypeDTO": {},
+        "summaryDTO": {},
+    }
+    with patch("garmin_health_data.processor.upsert_model_instances") as up:
+        ok = processor._process_multisport_child(child, 111, MagicMock())
+    assert ok is False
+    up.assert_not_called()

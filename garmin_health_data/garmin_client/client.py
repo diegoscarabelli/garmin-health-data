@@ -924,6 +924,12 @@ class GarminClient:
         """
         return api.get_running_tolerance(self, startdate, enddate, aggregation)
 
+    def get_activity_details(self, activity_id: int) -> Optional[Dict[str, Any]]:
+        """
+        See :func:`api.get_activity_details`.
+        """
+        return api.get_activity_details(self, activity_id)
+
     def get_menstrual_calendar_data(
         self, startdate: str, enddate: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:

@@ -210,6 +210,10 @@ class Activity(Base, UpsertBase):
     auto_calc_calories = Column(Boolean, nullable=False, server_default=text("0"))
     ts_data_available = Column(Boolean, nullable=False, server_default=text("0"))
 
+    # For a leg of a multi-sport activity, the activity_id of the parent multi_sport
+    # activity; NULL for standalone activities and the multi_sport parent itself.
+    parent_activity_id = Column(BigInteger, ForeignKey("activity.activity_id"))
+
 
 class SwimmingAggMetrics(Base, UpsertBase):
     """

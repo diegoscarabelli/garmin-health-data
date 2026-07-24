@@ -360,6 +360,28 @@ def get_running_tolerance(
     return None
 
 
+def get_activity_details(
+    client: "GarminClient", activity_id: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch the full detail record for a single activity.
+
+    Uses ``/activity-service/activity/{activity_id}``. The detail response carries
+    ``activityTypeDTO`` / ``eventTypeDTO``, a ``summaryDTO`` of aggregate metrics, and a
+    ``metadataDTO`` whose ``childIds`` lists the leg activities of a multi-sport parent
+    (absent for ordinary activities). Used to expand multi-sport parents into their
+    legs.
+
+    :param client: GarminClient instance.
+    :param activity_id: Garmin activity ID.
+    :return: The activity detail dict, or ``None`` when the API returns nothing.
+    """
+    result = client._connectapi(f"{ACTIVITY_URL}/{activity_id}")
+    if result:
+        return result
+    return None
+
+
 def get_menstrual_calendar_data(
     client: "GarminClient", startdate: str, enddate: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:

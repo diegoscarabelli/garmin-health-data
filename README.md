@@ -270,6 +270,7 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
 | [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
 | [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-downsample-migrate-cascade) |
+| `garmin migrate-multisport` | Add `activity.parent_activity_id` and relax the `(user_id, start_ts)` uniqueness to a partial index (multi-sport support). Runs automatically on `extract`; available for explicit control (e.g. `--dry-run`). | — |
 
 All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
 

@@ -487,3 +487,30 @@ class TestGetRunningTolerance:
                 "aggregation": "daily",
             },
         )
+
+
+class TestGetActivityDetails:
+    """
+    Tests for :func:`api.get_activity_details`.
+    """
+
+    def test_calls_activity_endpoint(self) -> None:
+        """
+        Fetches ``/activity-service/activity/{id}`` and returns the detail dict.
+        """
+        payload = {"activityId": 111, "metadataDTO": {"childIds": [1, 2]}}
+        client = MagicMock()
+        client._connectapi.return_value = payload
+
+        result = api.get_activity_details(client, 111)
+
+        assert result is payload
+        client._connectapi.assert_called_once_with(f"{api.ACTIVITY_URL}/111")
+
+    def test_none_response_returns_none(self) -> None:
+        """
+        A falsy response passes through as ``None``.
+        """
+        client = MagicMock()
+        client._connectapi.return_value = None
+        assert api.get_activity_details(client, 111) is None

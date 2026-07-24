@@ -257,6 +257,16 @@ class GarminDataRegistry:
                 "💪",
             ),
             GarminDataType(
+                "MULTISPORT_CHILDREN",
+                "get_activity_details",
+                APIMethodTimeParam.PER_ACTIVITY,
+                "/activity-service/activity/{activity_id}",
+                "Per-leg child activities of a multi-sport (duathlon/triathlon) "
+                "parent, fetched via the parent's metadataDTO.childIds. Each leg "
+                "carries its own sport-specific summary metrics.",
+                "🔀",
+            ),
+            GarminDataType(
                 "ACTIVITY",
                 "download_activity",
                 APIMethodTimeParam.PER_ACTIVITY,

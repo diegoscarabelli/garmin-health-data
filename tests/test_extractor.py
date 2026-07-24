@@ -2085,3 +2085,64 @@ def test_split_running_tolerance_empty_payload():
 
     assert _split_running_tolerance_by_day([]) == {}
     assert _split_running_tolerance_by_day(None) == {}
+
+
+def test_extract_multisport_children_fetches_and_saves_legs(tmp_path):
+    """
+    _extract_multisport_children reads the parent's childIds, fetches each leg's detail,
+    and saves them under `children` with the parentActivityId.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+
+    parent_detail = {"metadataDTO": {"childIds": [625, 627]}}
+    child_625 = {
+        "activityId": 625,
+        "activityTypeDTO": {"typeKey": "open_water_swimming"},
+    }
+    child_627 = {"activityId": 627, "activityTypeDTO": {"typeKey": "cycling"}}
+    extractor.garmin_client.get_activity_details.side_effect = [
+        parent_detail,
+        child_625,
+        child_627,
+    ]
+
+    result = extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z")
+
+    assert result is not None
+    payload = json.loads(result.read_text())
+    assert payload["parentActivityId"] == 751
+    assert [c["activityId"] for c in payload["children"]] == [625, 627]
+    assert "MULTISPORT_CHILDREN_751" in result.name
+
+
+def test_extract_multisport_children_no_childids_returns_none(tmp_path):
+    """
+    A parent whose detail has no childIds writes no file.
+    """
+    from unittest.mock import MagicMock
+
+    from garmin_health_data.extractor import GarminExtractor
+
+    extractor = GarminExtractor(
+        start_date=date(2026, 5, 9),
+        end_date=date(2026, 5, 10),
+        ingest_dir=tmp_path,
+        data_types=("ACTIVITY",),
+    )
+    extractor.user_id = "15007510"
+    extractor.garmin_client = MagicMock()
+    extractor.garmin_client.get_activity_details.return_value = {"metadataDTO": {}}
+
+    assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None
