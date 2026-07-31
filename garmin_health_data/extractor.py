@@ -1329,8 +1329,8 @@ def extract(
 
     if start_date > end_date:
         click.secho(
-            f"✅ Already up to date — nothing to extract "
-            f"(start {start_date.isoformat()} is after end {end_date.isoformat()}).",
+            f"Nothing to extract (start {start_date.isoformat()} is after end "
+            f"{end_date.isoformat()}).",
             fg="green",
         )
         return {
