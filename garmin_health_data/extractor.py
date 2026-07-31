@@ -1327,6 +1327,19 @@ def extract(
     else:
         end_date = original_end_date  # Inclusive logic for same-day.
 
+    if start_date > end_date:
+        click.secho(
+            f"✅ Already up to date — nothing to extract "
+            f"(start {start_date.isoformat()} is after end {end_date.isoformat()}).",
+            fg="green",
+        )
+        return {
+            "garmin_files": 0,
+            "activity_files": 0,
+            "failures": [],
+            "failed_accounts": [],
+        }
+
     # Discover accounts.
     from garmin_health_data.auth import discover_accounts
 

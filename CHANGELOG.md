@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`extract` no longer calls the API when the database is already up to date** ([#77](https://github.com/diegoscarabelli/garmin-health-data/issues/77)). The auto-detected start is `get_latest_date() + 1 day`, which on a current database lands on tomorrow while the end defaults to today. Only `DAILY` types treated that inverted window as empty: `RANGE` types still fired with a backwards range (two returning HTTP 400 through the full retry ladder), `NO_DATE` types re-downloaded regardless, and `_retroactive_lookback_start` revived the window into ~90 days of `MENSTRUAL_CYCLE_DAY` calls — ~98 API calls for a no-op run. `extract()` now returns early once the resolved start is after the resolved end. Same-day windows stay inclusive and still dispatch.
+
 ## [2.12.0] - 2026-07-24
 
 ### Added
