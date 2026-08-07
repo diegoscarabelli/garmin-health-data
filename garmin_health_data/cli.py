@@ -346,11 +346,18 @@ def extract(
         else:
             click.echo("👤 Extracting all discovered accounts")
 
-        click.echo(
-            f"📆 Date range: {format_date(start_date.date())} (inclusive) "
-            f"to {format_date(end_date.date())} (exclusive)"
-        )
-        click.echo()
+        if start_date.date() > end_date.date():
+            # An inverted window (start after end) extracts nothing; extract()
+            # short-circuits it as a no-op. Skip the misleading
+            # "(inclusive) ... (exclusive)" range line and let extract() emit
+            # the authoritative message.
+            click.echo()
+        else:
+            click.echo(
+                f"📆 Date range: {format_date(start_date.date())} (inclusive) "
+                f"to {format_date(end_date.date())} (exclusive)"
+            )
+            click.echo()
     else:
         click.echo("📦 Process-only mode: loading existing files in ingest/.")
         click.echo()
@@ -1314,15 +1321,15 @@ def migrate_multisport_cmd(db_path: str, dry_run: bool, no_backup: bool):
     """
     Add activity.parent_activity_id and relax (user_id, start_ts) uniqueness (#72).
 
-    Pre-#72 databases have the activity table with a table-level
-    UNIQUE (user_id, start_ts) constraint and no parent_activity_id column, which
-    CREATE TABLE IF NOT EXISTS cannot update. This rebuilds the activity table to
-    match the current schema, adding the nullable parent_activity_id column and
-    replacing the full unique constraint with a partial unique index that excludes
-    multi-sport leg rows. Existing rows are preserved with parent_activity_id = NULL.
+    Pre-#72 databases have the activity table with a table-level UNIQUE (user_id,
+    start_ts) constraint and no parent_activity_id column, which CREATE TABLE IF NOT
+    EXISTS cannot update. This rebuilds the activity table to match the current schema,
+    adding the nullable parent_activity_id column and replacing the full unique
+    constraint with a partial unique index that excludes multi-sport leg rows. Existing
+    rows are preserved with parent_activity_id = NULL.
 
-    Runs automatically during 'garmin extract'; this command exists for explicit
-    control (e.g. a dry run). Idempotent: an already-migrated database is skipped.
+    Runs automatically during 'garmin extract'; this command exists for explicit control
+    (e.g. a dry run). Idempotent: an already-migrated database is skipped.
     """
 
     def _run():

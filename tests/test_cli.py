@@ -462,3 +462,61 @@ def test_unmatched_files_routed_to_storage_as_backup(tmp_path):
     assert not (base / "quarantine" / extra.name).exists()
     assert not extra.exists()
     assert list((base / "process").iterdir()) == []
+
+
+def test_extract_suppresses_date_range_line_when_window_empty(tmp_path):
+    """
+    On an up-to-date database the auto-detected start (last stored day + 1) lands after
+    the default end (today), an empty window.
+
+    The CLI must not print its "Date range" line for that no-op, while still delegating
+    to extract_data, which owns the authoritative short-circuit.
+    """
+    from datetime import date
+
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    # A far-future "last stored day" guarantees start > today's end regardless of the
+    # wall clock, reproducing the up-to-date-database inverted window deterministically.
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch("garmin_health_data.cli.get_latest_date", return_value=date(2999, 1, 1)),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ) as mock_extract,
+    ):
+        result = runner.invoke(extract, ["--db-path", str(db_path)])
+
+    assert result.exit_code == 0, result.output
+    # Auto-detect path ran, so execution reached the range-printing region...
+    assert "Auto-detected start date:" in result.output
+    # ...and the misleading backwards range line was suppressed.
+    assert "Date range:" not in result.output
+    # Delegation still happens; extract_data performs the real no-op short-circuit.
+    mock_extract.assert_called_once()
+
+
+def test_extract_prints_date_range_line_for_normal_window(tmp_path):
+    """
+    A normal forward window (start before end) still prints the "Date range" line.
+
+    Guards the empty-window suppression from regressing into always-on.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ),
+    ):
+        result = _common_invoke(runner, db_path)
+
+    assert result.exit_code == 0, result.output
+    assert "Date range:" in result.output

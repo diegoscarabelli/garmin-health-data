@@ -1264,6 +1264,11 @@ def extract(
     scanning subdirectories in ~/.garminconnect/, where each subdirectory is named by
     the Garmin user ID and contains authentication tokens.
 
+    If the resolved start date is after the end date (an empty extraction window, such
+    as an already-current database whose auto-detected start lands past the end, or an
+    inverted caller-supplied range), extraction is skipped and an all-zero result is
+    returned without contacting Garmin Connect.
+
     :param ingest_dir: Directory path where extracted files will be saved.
     :param data_interval_start: Start date for data extraction (ISO string or datetime).
     :param data_interval_end: End date for data extraction (ISO string or datetime).
@@ -1327,6 +1332,15 @@ def extract(
     else:
         end_date = original_end_date  # Inclusive logic for same-day.
 
+    # An inverted resolved window (start after end) extracts nothing. Usually
+    # the database is already current (auto-detected start is last-stored day
+    # + 1, landing past the end), but it also covers an invalid caller-supplied
+    # range, so the message stays neutral about the cause. Short-circuit before
+    # any account discovery or API calls. This also deliberately skips the
+    # per-type retroactive look-back (e.g. MENSTRUAL_CYCLE_DAY's 90-day
+    # refresh): that window was already re-fetched on the run that advanced the
+    # database, and the next advancing run re-covers it, so a no-op re-run needs
+    # no calls.
     if start_date > end_date:
         click.secho(
             f"Nothing to extract (start {start_date.isoformat()} is after end "
