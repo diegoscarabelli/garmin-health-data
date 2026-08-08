@@ -520,3 +520,38 @@ def test_extract_prints_date_range_line_for_normal_window(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "Date range:" in result.output
+
+
+def test_extract_labels_same_day_window_inclusive(tmp_path):
+    """
+    A same-day window (start == end) is extracted inclusively.
+
+    The CLI labels it "single day, inclusive" rather than the multi-day "(exclusive)"
+    wording, matching the documented same-day behavior in extract().
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ),
+    ):
+        result = runner.invoke(
+            extract,
+            [
+                "--db-path",
+                str(db_path),
+                "--start-date",
+                "2025-01-01",
+                "--end-date",
+                "2025-01-01",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "single day, inclusive" in result.output
+    assert "(exclusive)" not in result.output

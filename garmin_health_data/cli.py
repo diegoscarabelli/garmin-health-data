@@ -352,6 +352,15 @@ def extract(
             # "(inclusive) ... (exclusive)" range line and let extract() emit
             # the authoritative message.
             click.echo()
+        elif start_date.date() == end_date.date():
+            # A same-day window is inclusive: extract() extracts this single
+            # day (matching the --end-date help text). Label it as such rather
+            # than the "(exclusive)" wording used for multi-day windows.
+            click.echo(
+                f"📆 Date range: {format_date(start_date.date())} "
+                f"(single day, inclusive)"
+            )
+            click.echo()
         else:
             click.echo(
                 f"📆 Date range: {format_date(start_date.date())} (inclusive) "
