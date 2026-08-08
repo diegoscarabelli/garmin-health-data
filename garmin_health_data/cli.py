@@ -249,6 +249,40 @@ def extract(
         )
         raise click.Abort()
 
+    # Resolve the effective data-type allowlist before any auth or DB work, so a
+    # bad flag combination aborts immediately. --data-types and
+    # --exclude-data-types are mutually exclusive: --data-types is an explicit
+    # allowlist; --exclude-data-types extracts every registry type except the
+    # named ones (forward-compatible, so types added later are still included).
+    if data_types and exclude_data_types:
+        click.secho(
+            "❌ --data-types and --exclude-data-types are mutually exclusive.",
+            fg="red",
+        )
+        raise click.Abort()
+
+    if exclude_data_types:
+        all_names = [dt.name for dt in GARMIN_DATA_REGISTRY.all_data_types]
+        invalid = sorted(name for name in exclude_data_types if name not in all_names)
+        if invalid:
+            click.secho(
+                f"❌ Invalid --exclude-data-types name(s): {', '.join(invalid)}. "
+                f"Valid types: {', '.join(all_names)}.",
+                fg="red",
+            )
+            raise click.Abort()
+        excluded = set(exclude_data_types)
+        data_types_list = [name for name in all_names if name not in excluded]
+        if not data_types_list:
+            click.secho(
+                "❌ --exclude-data-types excludes every data type; "
+                "nothing left to extract.",
+                fg="red",
+            )
+            raise click.Abort()
+    else:
+        data_types_list = list(data_types) if data_types else None
+
     # Authentication is only required when we will hit the Garmin API.
     if not process_only:
         ensure_authenticated()
@@ -291,40 +325,6 @@ def extract(
         click.secho(f"❌ {e}", fg="red")
         raise click.Abort() from e
 
-    # Date auto-detection and extract-only logging are skipped when running
-    # in --process-only mode (no API calls, dates would be unused).
-    # Resolve the effective data-type allowlist. --data-types and
-    # --exclude-data-types are mutually exclusive: --data-types is an explicit
-    # allowlist; --exclude-data-types extracts every registry type except the
-    # named ones (forward-compatible, so types added later are still included).
-    if data_types and exclude_data_types:
-        click.secho(
-            "❌ --data-types and --exclude-data-types are mutually exclusive.",
-            fg="red",
-        )
-        raise click.Abort()
-
-    if exclude_data_types:
-        all_names = [dt.name for dt in GARMIN_DATA_REGISTRY.all_data_types]
-        invalid = [name for name in exclude_data_types if name not in all_names]
-        if invalid:
-            click.secho(
-                f"❌ Invalid --exclude-data-types name(s): {invalid}. "
-                f"Valid types: {', '.join(all_names)}.",
-                fg="red",
-            )
-            raise click.Abort()
-        excluded = set(exclude_data_types)
-        data_types_list = [name for name in all_names if name not in excluded]
-        if not data_types_list:
-            click.secho(
-                "❌ --exclude-data-types excludes every data type; "
-                "nothing left to extract.",
-                fg="red",
-            )
-            raise click.Abort()
-    else:
-        data_types_list = list(data_types) if data_types else None
     accounts_list = (
         [a.strip() for raw in accounts for a in raw.split(",") if a.strip()]
         if accounts
@@ -343,6 +343,8 @@ def extract(
                 f"--accounts contains a non-integer user_id: {exc}"
             ) from exc
 
+    # Date auto-detection and extract-only logging are skipped when running
+    # in --process-only mode (no API calls, dates would be unused).
     if not process_only:
         # Auto-detect start date if not provided.
         if start_date is None:

@@ -702,3 +702,28 @@ def test_extract_exclude_data_types_prints_exclusion_summary(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "Extracting all data types except: MENSTRUAL_CYCLE_DAY" in result.output
+
+
+def test_extract_validates_exclude_options_before_auth(tmp_path):
+    """
+    Invalid exclude options abort before ensure_authenticated() (and before any DB or
+    lock work), so a typo never triggers an auth prompt or database mutation.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated") as mock_auth,
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ),
+    ):
+        result = runner.invoke(
+            extract,
+            ["--db-path", str(db_path), "--exclude-data-types", "NOTAREALTYPE"],
+        )
+
+    assert result.exit_code != 0
+    mock_auth.assert_not_called()
