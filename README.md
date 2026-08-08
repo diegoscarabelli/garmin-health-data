@@ -146,6 +146,9 @@ garmin extract --start-date 2024-01-01 --end-date 2024-12-31
 # Specific data types
 garmin extract --data-types SLEEP --data-types HEART_RATE --data-types ACTIVITY
 
+# All types except some (forward-compatible; mutually exclusive with --data-types)
+garmin extract --exclude-data-types MENSTRUAL_CYCLE_DAY
+
 # Specific accounts (comma- or repeat-style)
 garmin extract --accounts 12345678,87654321
 
@@ -289,7 +292,8 @@ Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/
 | --- | --- | --- |
 | `--start-date YYYY-MM-DD` | Inclusive | Auto-detected from the database if omitted (day after the latest stored data, or 30 days ago for an empty DB). |
 | `--end-date YYYY-MM-DD` | Exclusive (except same-day = inclusive) | Defaults to today. |
-| `--data-types NAME` | Repeatable, e.g. `--data-types SLEEP --data-types HEART_RATE` | Filter to specific [data types](#data-types). All types extracted if omitted. |
+| `--data-types NAME` | Repeatable, e.g. `--data-types SLEEP --data-types HEART_RATE` | Filter to specific [data types](#data-types). All types extracted if omitted. Mutually exclusive with `--exclude-data-types`. |
+| `--exclude-data-types NAME` | Repeatable, e.g. `--exclude-data-types MENSTRUAL_CYCLE_DAY` | Extract every [data type](#data-types) *except* these (forward-compatible: types added to the tool later are still extracted). Mutually exclusive with `--data-types`. |
 | `--accounts ID` | Repeatable or comma-separated | Filter to specific Garmin user IDs (`--accounts 12345 --accounts 67890` or `--accounts 12345,67890`). All discovered accounts extracted if omitted. |
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 | `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |

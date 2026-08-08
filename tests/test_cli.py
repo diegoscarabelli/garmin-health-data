@@ -555,3 +555,175 @@ def test_extract_labels_same_day_window_inclusive(tmp_path):
     assert result.exit_code == 0, result.output
     assert "single day, inclusive" in result.output
     assert "(exclusive)" not in result.output
+
+
+def test_extract_exclude_data_types_extracts_all_but_excluded(tmp_path):
+    """
+    --exclude-data-types resolves to every registry type except the excluded one(s),
+    handed to extract_data as an explicit list (forward-compatible: types added later
+    are still included).
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    captured = {}
+
+    def capture(*args, **kwargs):
+        captured["data_types"] = kwargs.get("data_types")
+        return _stub_extract_no_files()
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch("garmin_health_data.cli.extract_data", side_effect=capture),
+    ):
+        result = runner.invoke(
+            extract,
+            ["--db-path", str(db_path), "--exclude-data-types", "MENSTRUAL_CYCLE_DAY"],
+        )
+
+    assert result.exit_code == 0, result.output
+    expected = [
+        d.name
+        for d in GARMIN_DATA_REGISTRY.all_data_types
+        if d.name != "MENSTRUAL_CYCLE_DAY"
+    ]
+    assert captured["data_types"] == expected
+
+
+def test_extract_rejects_data_types_with_exclude_data_types(tmp_path):
+    """
+    --data-types and --exclude-data-types are mutually exclusive; supplying both aborts
+    before any extraction.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ) as mock_extract,
+    ):
+        result = runner.invoke(
+            extract,
+            [
+                "--db-path",
+                str(db_path),
+                "--data-types",
+                "SLEEP",
+                "--exclude-data-types",
+                "STRESS",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    mock_extract.assert_not_called()
+
+
+def test_extract_rejects_unknown_exclude_data_type(tmp_path):
+    """
+    An unknown --exclude-data-types name aborts with an error naming the offender.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ) as mock_extract,
+    ):
+        result = runner.invoke(
+            extract,
+            ["--db-path", str(db_path), "--exclude-data-types", "NOTAREALTYPE"],
+        )
+
+    assert result.exit_code != 0
+    assert "NOTAREALTYPE" in result.output
+    mock_extract.assert_not_called()
+
+
+def test_extract_rejects_excluding_all_data_types(tmp_path):
+    """
+    Excluding every registry type leaves nothing to extract, which aborts.
+    """
+    from garmin_health_data.constants import GARMIN_DATA_REGISTRY
+
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    exclude_args = []
+    for data_type in GARMIN_DATA_REGISTRY.all_data_types:
+        exclude_args += ["--exclude-data-types", data_type.name]
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ) as mock_extract,
+    ):
+        result = runner.invoke(extract, ["--db-path", str(db_path), *exclude_args])
+
+    assert result.exit_code != 0
+    assert "nothing left to extract" in result.output
+    mock_extract.assert_not_called()
+
+
+def test_extract_exclude_data_types_prints_exclusion_summary(tmp_path):
+    """
+    In exclude mode the CLI names the excluded types rather than dumping the full
+    resolved allowlist of every other type.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated"),
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ),
+    ):
+        result = runner.invoke(
+            extract,
+            ["--db-path", str(db_path), "--exclude-data-types", "MENSTRUAL_CYCLE_DAY"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Extracting all data types except: MENSTRUAL_CYCLE_DAY" in result.output
+
+
+def test_extract_validates_exclude_options_before_auth(tmp_path):
+    """
+    Invalid exclude options abort before ensure_authenticated() (and before any DB or
+    lock work), so a typo never triggers an auth prompt or database mutation.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+
+    runner = CliRunner()
+    with (
+        patch("garmin_health_data.cli.ensure_authenticated") as mock_auth,
+        patch(
+            "garmin_health_data.cli.extract_data",
+            side_effect=_stub_extract_no_files,
+        ),
+    ):
+        result = runner.invoke(
+            extract,
+            ["--db-path", str(db_path), "--exclude-data-types", "NOTAREALTYPE"],
+        )
+
+    assert result.exit_code != 0
+    mock_auth.assert_not_called()

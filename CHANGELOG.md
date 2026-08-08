@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-08-07
+
+### Added
+
+- **`--exclude-data-types` flag for `garmin extract`** ([#79](https://github.com/diegoscarabelli/garmin-health-data/issues/79)). Extracts every registered data type *except* the named ones, so a caller can skip a type (e.g. `MENSTRUAL_CYCLE_DAY` and its ~90-day retroactive re-fetch) without enumerating the ~20 types they do want. Unlike a hardcoded `--data-types` allowlist, exclusion is forward-compatible: data types added to the tool later are still extracted by default. Mutually exclusive with `--data-types`; an unknown excluded name or excluding every type aborts with a clear error before any work.
+
 ### Fixed
 
 - **`extract` no longer calls the API when the database is already up to date** ([#77](https://github.com/diegoscarabelli/garmin-health-data/issues/77)). The auto-detected start is `get_latest_date() + 1 day`, which on a current database lands on tomorrow while the end defaults to today. Only `DAILY` types treated that inverted window as empty: `RANGE` types still fired with a backwards range (two returning HTTP 400 through the full retry ladder), `NO_DATE` types re-downloaded regardless, and `_retroactive_lookback_start` revived the window into ~90 days of `MENSTRUAL_CYCLE_DAY` calls — ~98 API calls for a no-op run. `extract()` now returns early once the resolved start is after the resolved end. Same-day windows stay inclusive and still dispatch. The CLI also tidies its `Date range` line: it is suppressed for this no-op case (previously a confusing backwards range), and a same-day window is labeled `single day, inclusive` rather than the misleading `(exclusive)`.
@@ -434,7 +440,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.2...v2.12.0
 [2.11.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.1...v2.11.2
 [2.11.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.0...v2.11.1
