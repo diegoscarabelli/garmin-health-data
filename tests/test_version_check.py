@@ -68,11 +68,19 @@ def test_silent_when_installed_is_latest(isolated_cache, capsys):
 def test_silent_when_installed_is_newer_than_pypi(isolated_cache, capsys):
     """
     No hint when running an unreleased dev build newer than PyPI.
+
+    The installed version is pinned here so the assertion does not depend on how
+    ``__version__`` resolves in the running environment (a source checkout without an
+    installed distribution falls back to ``0.0.0+uninstalled``, which is older than the
+    mocked PyPI version and would spuriously print the hint).
     """
-    with patch.object(
-        version_check.requests,
-        "get",
-        return_value=_mock_pypi_response("0.0.1"),
+    with (
+        patch.object(version_check, "__version__", "1.0.0"),
+        patch.object(
+            version_check.requests,
+            "get",
+            return_value=_mock_pypi_response("0.0.1"),
+        ),
     ):
         version_check.check_for_newer_version()
 

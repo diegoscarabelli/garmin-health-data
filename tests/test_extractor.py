@@ -2170,3 +2170,56 @@ def test_extract_multisport_children_non_list_childids_returns_none(tmp_path):
     }
 
     assert extractor._extract_multisport_children(751, "2026-05-09T12-00-00Z") is None
+
+
+def test_extract_short_circuits_when_start_after_end(tmp_path):
+    """
+    A start after the end extracts nothing, without discovering accounts.
+    """
+    from unittest.mock import patch
+
+    from garmin_health_data.extractor import extract
+
+    with (
+        patch("garmin_health_data.auth.discover_accounts") as mock_discover,
+        patch("garmin_health_data.extractor.GarminExtractor") as mock_extractor_class,
+    ):
+        result = extract(tmp_path, "2026-08-01", "2026-07-31")
+
+    assert result == {
+        "garmin_files": 0,
+        "activity_files": 0,
+        "failures": [],
+        "failed_accounts": [],
+    }
+    mock_discover.assert_not_called()
+    mock_extractor_class.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_extract_same_day_window_still_extracts(tmp_path):
+    """
+    A same-day window is inclusive, not empty, so it must still dispatch.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from garmin_health_data.extractor import extract
+
+    mock_extractor = MagicMock()
+    mock_extractor.extract_garmin_data.return_value = []
+    mock_extractor.extract_fit_activities.return_value = []
+    mock_extractor.failures = []
+
+    with (
+        patch(
+            "garmin_health_data.auth.discover_accounts",
+            return_value=[("11111111", tmp_path)],
+        ),
+        patch(
+            "garmin_health_data.extractor.GarminExtractor",
+            return_value=mock_extractor,
+        ) as mock_extractor_class,
+    ):
+        extract(tmp_path, "2026-07-31", "2026-07-31")
+
+    mock_extractor_class.assert_called_once()
