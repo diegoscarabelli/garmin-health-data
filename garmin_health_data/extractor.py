@@ -741,7 +741,7 @@ class GarminExtractor:
 
         :param start_date: Effective start of the dayview window (inclusive).
         :param end_date: End of the dayview window (inclusive).
-        :return:``True`` to run the per-day extraction, ``False`` to skip it.
+        :return: whether to run the per-day fan-out (``True``) or skip it (``False``).
         """
         try:
             summary = self.garmin_client.get_menstrual_calendar_data(
