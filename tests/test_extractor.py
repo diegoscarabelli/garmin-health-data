@@ -4,6 +4,7 @@ Tests for Garmin exercise sets extraction.
 
 import io
 import json
+import socket
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from garmin_health_data.constants import GARMIN_DATA_REGISTRY
 from garmin_health_data.extractor import (
     GarminExtractor,
     _detect_format_from_magic,
@@ -2223,3 +2225,284 @@ def test_extract_same_day_window_still_extracts(tmp_path):
         extract(tmp_path, "2026-07-31", "2026-07-31")
 
     mock_extractor_class.assert_called_once()
+
+
+class TestMenstrualCycleDayGate:
+    """
+    Tests for the MENSTRUAL_CYCLE_DAY summary-probe gate.
+
+    The per-day dayview fan-out is preceded by a single calendar/summary probe; when the
+    probe reports no cycles overlapping the window, the ~90 dayview calls are skipped.
+    The probe fails open so a transient error never suppresses a real extraction.
+    """
+
+    @pytest.fixture
+    def extractor(self, tmp_path: Path) -> GarminExtractor:
+        """
+        Create a GarminExtractor whose window forces the 90-day retroactive look-back.
+
+        :param tmp_path: Pytest tmp_path fixture.
+        :return: GarminExtractor instance.
+        """
+        return GarminExtractor(
+            start_date=date(2025, 1, 1),
+            end_date=date(2025, 1, 3),
+            ingest_dir=tmp_path,
+        )
+
+    @pytest.fixture
+    def mock_garmin_client(self) -> MagicMock:
+        """
+        Create a mock Garmin client for testing.
+
+        :return: Mock Garmin client instance.
+        """
+        mock_client = MagicMock()
+        mock_client.full_name = "Test User"
+        return mock_client
+
+    def test_skips_day_fanout_when_no_cycles(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        An empty ``cycleSummaries`` skips the per-day extraction entirely.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [],
+            "loggedSymptomDays": [],
+            "loggedOvulationDays": [],
+            "loggedNoteDays": [],
+        }
+        data_type = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        # Act.
+        result = extractor._extract_data_by_type(
+            data_type, date(2025, 1, 1), date(2025, 1, 3)
+        )
+
+        # Assert: no files, no dayview calls, exactly one probe.
+        assert result == []
+        mock_garmin_client.get_menstrual_data_for_date.assert_not_called()
+        mock_garmin_client.get_menstrual_calendar_data.assert_called_once()
+
+    def test_runs_day_fanout_when_cycles_present(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A non-empty ``cycleSummaries`` proceeds to the per-day extraction.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [
+                {
+                    "startDate": "2024-12-01",
+                    "periodLength": 4,
+                    "predictedCycle": False,
+                }
+            ],
+        }
+        # No dayview data -> nothing saved, but the calls must still happen.
+        mock_garmin_client.get_menstrual_data_for_date.return_value = None
+        data_type = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        # Act.
+        with patch("garmin_health_data.extractor.time.sleep"):
+            result = extractor._extract_data_by_type(
+                data_type, date(2025, 1, 1), date(2025, 1, 3)
+            )
+
+        # Assert: probe fired once, dayview fanned out across the look-back window.
+        assert result == []
+        mock_garmin_client.get_menstrual_calendar_data.assert_called_once()
+        assert mock_garmin_client.get_menstrual_data_for_date.called
+
+    def test_probe_covers_the_retroactive_lookback_window(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        The probe queries the 90-day look-back window, not just the requested range.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [],
+        }
+        data_type = GARMIN_DATA_REGISTRY.get_by_name("MENSTRUAL_CYCLE_DAY")
+
+        # Act.
+        extractor._extract_data_by_type(data_type, date(2025, 1, 1), date(2025, 1, 3))
+
+        # Assert: start extended back 90 days from the end (2025-01-03 -> 2024-10-05).
+        mock_garmin_client.get_menstrual_calendar_data.assert_called_once_with(
+            "2024-10-05", "2025-01-03"
+        )
+
+    def test_gate_does_not_touch_other_daily_types(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A non-menstrual daily type never triggers the summary probe.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_sleep_data.return_value = None
+        data_type = GARMIN_DATA_REGISTRY.get_by_name("SLEEP")
+
+        # Act.
+        with patch("garmin_health_data.extractor.time.sleep"):
+            extractor._extract_data_by_type(
+                data_type, date(2025, 1, 1), date(2025, 1, 3)
+            )
+
+        # Assert.
+        mock_garmin_client.get_menstrual_calendar_data.assert_not_called()
+
+    def test_fails_open_when_probe_returns_none(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A ``None`` probe response (total transport failure) runs the full window.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = None
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is True
+
+    def test_fails_open_when_probe_raises(self, extractor, mock_garmin_client) -> None:
+        """
+        An exception from the probe runs the full window rather than suppressing it.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.side_effect = Exception("boom")
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is True
+
+    def test_probe_retries_transient_error(self, extractor, mock_garmin_client) -> None:
+        """
+        A transient error on the probe is retried (via ``_with_retries``) rather than
+        immediately falling back to the expensive full fan-out.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange: first probe call fails transiently, the retry returns cycles.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.side_effect = [
+            socket.gaierror("transient"),
+            {"cycleSummaries": [{"startDate": "2024-12-01"}]},
+        ]
+
+        # Act (patch sleep so the backoff does not slow the test).
+        with patch("garmin_health_data.extractor.time.sleep"):
+            result = extractor._menstrual_days_have_data(
+                date(2024, 10, 5), date(2025, 1, 3)
+            )
+
+        # Assert: the probe retried and ultimately reported cycles.
+        assert result is True
+        assert mock_garmin_client.get_menstrual_calendar_data.call_count == 2
+
+    def test_gate_true_when_summary_has_cycles(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A populated ``cycleSummaries`` list returns ``True``.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [{"startDate": "2024-12-01"}],
+        }
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is True
+
+    def test_gate_false_when_summary_empty(self, extractor, mock_garmin_client) -> None:
+        """
+        An empty ``cycleSummaries`` list returns ``False``.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "cycleSummaries": [],
+        }
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is False
+
+    def test_fails_open_when_summary_missing_cycles_key(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A response missing ``cycleSummaries`` fails open rather than silently skipping.
+
+        The wrapper contract always includes the key on a non-None response; an
+        unexpected or partial shape must run the full window, not skip it.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange: a truthy but malformed response with no cycleSummaries key.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "loggedSymptomDays": [],
+        }
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is True
