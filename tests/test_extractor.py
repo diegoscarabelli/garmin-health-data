@@ -2480,3 +2480,29 @@ class TestMenstrualCycleDayGate:
 
         # Assert.
         assert result is False
+
+    def test_fails_open_when_summary_missing_cycles_key(
+        self, extractor, mock_garmin_client
+    ) -> None:
+        """
+        A response missing ``cycleSummaries`` fails open rather than silently skipping.
+
+        The wrapper contract always includes the key on a non-None response; an
+        unexpected or partial shape must run the full window, not skip it.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange: a truthy but malformed response with no cycleSummaries key.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.return_value = {
+            "loggedSymptomDays": [],
+        }
+
+        # Act.
+        result = extractor._menstrual_days_have_data(
+            date(2024, 10, 5), date(2025, 1, 3)
+        )
+
+        # Assert.
+        assert result is True

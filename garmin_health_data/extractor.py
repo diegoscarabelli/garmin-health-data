@@ -737,9 +737,9 @@ class GarminExtractor:
 
         Fails open, and reuses ``_with_retries`` so a transient network blip is retried
         rather than paid for with the far more expensive full fan-out. When retries are
-        exhausted, a non-transient error raises, or the wrapper returns ``None`` (no
-        chunk produced a response), this method returns ``True`` so it never suppresses
-        a real extraction.
+        exhausted, a non-transient error raises, the wrapper returns ``None`` (no chunk
+        produced a response), or the response unexpectedly omits ``cycleSummaries``,
+        this method returns ``True`` so it never suppresses a real extraction.
 
         :param start_date: Effective start of the dayview window (inclusive).
         :param end_date: End of the dayview window (inclusive).
@@ -765,7 +765,18 @@ class GarminExtractor:
                 fg="yellow",
             )
             return True
-        return bool(summary.get("cycleSummaries"))
+        cycles = summary.get("cycleSummaries")
+        if cycles is None:
+            # The wrapper contract guarantees a ``cycleSummaries`` list on any non-None
+            # response, so a missing key means an unexpected/partial shape: fail open
+            # rather than silently skip a real extraction.
+            click.secho(
+                "⚠️  MENSTRUAL_CYCLE_DAY summary probe returned an unexpected "
+                "shape (missing cycleSummaries); running the full window.",
+                fg="yellow",
+            )
+            return True
+        return bool(cycles)
 
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
