@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-08-14
+
+### Changed
+
+- **`MENSTRUAL_CYCLE_DAY` no longer fans out ~90 `dayview` calls for accounts with no menstrual data**. `MENSTRUAL_CYCLE_DAY` re-fetches a trailing 90-day window on every advancing run (the [#70](https://github.com/diegoscarabelli/garmin-health-data/issues/70) retroactive-edit refresh), one `dayview` call per day — a cost paid by every account, including those that never track menstrual cycles (e.g. most male accounts). The extractor now runs a single cheap probe of the menstrual calendar (summary) endpoint over the same window before the per-day fan-out: the `dayview` endpoint returns data only for dates inside a cycle window, and the calendar endpoint reports every cycle whose window overlaps the queried range (verified against the live API, including a cycle whose start predates the query window), so zero reported cycles means every `dayview` call in the window would be empty and the fan-out is skipped entirely. Gated on `cycleSummaries` only. The probe fails open — any error, or an empty calendar response, falls back to running the full window — so it can never suppress a real extraction. Net effect: one extra calendar call per run for active trackers, ~90 calls removed per run for accounts with no cycles in the window. The [`--exclude-data-types`](https://github.com/diegoscarabelli/garmin-health-data/issues/79) flag remains as the manual opt-out.
+
 ## [2.13.0] - 2026-08-07
 
 ### Added
@@ -440,7 +446,8 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.13.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.14.0...HEAD
+[2.14.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.2...v2.12.0
 [2.11.2]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.1...v2.11.2
