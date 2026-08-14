@@ -735,9 +735,9 @@ class GarminExtractor:
         Gated on ``cycleSummaries`` only: logged symptom/ovulation/note days sit inside
         a cycle, so they never cover dates the cycle list misses.
 
-        Fails open. A transport failure on every calendar chunk makes the wrapper return
-        ``None`` and any other error raises; both return ``True`` so a transient blip
-        never suppresses a real extraction.
+        Fails open. The calendar wrapper returns ``None`` when every chunk fails
+        transport and raises on any other error; this method catches both and returns
+        ``True`` so a transient blip never suppresses a real extraction.
 
         :param start_date: Effective start of the dayview window (inclusive).
         :param end_date: End of the dayview window (inclusive).
