@@ -718,6 +718,52 @@ class GarminExtractor:
             )
             return []
 
+    def _menstrual_days_have_data(self, start_date: date, end_date: date) -> bool:
+        """
+        Probe the menstrual calendar endpoint to decide whether the per-day
+        MENSTRUAL_CYCLE_DAY fan-out is worth running for a window.
+
+        The dayview endpoint is populated only for dates inside a menstrual cycle window
+        (observed or predicted); dates outside all cycle windows return a bare payload
+        the extractor drops. The calendar endpoint reports every cycle whose window
+        overlaps the queried range (verified: a cycle is returned even when its start
+        predates the window), so zero reported cycles means every dayview call in the
+        window is empty. Accounts that do not track menstrual data (e.g. most male
+        accounts) report no cycles, letting the extractor skip ~90 guaranteed-empty
+        dayview calls per run.
+
+        Gated on ``cycleSummaries`` only: logged symptom/ovulation/note days sit inside
+        a cycle, so they never cover dates the cycle list misses.
+
+        Fails open. A transport failure on every calendar chunk makes the wrapper return
+        ``None`` and any other error raises; both return ``True`` so a transient blip
+        never suppresses a real extraction.
+
+        :param start_date: Effective start of the dayview window (inclusive).
+        :param end_date: End of the dayview window (inclusive).
+        :return:``True`` to run the per-day extraction, ``False`` to skip it.
+        """
+        try:
+            summary = self.garmin_client.get_menstrual_calendar_data(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        except Exception as e:
+            click.secho(
+                f"⚠️  MENSTRUAL_CYCLE_DAY summary probe failed "
+                f"({type(e).__name__}: {e}); running the full window.",
+                fg="yellow",
+            )
+            return True
+        if summary is None:
+            click.secho(
+                "⚠️  MENSTRUAL_CYCLE_DAY summary probe returned no calendar "
+                "response; running the full window.",
+                fg="yellow",
+            )
+            return True
+        return bool(summary.get("cycleSummaries"))
+
     def _extract_data_by_type(
         self, data_type: GarminDataType, start_date: date, end_date: date
     ) -> List[Path]:
@@ -738,6 +784,20 @@ class GarminExtractor:
             effective_start = _retroactive_lookback_start(
                 data_type, start_date, end_date
             )
+            # MENSTRUAL_CYCLE_DAY's dayview is populated only for dates inside a cycle
+            # window, so gate its ~90-call fan-out on a cheap probe of the companion
+            # calendar/summary endpoint: skip entirely when no cycle overlaps the window
+            # (e.g. accounts that do not track menstrual data). See
+            # _menstrual_days_have_data.
+            if data_type.name == "MENSTRUAL_CYCLE_DAY":
+                if not self._menstrual_days_have_data(effective_start, end_date):
+                    click.secho(
+                        f"{data_type.emoji} {data_type.name}: no cycles reported "
+                        f"in {effective_start}..{end_date}; skipping per-day "
+                        f"extraction.",
+                        fg="yellow",
+                    )
+                    return []
             return self._extract_day_by_day(data_type, effective_start, end_date)
 
         if data_type.api_method_time_param == APIMethodTimeParam.RANGE:
