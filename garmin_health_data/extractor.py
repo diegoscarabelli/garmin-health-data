@@ -735,16 +735,19 @@ class GarminExtractor:
         Gated on ``cycleSummaries`` only: logged symptom/ovulation/note days sit inside
         a cycle, so they never cover dates the cycle list misses.
 
-        Fails open. The calendar wrapper returns ``None`` when every chunk fails
-        transport and raises on any other error; this method catches both and returns
-        ``True`` so a transient blip never suppresses a real extraction.
+        Fails open, and reuses ``_with_retries`` so a transient network blip is retried
+        rather than paid for with the far more expensive full fan-out. When retries are
+        exhausted, a non-transient error raises, or the wrapper returns ``None`` (no
+        chunk produced a response), this method returns ``True`` so it never suppresses
+        a real extraction.
 
         :param start_date: Effective start of the dayview window (inclusive).
         :param end_date: End of the dayview window (inclusive).
         :return: whether to run the per-day fan-out (``True``) or skip it (``False``).
         """
         try:
-            summary = self.garmin_client.get_menstrual_calendar_data(
+            summary = _with_retries(
+                self.garmin_client.get_menstrual_calendar_data,
                 start_date.strftime("%Y-%m-%d"),
                 end_date.strftime("%Y-%m-%d"),
             )

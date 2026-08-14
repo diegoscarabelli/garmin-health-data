@@ -4,6 +4,7 @@ Tests for Garmin exercise sets extraction.
 
 import io
 import json
+import socket
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -2410,6 +2411,31 @@ class TestMenstrualCycleDayGate:
 
         # Assert.
         assert result is True
+
+    def test_probe_retries_transient_error(self, extractor, mock_garmin_client) -> None:
+        """
+        A transient error on the probe is retried (via ``_with_retries``) rather than
+        immediately falling back to the expensive full fan-out.
+
+        :param extractor: GarminExtractor fixture.
+        :param mock_garmin_client: Mock Garmin client fixture.
+        """
+        # Arrange: first probe call fails transiently, the retry returns cycles.
+        extractor.garmin_client = mock_garmin_client
+        mock_garmin_client.get_menstrual_calendar_data.side_effect = [
+            socket.gaierror("transient"),
+            {"cycleSummaries": [{"startDate": "2024-12-01"}]},
+        ]
+
+        # Act (patch sleep so the backoff does not slow the test).
+        with patch("garmin_health_data.extractor.time.sleep"):
+            result = extractor._menstrual_days_have_data(
+                date(2024, 10, 5), date(2025, 1, 3)
+            )
+
+        # Assert: the probe retried and ultimately reported cycles.
+        assert result is True
+        assert mock_garmin_client.get_menstrual_calendar_data.call_count == 2
 
     def test_gate_true_when_summary_has_cycles(
         self, extractor, mock_garmin_client
