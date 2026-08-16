@@ -16,6 +16,7 @@ from garmin_health_data.constants import GARMIN_DATA_REGISTRY
 from garmin_health_data.extractor import (
     GarminExtractor,
     _detect_format_from_magic,
+    _utc_midday_stamp,
     extract,
 )
 
@@ -2506,3 +2507,49 @@ class TestMenstrualCycleDayGate:
 
         # Assert.
         assert result is True
+
+
+class TestUtcMiddayStamp:
+    """
+    Tests for the deterministic filename timestamp builder.
+    """
+
+    def test_renders_fixed_midday_utc_format(self):
+        """
+        A calendar day renders as a colon-free, ``Z``-suffixed midday-UTC stamp.
+        """
+        assert _utc_midday_stamp(date(2026, 8, 15)) == "2026-08-15T12-00-00Z"
+
+    def test_stamp_is_offset_free_and_filesystem_safe(self):
+        """
+        The stamp never contains a colon or a ``+`` offset, so it is safe on every
+        filesystem and parses regardless of the installed pendulum version.
+        """
+        stamp = _utc_midday_stamp(date(2026, 1, 2))
+
+        assert ":" not in stamp
+        assert "+" not in stamp
+        assert stamp.endswith("Z")
+
+
+def test_save_garmin_data_writes_offset_free_filename(tmp_path):
+    """
+    Generated JSON filenames use the deterministic ``Z`` stamp with no ``+`` offset, so
+    the processor's filename patterns never reject them.
+    """
+    extractor = GarminExtractor(
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        ingest_dir=tmp_path,
+        data_types=("STEPS",),
+    )
+    extractor.user_id = "1"
+
+    paths = extractor._save_garmin_data(
+        {"value": 1}, GARMIN_DATA_REGISTRY.get_by_name("STEPS"), date(2025, 1, 1)
+    )
+
+    name = paths[0].name
+    assert name == "1_STEPS_2025-01-01T12-00-00Z.json"
+    assert "+" not in name
+    assert ":" not in name

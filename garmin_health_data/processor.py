@@ -376,7 +376,10 @@ class GarminProcessor(Processor):
         :return: Dictionary with `user_id`, `data_type`, and `timestamp`.
         :raises ValueError: If filename doesn't match expected pattern.
         """
-        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:\-Z\.]+)\.(json|fit|tcx)$"
+        # ``+`` in the timestamp class lets legacy filenames written by a pre-2.14.1
+        # extractor on pendulum 2.x (which stamped a ``+00-00`` UTC offset) still
+        # parse, so files quarantined by an affected install can be recovered.
+        pattern = r"^(\d+)_([A-Z_]+)(?:_\d+)?_([0-9T:+\-Z\.]+)\.(json|fit|tcx)$"
         match = re.match(pattern, filename)
 
         if not match:
@@ -3332,7 +3335,8 @@ class GarminProcessor(Processor):
         # Extract `activity_id` from filename.
         # FIT files have format: {user_id}_ACTIVITY_{activity_id}_{timestamp}.fit
         # Use regex to extract activity_id directly from filename.
-        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.fit$"
+        # ``+`` retained so legacy pre-2.14.1 ``+00-00`` filenames still parse.
+        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:+\-Z\.]+)\.fit$"
         match = re.match(pattern, file_path.name)
 
         if not match:
@@ -3600,7 +3604,8 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy Session object.
         """
         # TCX files share the same naming convention as FIT files.
-        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:\-Z\.]+)\.tcx$"
+        # ``+`` retained so legacy pre-2.14.1 ``+00-00`` filenames still parse.
+        pattern = r"^(\d+)_ACTIVITY_(\d+)_([0-9T:+\-Z\.]+)\.tcx$"
         match = re.match(pattern, file_path.name)
 
         if not match:

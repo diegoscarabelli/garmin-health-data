@@ -13,7 +13,7 @@ import zipfile
 import io
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -344,6 +344,25 @@ def _detect_format_from_magic(content: bytes) -> Optional[str]:
         return "kml"
 
     return None
+
+
+def _utc_midday_stamp(day: date) -> str:
+    """
+    Build the deterministic filename timestamp shared by a day's extracted files.
+
+    All files extracted for a given calendar day are stamped with one midday-UTC
+    timestamp so the processor can group them into a single ``FileSet``. The stamp is
+    rendered as ``YYYY-MM-DDT12-00-00Z``: colon-free (safe on every filesystem) and
+    always suffixed with ``Z``. Building the string directly, instead of formatting a
+    ``pendulum`` instance, keeps the on-disk name independent of the installed
+    ``pendulum`` version, whose ISO-8601 rendering of a UTC instant differs across major
+    releases (2.x emits ``+00:00``, 3.x emits ``Z``) and previously produced
+    ``+``-bearing names the processor refused to parse.
+
+    :param day: Calendar day the file's data belongs to.
+    :return: Filename timestamp of the form ``YYYY-MM-DDT12-00-00Z``.
+    """
+    return f"{day.isoformat()}T12-00-00Z"
 
 
 class GarminExtractor:
@@ -876,14 +895,11 @@ class GarminExtractor:
         :param file_date: Date for timestamp generation used in filename.
         :return: List of saved file paths.
         """
-        # Create midday timestamp for consistent grouping.
-        midday_dt = datetime.combine(file_date, datetime.min.time()).replace(
-            hour=12, minute=0, second=0
-        )
-        timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
+        # Deterministic midday-UTC timestamp shared by the day's files for grouping.
+        timestamp = _utc_midday_stamp(file_date)
 
         # Generate filename: {user_id}_{DATA_TYPE}_{timestamp}.json.
-        filename = f"{self.user_id}_{data_type.name}_{timestamp}.json".replace(":", "-")
+        filename = f"{self.user_id}_{data_type.name}_{timestamp}.json"
         filepath = self.ingest_dir / filename
 
         # Save data.
@@ -1111,15 +1127,11 @@ class GarminExtractor:
         for activity in activities:
             activity_id = activity["activityId"]
 
-            # Generate timestamp with local timezone date at noon for
-            # consistent batching with ACTIVITIES_LIST file. Uses same
-            # midday timestamp approach as _save_garmin_data().
-            activity_start = pendulum.parse(activity.get("startTimeLocal"))
-            activity_date = activity_start.date()
-            midday_dt = datetime.combine(activity_date, datetime.min.time()).replace(
-                hour=12, minute=0, second=0
-            )
-            timestamp = pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()
+            # Stamp the activity's files with the local start date at midday UTC so
+            # they batch with that day's ACTIVITIES_LIST file, using the same
+            # deterministic midday timestamp as _save_garmin_data().
+            activity_date = pendulum.parse(activity.get("startTimeLocal")).date()
+            timestamp = _utc_midday_stamp(activity_date)
 
             # Download and save the activity file (ORIGINAL = ZIP archive), only when
             # ACTIVITY is requested. A 404 means the activity has no downloadable file
@@ -1163,7 +1175,7 @@ class GarminExtractor:
                     filename = (
                         f"{self.user_id}_ACTIVITY_{activity_id}_"
                         f"{timestamp}.{file_ext}"
-                    ).replace(":", "-")
+                    )
                     filepath = self.ingest_dir / filename
                     with open(filepath, "wb") as f:
                         f.write(file_content)
@@ -1237,9 +1249,7 @@ class GarminExtractor:
             click.echo(f"No exercise sets data for activity {activity_id}.")
             return None
 
-        filename = (
-            f"{self.user_id}_EXERCISE_SETS_{activity_id}_{timestamp}.json"
-        ).replace(":", "-")
+        filename = f"{self.user_id}_EXERCISE_SETS_{activity_id}_{timestamp}.json"
         filepath = self.ingest_dir / filename
 
         with open(filepath, "w", encoding="utf-8") as f:
@@ -1308,7 +1318,7 @@ class GarminExtractor:
         filename = (
             f"{self.user_id}_MULTISPORT_CHILDREN_"
             f"{parent_activity_id}_{timestamp}.json"
-        ).replace(":", "-")
+        )
         filepath = self.ingest_dir / filename
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(
