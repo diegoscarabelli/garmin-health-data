@@ -177,6 +177,26 @@ def _seed_activity(
 FIT_FILENAME = "1_ACTIVITY_12345_2024-01-01T08:00:00Z.fit"
 
 
+class TestParseFilenameLegacyOffset:
+    """
+    Recovery coverage for legacy filenames written with a UTC ``+00-00`` offset.
+    """
+
+    def test_accepts_legacy_utc_offset(self, processor):
+        """
+        Files stamped by a pre-2.14.1 extractor on pendulum 2.x carry a ``+00-00``
+        offset; they must still parse so they can be recovered from quarantine.
+        """
+        parsed = processor._parse_filename("1_STEPS_2026-08-15T12-00-00+00-00.json")
+
+        assert parsed == {
+            "user_id": "1",
+            "data_type": "STEPS",
+            "timestamp": "2026-08-15T12-00-00+00-00",
+            "file_extension": "json",
+        }
+
+
 # --- FIT file processing tests ---------------------------------------------
 
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.14.1] - 2026-08-16
+
+### Fixed
+
+- **Extraction filenames are now deterministic across `pendulum` versions, so valid files are no longer quarantined** ([#83](https://github.com/diegoscarabelli/garmin-health-data/pull/83)). The extractor stamped every filename via `pendulum.instance(midday_dt, tz="UTC").to_iso8601_string()`, whose rendering of a UTC instant changed between `pendulum` major versions: 3.x emits `...T12:00:00Z` (written to disk as `...T12-00-00Z` after the colon-to-hyphen swap), while 2.x emits `...T12:00:00+00:00` (written as `...T12-00-00+00-00`). The processor's three filename patterns accepted `Z` but not `+`, so on any environment that resolved `pendulum` 2.x every extracted JSON/FIT/TCX file failed `_parse_filename` and was routed to quarantine, leaving an empty database. The offset was always UTC (`+00:00`), never a local zone: all three filename paths force `tz="UTC"`. Filenames are now built by a single helper as a fixed, colon-free, `Z`-suffixed `YYYY-MM-DDT12-00-00Z` string that does not depend on the installed `pendulum` version, and the fragile whole-filename `.replace(":", "-")` is gone. So files already quarantined by an affected install can be recovered, the processor's three patterns also still accept the legacy `+00-00` offset form: move those files back into the ingest directory and re-run to load them. Reported by @OleMantei.
+
 ## [2.14.0] - 2026-08-14
 
 ### Changed
