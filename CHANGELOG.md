@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Filename parsing now accepts positive UTC offsets**. The extractor replaces colons with hyphens in generated filenames, so local timestamps can contain offsets such as `+02-00`. The processor patterns omitted `+`, causing valid JSON, FIT, and TCX files to be quarantined. All three patterns now accept positive offsets, with regression coverage.
+
 ## [2.14.0] - 2026-08-14
 
 ### Changed

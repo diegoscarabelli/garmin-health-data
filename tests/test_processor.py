@@ -174,7 +174,29 @@ def _seed_activity(
     return persisted
 
 
-FIT_FILENAME = "1_ACTIVITY_12345_2024-01-01T08:00:00Z.fit"
+FIT_FILENAME = "1_ACTIVITY_12345_2024-01-01T08-00-00+02-00.fit"
+
+
+class TestParseFilename:
+    """
+    Tests for Garmin filename parsing.
+    """
+
+    def test_accepts_positive_timezone_offset(self):
+        """
+        Extracted filenames may contain positive UTC offsets.
+        """
+        processor = GarminProcessor(
+            file_set=FileSet(file_paths=[], files={}),
+            session=MagicMock(),
+        )
+
+        assert processor._parse_filename("1_STEPS_2026-08-15T12-00-00+02-00.json") == {
+            "user_id": "1",
+            "data_type": "STEPS",
+            "timestamp": "2026-08-15T12-00-00+02-00",
+            "file_extension": "json",
+        }
 
 
 # --- FIT file processing tests ---------------------------------------------
@@ -2561,7 +2583,7 @@ class TestProcessMenstrualCycleSummary:
 # TCX helpers
 # ---------------------------------------------------------------------------
 
-TCX_FILENAME = "1_ACTIVITY_12345_2024-01-01T08-00-00Z.tcx"
+TCX_FILENAME = "1_ACTIVITY_12345_2024-01-01T08-00-00+02-00.tcx"
 
 # Two trackpoints: first has GPS + all scalar fields + Garmin extensions,
 # second has GPS + a subset of fields.  One lap summarises both.
