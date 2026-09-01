@@ -4,6 +4,7 @@ Command-line interface for garmin-health-data.
 
 import logging
 import re
+import sys
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,8 +15,10 @@ from sqlalchemy import text
 
 from garmin_health_data.__version__ import __version__
 from garmin_health_data.auth import (
+    bootstrap_from_ticket,
     ensure_authenticated,
     get_credentials,
+    manual_auth,
     refresh_tokens,
 )
 from garmin_health_data.constants import GARMIN_DATA_REGISTRY, GARMIN_FILE_TYPES
@@ -95,6 +98,18 @@ def cli(ctx: click.Context):
         ctx.exit(0)
 
 
+def _is_interactive() -> bool:
+    """
+    Report whether stdin is an interactive terminal.
+
+    Wraps ``sys.stdin.isatty()`` in a helper so the manual-login fallback can be
+    exercised in tests without depending on the test runner's stdin handling.
+
+    :return: True when attached to an interactive terminal, False otherwise.
+    """
+    return sys.stdin.isatty()
+
+
 @cli.command()
 @click.option(
     "--email",
@@ -106,10 +121,43 @@ def cli(ctx: click.Context):
     envvar="GARMIN_PASSWORD",
     help="Garmin Connect password (or set GARMIN_PASSWORD env var)",
 )
-def auth(email: Optional[str], password: Optional[str]):
+@click.option(
+    "--manual",
+    is_flag=True,
+    help=(
+        "Log in with a browser-captured ticket instead of email/password. Use "
+        "when Cloudflare blocks the automated login."
+    ),
+)
+@click.option(
+    "--ticket",
+    default=None,
+    help=(
+        "CAS service ticket (ST-...) or full redirect URL, for non-interactive "
+        "manual login. Implies --manual."
+    ),
+)
+def auth(
+    email: Optional[str],
+    password: Optional[str],
+    manual: bool,
+    ticket: Optional[str],
+):
     """
     Authenticate with Garmin Connect and save tokens.
+
+    By default this logs in with your email and password. If Garmin's Cloudflare
+    protection blocks that (repeated 403/429 errors), use --manual to log in with a
+    ticket captured from your own browser session.
     """
+    # Manual browser-ticket bootstrap (Cloudflare-blocked login workaround).
+    if ticket:
+        bootstrap_from_ticket(ticket)
+        return
+    if manual:
+        manual_auth()
+        return
+
     if email and password:
         # Use provided credentials.
         click.echo("Using provided credentials...")
@@ -117,7 +165,24 @@ def auth(email: Optional[str], password: Optional[str]):
         # Prompt for credentials.
         email, password = get_credentials()
 
-    refresh_tokens(email, password)
+    try:
+        refresh_tokens(email, password)
+    except click.ClickException:
+        # Automated login failed (often Garmin's Cloudflare protection). Offer the
+        # browser-ticket fallback interactively; in a non-interactive run there is
+        # nothing to paste into, so point the user at the manual flow and re-raise.
+        if not _is_interactive():
+            click.secho(
+                "💡 Automated login failed. Re-run interactively with:  "
+                "garmin auth --manual",
+                fg="yellow",
+                bold=True,
+            )
+            raise
+        if click.confirm("\nTry manual browser-ticket login now?", default=True):
+            manual_auth()
+        else:
+            raise
 
 
 @cli.command()

@@ -134,6 +134,27 @@ All discovered accounts are extracted sequentially when running `garmin extract`
 
 > Login strategies, token rotation, and the 30-45s anti-rate-limit pause: see [Reference](#reference).
 
+#### Manual login (Cloudflare fallback)
+
+Garmin guards its login endpoints with Cloudflare, which can block the automated `garmin auth` entirely (repeated `403` / `429` errors, ending in "Authentication failed"). When that happens, log in with a ticket captured from your own browser, which passes Cloudflare because it is a real, human session. In an interactive terminal a normal `garmin auth` offers this fallback automatically after the automated login fails; you can also invoke it directly:
+
+```bash
+garmin auth --manual
+```
+
+It prints a short set of steps:
+
+1. Log into Garmin Connect in your browser (any normal login).
+2. Open the URL it gives you in that same browser — you'll land on a page titled "Success".
+3. Open the browser console (Cmd+Opt+J on Chrome, or Ctrl+Shift+J), paste the one-line snippet it gives you, and press Enter. It copies a login ticket to your clipboard.
+4. Paste the ticket back into the terminal.
+
+The tool exchanges that ticket for OAuth tokens and saves them exactly like a normal login, so they still auto-refresh for ~30 days (this is roughly a monthly step, not per-run). Tickets are single-use and expire in about a minute, so paste promptly; if it fails, mint a fresh one. For scripting, pass the ticket (or the full redirect URL that contains it) directly:
+
+```bash
+garmin auth --ticket 'ST-....-cas'
+```
+
 ### Extracting data
 
 ```bash
@@ -284,7 +305,7 @@ garmin auth
 garmin auth --email user@example.com --password '...'
 ```
 
-Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/<user_id>/`. Run once per Garmin Connect account; tokens auto-refresh as long as you extract at least once every 30 days. The `--email` / `--password` flags can also be supplied via the `GARMIN_EMAIL` / `GARMIN_PASSWORD` environment variables. See the [Authentication internals](#authentication-internals) collapsible below for the login-strategy waterfall and the 30-45s anti-rate-limit pause explanation.
+Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/<user_id>/`. Run once per Garmin Connect account; tokens auto-refresh as long as you extract at least once every 30 days. The `--email` / `--password` flags can also be supplied via the `GARMIN_EMAIL` / `GARMIN_PASSWORD` environment variables. If Garmin's Cloudflare protection blocks the automated login, `--manual` runs a browser-ticket fallback that prints step-by-step capture instructions, and `--ticket 'ST-...'` (a raw service ticket or the full redirect URL that carries it) performs the exchange non-interactively; see [Manual login (Cloudflare fallback)](#manual-login-cloudflare-fallback). See the [Authentication internals](#authentication-internals) collapsible below for the login-strategy waterfall and the 30-45s anti-rate-limit pause explanation.
 
 ### `garmin extract`
 
