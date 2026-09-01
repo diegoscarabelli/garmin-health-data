@@ -237,6 +237,11 @@ def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
             "No ticket found. Paste the 'ST-...' value or the full URL that "
             "contains 'ticket=ST-...'."
         )
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise click.ClickException(
+            "Could not read a service URL from the pasted value. Paste the bare "
+            "'ST-...' ticket, or the full 'https://...' redirect URL that carries it."
+        )
     # The service URL is the redirect target without its query/fragment.
     service_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
     return ticket, service_url
@@ -262,7 +267,7 @@ def bootstrap_from_ticket(
         parsed from ``ticket_input`` (or the mobile service for a bare ticket).
     :param silent: If True, suppress non-essential output.
     :return: The authenticated Garmin user ID as a string.
-    :raises click.ClickException: If the ticket exchange fails.
+    :raises click.ClickException: If the ticket exchange or the token save fails.
     """
     ticket, parsed_service = _parse_manual_ticket(ticket_input)
     service = service_url or parsed_service
@@ -271,14 +276,20 @@ def bootstrap_from_ticket(
     garmin = GarminClient()
     try:
         garmin._exchange_service_ticket(ticket, service_url=service)
+    except click.Abort:
+        # Let user interrupts propagate rather than masking them as a failure.
+        raise
     except Exception as e:
         raise click.ClickException(
             f"Ticket exchange failed: {e}. The ticket may be expired or already "
             "used (they are single-use and last ~1 minute). Mint a fresh one and "
             "paste it right away."
-        )
+        ) from e
 
-    return _save_client_tokens(garmin, base_path, silent=silent)
+    try:
+        return _save_client_tokens(garmin, base_path, silent=silent)
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
 
 
 def _print_manual_instructions() -> None:

@@ -60,6 +60,20 @@ class TestParseManualTicket:
         with pytest.raises(click.ClickException):
             _parse_manual_ticket("https://connect.garmin.com/app")
 
+    def test_schemeless_url_with_ticket_raises(self) -> None:
+        """
+        A URL missing its http(s) scheme cannot yield a service URL and raises.
+        """
+        with pytest.raises(click.ClickException):
+            _parse_manual_ticket("connect.garmin.com/app?ticket=ST-9-sso")
+
+    def test_empty_string_raises(self) -> None:
+        """
+        An empty value raises a ClickException rather than being mis-parsed.
+        """
+        with pytest.raises(click.ClickException):
+            _parse_manual_ticket("")
+
 
 class TestBootstrapFromTicket:
     """
@@ -155,7 +169,7 @@ class TestBootstrapFromTicket:
         tmp_path: Path,
     ) -> None:
         """
-        A profile response without an id raises RuntimeError.
+        A profile response without an id surfaces as a clean ClickException.
 
         :param mock_echo: Mock click.echo function.
         :param mock_garmin_class: Mock Garmin client class.
@@ -165,7 +179,7 @@ class TestBootstrapFromTicket:
         mock_garmin.get_user_profile.return_value = {}
         mock_garmin_class.return_value = mock_garmin
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(click.ClickException):
             bootstrap_from_ticket("ST-abc-cas", base_token_dir=str(tmp_path))
 
 

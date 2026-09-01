@@ -151,7 +151,7 @@ def auth(
     ticket captured from your own browser session.
     """
     # Manual browser-ticket bootstrap (Cloudflare-blocked login workaround).
-    if ticket:
+    if ticket is not None:
         bootstrap_from_ticket(ticket)
         return
     if manual:
