@@ -74,6 +74,16 @@ class TestParseManualTicket:
         with pytest.raises(click.ClickException):
             _parse_manual_ticket("")
 
+    def test_full_url_preserves_non_ticket_params(self) -> None:
+        """
+        Query params other than ``ticket`` are kept in the reconstructed service URL.
+        """
+        ticket, service = _parse_manual_ticket(
+            "https://connect.garmin.com/app?foo=bar&ticket=ST-9-sso"
+        )
+        assert ticket == "ST-9-sso"
+        assert service == "https://connect.garmin.com/app?foo=bar"
+
 
 class TestBootstrapFromTicket:
     """
@@ -177,6 +187,29 @@ class TestBootstrapFromTicket:
         """
         mock_garmin = MagicMock()
         mock_garmin.get_user_profile.return_value = {}
+        mock_garmin_class.return_value = mock_garmin
+
+        with pytest.raises(click.ClickException):
+            bootstrap_from_ticket("ST-abc-cas", base_token_dir=str(tmp_path))
+
+    @patch("garmin_health_data.auth.GarminClient")
+    @patch("click.echo")
+    def test_token_save_oserror_raises_clickexception(
+        self,
+        mock_echo: MagicMock,
+        mock_garmin_class: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """
+        A filesystem error while saving tokens surfaces as a ClickException.
+
+        :param mock_echo: Mock click.echo function.
+        :param mock_garmin_class: Mock Garmin client class.
+        :param tmp_path: Per-test token directory.
+        """
+        mock_garmin = MagicMock()
+        mock_garmin.get_user_profile.return_value = {"id": "12345678"}
+        mock_garmin.dump.side_effect = OSError("read-only file system")
         mock_garmin_class.return_value = mock_garmin
 
         with pytest.raises(click.ClickException):

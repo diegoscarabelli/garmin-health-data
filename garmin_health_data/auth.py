@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import click
 from garmin_health_data.garmin_client import GarminClient
@@ -231,7 +231,8 @@ def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
         return raw, MANUAL_SERVICE_URL
 
     parsed = urlparse(raw)
-    ticket = parse_qs(parsed.query).get("ticket", [None])[0]
+    query_params = parse_qs(parsed.query)
+    ticket = query_params.get("ticket", [None])[0]
     if not ticket:
         raise click.ClickException(
             "No ticket found. Paste the 'ST-...' value or the full URL that "
@@ -242,8 +243,15 @@ def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
             "Could not read a service URL from the pasted value. Paste the bare "
             "'ST-...' ticket, or the full 'https://...' redirect URL that carries it."
         )
-    # The service URL is the redirect target without its query/fragment.
-    service_url = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    # Rebuild the service URL as the redirect target with only the ``ticket``
+    # param removed. A CAS ticket is bound to the exact service URL, so any other
+    # query params that were part of it must be preserved for the exchange.
+    service_query = urlencode(
+        {k: v for k, v in query_params.items() if k != "ticket"}, doseq=True
+    )
+    service_url = urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", service_query, "")
+    )
     return ticket, service_url
 
 
@@ -288,8 +296,10 @@ def bootstrap_from_ticket(
 
     try:
         return _save_client_tokens(garmin, base_path, silent=silent)
-    except RuntimeError as e:
-        raise click.ClickException(str(e)) from e
+    except (RuntimeError, OSError) as e:
+        # Missing profile id (RuntimeError) or a filesystem failure while writing
+        # tokens (OSError) should exit cleanly, not dump a traceback.
+        raise click.ClickException(f"Could not save tokens: {e}") from e
 
 
 def _print_manual_instructions() -> None:
