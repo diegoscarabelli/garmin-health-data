@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 import click
 from garmin_health_data.garmin_client import GarminClient
@@ -231,8 +231,7 @@ def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
         return raw, MANUAL_SERVICE_URL
 
     parsed = urlparse(raw)
-    query_params = parse_qs(parsed.query)
-    ticket = query_params.get("ticket", [None])[0]
+    ticket = parse_qs(parsed.query).get("ticket", [None])[0]
     if not ticket:
         raise click.ClickException(
             "No ticket found. Paste the 'ST-...' value or the full URL that "
@@ -244,13 +243,16 @@ def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
             "'ST-...' ticket, or the full 'https://...' redirect URL that carries it."
         )
     # Rebuild the service URL as the redirect target with only the ``ticket``
-    # param removed. A CAS ticket is bound to the exact service URL, so any other
-    # query params that were part of it must be preserved for the exchange.
-    service_query = urlencode(
-        {k: v for k, v in query_params.items() if k != "ticket"}, doseq=True
+    # param removed, preserving the exact original encoding and order of any
+    # remaining params. A CAS ticket is bound to the exact service-URL string, so
+    # re-encoding the query (parse + urlencode) could invalidate the exchange.
+    remaining_query = "&".join(
+        part
+        for part in parsed.query.split("&")
+        if part and not part.startswith("ticket=")
     )
     service_url = urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, "", service_query, "")
+        (parsed.scheme, parsed.netloc, parsed.path, "", remaining_query, "")
     )
     return ticket, service_url
 
