@@ -8,10 +8,21 @@ Authentication (MFA) support.
 import os
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 import click
 from garmin_health_data.garmin_client import GarminClient
+
+# Manual-ticket bootstrap constants (workaround for the Cloudflare-blocked
+# automated login). The mobile-app service is used to mint the ticket because a
+# browser never validates (consumes) that service's ticket, so it stays usable
+# for the DI token exchange. See the ``garmin auth --manual`` flow.
+MANUAL_SERVICE_URL = "https://mobile.integration.garmin.com/gcm/android"
+MANUAL_MINT_URL = (
+    "https://sso.garmin.com/sso/signin"
+    "?service=https%3A%2F%2Fmobile.integration.garmin.com%2Fgcm%2Fandroid"
+)
 
 
 def get_credentials() -> Tuple[str, str]:
@@ -155,6 +166,197 @@ def discover_accounts(
     )
 
 
+def _save_client_tokens(
+    garmin: GarminClient, base_path: Path, silent: bool = False
+) -> str:
+    """
+    Persist a logged-in client's tokens under ``base_path/<user_id>/``.
+
+    Auto-detects the Garmin user ID from the profile, creates the per-account
+    subdirectory with restrictive permissions, and writes ``garmin_tokens.json``.
+
+    :param garmin: Authenticated Garmin client (DI tokens already set).
+    :param base_path: Base directory for per-account token storage.
+    :param silent: If True, suppress non-essential output.
+    :return: The authenticated Garmin user ID as a string.
+    :raises RuntimeError: If the user ID cannot be read from the profile.
+    """
+    user_id = garmin.get_user_profile().get("id")
+    if not user_id:
+        raise RuntimeError(
+            "Could not determine user ID from Garmin profile. "
+            "The 'id' field was missing from get_user_profile() response."
+        )
+
+    if not silent:
+        click.echo(f"👤 Detected user ID: {user_id}")
+        click.echo("💾 Saving authentication tokens...")
+
+    # Ensure base and per-account token directories exist with proper permissions.
+    base_path.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        base_path.chmod(0o700)
+
+    token_path = base_path / str(user_id)
+    token_path.mkdir(exist_ok=True)
+    if sys.platform != "win32":
+        token_path.chmod(0o700)
+
+    # dump() writes garmin_tokens.json with 0o600 from creation time.
+    garmin.dump(str(token_path))
+
+    if not silent:
+        click.echo()
+        click.secho("✅ Tokens successfully saved!", fg="green", bold=True)
+        click.echo(f"   User ID:  {user_id}")
+        click.echo(f"   Location: {token_path}")
+
+    return str(user_id)
+
+
+def _parse_manual_ticket(raw: str) -> Tuple[str, str]:
+    """
+    Parse a pasted manual-login value into a ticket and its service URL.
+
+    Accepts either a bare ``ST-...`` service ticket (in which case the default mobile
+    service URL is assumed) or the full redirect URL that carries the ticket in its
+    ``ticket`` query parameter.
+
+    :param raw: Raw ``ST-...`` ticket or a full redirect URL.
+    :return: Tuple of (ticket, service_url).
+    :raises click.ClickException: If no ticket can be extracted.
+    """
+    raw = raw.strip()
+    if raw.startswith("ST-"):
+        return raw, MANUAL_SERVICE_URL
+
+    parsed = urlparse(raw)
+    ticket = parse_qs(parsed.query).get("ticket", [None])[0]
+    if not ticket:
+        raise click.ClickException(
+            "No ticket found. Paste the 'ST-...' value or the full URL that "
+            "contains 'ticket=ST-...'."
+        )
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise click.ClickException(
+            "Could not read a service URL from the pasted value. Paste the bare "
+            "'ST-...' ticket, or the full 'https://...' redirect URL that carries it."
+        )
+    # Rebuild the service URL as the redirect target with only the ``ticket``
+    # param removed, preserving the exact original encoding and order of any
+    # remaining params. A CAS ticket is bound to the exact service-URL string, so
+    # re-encoding the query (parse + urlencode) could invalidate the exchange.
+    remaining_query = "&".join(
+        part
+        for part in parsed.query.split("&")
+        if part and not part.startswith("ticket=")
+    )
+    service_url = urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, "", remaining_query, "")
+    )
+    return ticket, service_url
+
+
+def bootstrap_from_ticket(
+    ticket_input: str,
+    base_token_dir: str = "~/.garminconnect",
+    service_url: Optional[str] = None,
+    silent: bool = False,
+) -> str:
+    """
+    Exchange a browser-captured CAS service ticket for DI tokens and save them.
+
+    Bypasses the Cloudflare-blocked automated login: the user obtains a ticket from
+    a real, already-authenticated browser session (which passes Cloudflare) and
+    provides it here. The resulting DI tokens auto-refresh for ~30 days, so this is
+    roughly a monthly step rather than a per-run one.
+
+    :param ticket_input: Raw ``ST-...`` ticket or the full redirect URL carrying it.
+    :param base_token_dir: Base directory for per-account token storage.
+    :param service_url: SSO service the ticket was minted for. Defaults to the value
+        parsed from ``ticket_input`` (or the mobile service for a bare ticket).
+    :param silent: If True, suppress non-essential output.
+    :return: The authenticated Garmin user ID as a string.
+    :raises click.ClickException: If the ticket exchange or the token save fails.
+    """
+    ticket, parsed_service = _parse_manual_ticket(ticket_input)
+    service = service_url or parsed_service
+    base_path = Path(base_token_dir).expanduser()
+
+    garmin = GarminClient()
+    try:
+        garmin._exchange_service_ticket(ticket, service_url=service)
+    except click.Abort:
+        # Let user interrupts propagate rather than masking them as a failure.
+        raise
+    except Exception as e:
+        raise click.ClickException(
+            f"Ticket exchange failed: {e}. The ticket may be expired or already "
+            "used (they are single-use and last ~1 minute). Mint a fresh one and "
+            "paste it right away."
+        ) from e
+
+    try:
+        return _save_client_tokens(garmin, base_path, silent=silent)
+    except (RuntimeError, OSError) as e:
+        # Missing profile id (RuntimeError) or a filesystem failure while writing
+        # tokens (OSError) should exit cleanly, not dump a traceback.
+        raise click.ClickException(f"Could not save tokens: {e}") from e
+
+
+def _print_manual_instructions() -> None:
+    """
+    Print step-by-step instructions for capturing a login ticket from the browser.
+    """
+    # Console/bookmarklet snippet: read the ticket out of the SSO "Success" page
+    # HTML (same-origin) and copy it to the clipboard via the devtools copy() helper.
+    snippet = r"copy(document.documentElement.outerHTML.match(/ST-[\w.-]+/)[0])"
+
+    click.echo()
+    click.secho("🔑 Manual authentication (browser ticket)", fg="cyan", bold=True)
+    click.echo(
+        "Garmin's Cloudflare protection blocks automated login. Grab a login "
+        "ticket from your own browser instead:"
+    )
+    click.echo()
+    click.echo("  1. Log into Garmin Connect in your browser (any normal login).")
+    click.echo(
+        "  2. Open this URL in that same browser. You'll land on a page titled "
+        '"Success":'
+    )
+    click.echo()
+    click.secho(f"     {MANUAL_MINT_URL}", fg="blue")
+    click.echo()
+    click.echo(
+        "  3. Open the browser console (Cmd+Opt+J on Chrome, or Ctrl+Shift+J), "
+        "paste this line, and press Enter."
+    )
+    click.echo("     It copies the ticket to your clipboard:")
+    click.echo()
+    click.secho(f"     {snippet}", fg="green")
+    click.echo()
+    click.echo("  4. Paste the ticket below (it is single-use and expires quickly).")
+    click.echo()
+
+
+def manual_auth(base_token_dir: str = "~/.garminconnect", silent: bool = False) -> str:
+    """
+    Run the interactive manual-ticket login flow.
+
+    Prints capture instructions, prompts for the pasted ticket, and exchanges it.
+
+    :param base_token_dir: Base directory for per-account token storage.
+    :param silent: If True, suppress the instructional output.
+    :return: The authenticated Garmin user ID as a string.
+    """
+    if not silent:
+        _print_manual_instructions()
+    ticket_input = click.prompt("   Ticket (ST-... or full URL)", type=str)
+    return bootstrap_from_ticket(
+        ticket_input, base_token_dir=base_token_dir, silent=silent
+    )
+
+
 def refresh_tokens(
     email: str,
     password: str,
@@ -208,36 +410,10 @@ def refresh_tokens(
                     bold=True,
                 )
 
-        # Auto-detect user ID from profile.
-        user_id = garmin.get_user_profile().get("id")
-        if not user_id:
-            raise RuntimeError(
-                "Could not determine user ID from Garmin profile. "
-                "The 'id' field was missing from get_user_profile() response."
-            )
+        # Persist tokens under a per-account subdirectory.
+        _save_client_tokens(garmin, base_path, silent=silent)
 
         if not silent:
-            click.echo(f"👤 Detected user ID: {user_id}")
-            click.echo("💾 Saving authentication tokens...")
-
-        # Ensure base and per-account token directories exist with proper permissions.
-        base_path.mkdir(parents=True, exist_ok=True)
-        if sys.platform != "win32":
-            base_path.chmod(0o700)
-
-        token_path = base_path / str(user_id)
-        token_path.mkdir(exist_ok=True)
-        if sys.platform != "win32":
-            token_path.chmod(0o700)
-
-        # dump() writes garmin_tokens.json with 0o600 from creation time.
-        garmin.dump(str(token_path))
-
-        if not silent:
-            click.echo()
-            click.secho("✅ Tokens successfully saved!", fg="green", bold=True)
-            click.echo(f"   User ID:  {user_id}")
-            click.echo(f"   Location: {token_path}")
             click.echo()
             click.secho(
                 "🎉 Success! You're authenticated with Garmin Connect", fg="green"
