@@ -34,6 +34,7 @@ from garmin_health_data.constants import (
 from garmin_health_data.models import (
     Acclimation,
     Activity,
+    ActivityEvent,
     ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
@@ -3187,21 +3188,23 @@ class GarminProcessor(Processor):
         gps_records_deg: List[tuple],
         session: Session,
         split_metrics: Optional[List[ActivitySplitMetric]] = None,
+        event_rows: Optional[List[ActivityEvent]] = None,
         length_metrics: Optional[List[SwimLength]] = None,
         rr_values: Optional[List[float]] = None,
     ) -> None:
         """
         Persist parsed activity metrics with idempotent delete+insert semantics.
 
-        Replaces all existing ts/split/lap/length/path/hrv rows for ``activity_id`` and
-        bulk-inserts the new ones. Coalesces duplicate ts_metrics by ``(timestamp,
-        name)`` to avoid UNIQUE-constraint collisions. Materializes ``activity_path``
-        from ``gps_records_deg`` (sorted by timestamp before insert) and
-        ``activity_hrv`` from ``rr_values``. Updates
+        Replaces all existing ts/split/lap/length/path/event/hrv rows for
+        ``activity_id`` and bulk-inserts the new ones. Coalesces duplicate ts_metrics by
+        ``(timestamp, name)`` to avoid UNIQUE-constraint collisions. Materializes
+        ``activity_path`` from ``gps_records_deg`` (sorted by timestamp before insert)
+        and ``activity_hrv`` from ``rr_values``. Updates
         ``existing_activity.ts_data_available``.
 
         Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
         pass an empty list for formats that have splits but found none in this file.
+        Likewise, pass ``event_rows=None`` for source formats with no event concept.
         Same convention for ``length_metrics`` (swim pool-length data, FIT-only) and for
         ``rr_values``: ``None`` for source formats with no HRV message stream (e.g.
         TCX); an empty list for HRV-capable formats (FIT) that found no ``hrv`` frames.
@@ -3217,6 +3220,8 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy session.
         :param split_metrics: Split metric instances, or ``None`` if the source format
             has no splits.
+        :param event_rows: Event instances, or ``None`` if the source format has no
+            event concept (e.g. TCX).
         :param length_metrics: Swim length instances, or ``None`` if the source format
             has no length concept.
         :param rr_values: Beat-to-beat R-R intervals in seconds, in recorded order, or
@@ -3226,6 +3231,7 @@ class GarminProcessor(Processor):
         session.flush()
 
         # Idempotent delete: drop all existing rows for this activity. Splits
+        # and events are deleted unconditionally so reprocessing as a
         # and lengths are deleted unconditionally so reprocessing as a
         # different format (e.g. FIT → TCX) cleanly removes rows that no
         # longer apply.
@@ -3235,6 +3241,7 @@ class GarminProcessor(Processor):
             ActivityLapMetric,
             SwimLength,
             ActivityPath,
+            ActivityEvent,
             ActivityHrv,
         ):
             session.execute(
@@ -3350,6 +3357,20 @@ class GarminProcessor(Processor):
                 fg="blue",
             )
 
+        if event_rows is not None:
+            if event_rows:
+                event_keys = [
+                    c.key
+                    for c in ActivityEvent.__table__.columns
+                    if c.server_default is None
+                ]
+                session.execute(
+                    insert(ActivityEvent),
+                    [{k: getattr(m, k) for k in event_keys} for m in event_rows],
+                )
+                click.echo(f"Processed {len(event_rows)} event records.")
+            else:
+                click.secho("⚠️ No event data found.", fg="yellow")
         if rr_values is not None:
             if rr_values:
                 session.execute(
@@ -3374,8 +3395,18 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series, split, lap, and GPS path data.
+        Process a FIT file and extract time-series, split, lap, event, and GPS path
+        data.
 
+        Processes FIT file using fitdecode library, extracts record, split, lap, and
+        event frames, and stores metrics via delete+insert for idempotent reprocessing.
+        Event frames (gear changes, rider position changes, timer, recovery heart rate,
+        off-course alerts, ...) are captured generically: the common
+        `event`/`event_type`/`timestamp` fields become columns and every other field
+        lands in `ActivityEvent.data_json`. Activities with GPS samples also get an
+        eagerly materialized `ActivityPath` row holding an ordered [lon, lat] array
+        sorted by timestamp, ready for downstream path-layer visualization. Updates
+        `ts_data_available` flag based on whether time-series records were found.
         Processes FIT file using fitdecode library, extracts record, split, lap, and hrv
         frames, and stores metrics via delete+insert for idempotent reprocessing.
         Activities with GPS samples also get an eagerly materialized `ActivityPath` row
@@ -3432,10 +3463,12 @@ class GarminProcessor(Processor):
         ts_metrics = []
         split_metrics = []
         lap_metrics = []
+        event_rows = []
         length_metrics = []
         rr_values: List[float] = []
         split_idx = 0
         lap_idx = 0
+        event_idx = 0
 
         # Collect per-frame GPS samples for activity_path materialization.
         # Each element is (timestamp, lon_semicircles, lat_semicircles).
@@ -3604,6 +3637,62 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
+                    # Process event frames (issue #88): capture every FIT
+                    # `event` message generically rather than only gear and
+                    # rider-position changes. The common, most-filtered
+                    # fields (event, event_type, timestamp) stay first-class
+                    # columns; every other named field goes into data_json,
+                    # so current and future event subtypes (timer,
+                    # recovery_hr, off_course, radar alerts, ...) are
+                    # captured without recurring schema changes.
+                    elif frame.name == "event":
+                        event_timestamp = None
+                        event_value = None
+                        event_type_value = None
+                        event_data: Dict[str, Any] = {}
+
+                        for field in frame.fields:
+                            if field.name == "timestamp" and field.value:
+                                event_timestamp = field.value.replace(
+                                    tzinfo=timezone.utc
+                                )
+                            elif field.name == "event":
+                                event_value = field.value
+                            elif field.name == "event_type":
+                                event_type_value = field.value
+                            elif (
+                                field.name is not None
+                                and "unknown" not in field.name.lower()
+                                and field.value is not None
+                            ):
+                                field_value = field.value
+                                # JSON has no datetime type; store any
+                                # datetime-typed field (should one appear on
+                                # a future event subtype) as ISO 8601 text.
+                                if isinstance(field_value, datetime):
+                                    field_value = field_value.isoformat()
+                                event_data[field.name] = field_value
+
+                        # Skip frames missing the two NOT NULL columns
+                        # (timestamp, event); this should not happen for
+                        # well-formed FIT files, but avoids a bulk-insert
+                        # failure on a malformed one.
+                        if event_timestamp is not None and event_value is not None:
+                            event_rows.append(
+                                ActivityEvent(
+                                    activity_id=activity_id,
+                                    event_idx=event_idx,
+                                    timestamp=event_timestamp,
+                                    event=str(event_value),
+                                    event_type=(
+                                        str(event_type_value)
+                                        if event_type_value is not None
+                                        else None
+                                    ),
+                                    data_json=event_data if event_data else None,
+                                )
+                            )
+                            event_idx += 1
                     # Process length frames: one per pool length (each
                     # wall-to-wall segment), active (swum) or idle (rest).
                     # Unlike lap/split, length carries categorical fields
@@ -3711,6 +3800,7 @@ class GarminProcessor(Processor):
             gps_records_deg=gps_records_deg,
             session=session,
             split_metrics=split_metrics,
+            event_rows=event_rows,
             length_metrics=length_metrics,
             rr_values=rr_values,
         )
@@ -3935,6 +4025,8 @@ class GarminProcessor(Processor):
                             pass
 
         # TCX coordinates are already in decimal degrees, and TCX has no split
+        # or event concept (split_metrics=None and event_rows=None suppress
+        # both the inserts and the "no data found" warnings).
         # concept (split_metrics=None suppresses both the insert and the
         # "no split data" warning) and no HRV message stream (rr_values=None
         # suppresses both the insert and the "no HRV data" message, the same
@@ -3948,5 +4040,6 @@ class GarminProcessor(Processor):
             gps_records_deg=gps_records,
             session=session,
             split_metrics=None,
+            event_rows=None,
             rr_values=None,
         )

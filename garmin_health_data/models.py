@@ -1122,6 +1122,44 @@ class ActivityPath(Base, InsertBase):
     )
 
 
+class ActivityEvent(Base, InsertBase):
+    """
+    Generic per-activity events extracted from activity FIT files.
+
+    Stores every FIT `event` message (gear changes, rider position changes, timer
+    start/stop, recovery heart rate, off-course alerts, and other subtypes) in file
+    order. The common fields (`event`, `event_type`, `timestamp`) are first-class
+    columns; the heterogeneous per-subtype fields live in `data_json`, so every event
+    kind, including unmapped or future firmware ones, is captured without recurring
+    schema changes. Uses delete+insert in _process_fit_file for reprocessing
+    idempotency; not populated by TCX processing.
+    """
+
+    __tablename__ = "activity_event"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    event_idx = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    event = Column(Text, nullable=False)
+    event_type = Column(Text)
+    data_json = Column(JSON(none_as_null=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_json IS NULL OR json_valid(data_json)",
+            name="activity_event_data_json_valid",
+        ),
+        CheckConstraint(
+            "data_json IS NULL OR json_type(data_json) = 'object'",
+            name="activity_event_data_json_is_object",
+        ),
+    )
+
+
 class ActivityHrv(Base, InsertBase):
     """
     Per-activity beat-to-beat R-R interval series (raw HRV) from activity FIT files.

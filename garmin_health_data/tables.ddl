@@ -814,6 +814,25 @@ CREATE TABLE IF NOT EXISTS activity_path (
 CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
 ON activity_path (point_count);
 
+-- Generic per-activity events extracted from activity FIT files, capturing every FIT `event` message (gear changes, rider position changes, timer start/stop, recovery heart rate, off-course alerts, and other subtypes). Each record represents a single event in file order. Event-specific fields (gear teeth/indices, rider_position, timer_trigger, data, ...) live in data_json so every event kind, including unmapped or future firmware ones, is captured without recurring schema changes.
+CREATE TABLE IF NOT EXISTS activity_event (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this event belongs to.
+    , event_idx INTEGER NOT NULL           -- Ordinal of the event within the activity (0-based), preserving FIT file order.
+    , timestamp DATETIME NOT NULL          -- When the event occurred.
+    , event TEXT NOT NULL                  -- Event kind (front_gear_change, rear_gear_change, rider_position_change, timer, recovery_hr, off_course, ...).
+    , event_type TEXT                      -- Event qualifier (start, stop, marker, ...).
+    , data_json JSON                       -- Remaining event-specific fields as a JSON object (gear teeth/indices, rider_position, timer_trigger, data, ...). NULL when the event carries no extra fields.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id, event_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+    , CONSTRAINT activity_event_data_json_valid CHECK (
+        data_json IS NULL OR JSON_VALID(data_json)
+    )
+    , CONSTRAINT activity_event_data_json_is_object CHECK (
+        data_json IS NULL OR JSON_TYPE(data_json) = 'object'
+    )
+);
+
 -- Per-activity beat-to-beat R-R interval series (raw HRV) extracted from activity FIT files. Stores the ordered sequence of intervals between consecutive heartbeats in seconds, as recorded by a compatible heart rate source during the activity. Distinct from the sleep `hrv` table, which holds Garmin''s overnight 5-minute HRV summary in milliseconds keyed by sleep_id; this table holds raw beat-to-beat data in seconds keyed by activity_id. One row per activity with HRV data; activities without a compatible HR source have no row. TCX files carry no HRV message stream, so this table is populated from FIT files only.
 CREATE TABLE IF NOT EXISTS activity_hrv (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). One row per activity.
