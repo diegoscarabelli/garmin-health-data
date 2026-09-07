@@ -37,6 +37,7 @@ from garmin_health_data.models import (
     SpO2,
     StrengthExercise,
     StrengthSet,
+    SupplementalActivityMetric,
     SwimLength,
     User,
 )
@@ -1274,6 +1275,222 @@ class TestProcessFitFileSwimLength:
         assert (
             db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 1
         )
+
+
+# --- FIT session-frame supplemental metric tests ----------------------------
+
+
+class TestProcessFitFileSessionMetrics:
+    """
+    Cover FIT `session`-frame extraction into supplemental_activity_metric (#91).
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        """
+        Build a minimal processor instance bound to FIT_FILENAME.
+        """
+        file_set = MagicMock(spec=FileSet)
+        return GarminProcessor(file_set=file_set, session=MagicMock())
+
+    def _run(self, frames: list, db_session: Session) -> None:
+        """
+        Process a mocked FIT file made of the given frames against `db_session`.
+        """
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(frames)
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+    def _rows(self, db_session: Session) -> dict:
+        """
+        Read back all supplemental_activity_metric rows as `{metric: value}`.
+        """
+        return {
+            row.metric: row.value
+            for row in db_session.execute(select(SupplementalActivityMetric))
+            .scalars()
+            .all()
+        }
+
+    def test_scalar_and_pair_fields_produce_expected_metrics(self, db_session: Session):
+        """
+        Allowlisted scalars are written 1:1 (including a legitimate ``0`` value, which
+        must not be treated as absent), and seated/standing pairs are unpacked into
+        `_seated` / `_standing` metrics, skipping a None slot.
+
+        A pair field with an unexpected (non 2-tuple) shape is skipped defensively.
+        """
+        _seed_activity(db_session)
+
+        session_frame = _make_frame(
+            "session",
+            [
+                _make_field("avg_left_torque_effectiveness", 72.5, "percent"),
+                _make_field("avg_right_torque_effectiveness", 73.0, "percent"),
+                _make_field("avg_left_pco", 0, "mm"),
+                _make_field("time_standing", 99.012, "s"),
+                _make_field("stand_count", 6, None),
+                _make_field("threshold_power", 227, "watts"),
+                _make_field("total_work", 1555781, "J"),
+                _make_field("workout_rpe", 20, None),
+                _make_field("workout_feel", 50, None),
+                _make_field("avg_power_position", (166, 184), "watts"),
+                _make_field("max_power_position", (657, None), "watts"),
+                _make_field("avg_cadence_position", (72, 63), "rpm"),
+                # Unexpected shape (not a 2-tuple): skipped without raising.
+                _make_field("max_cadence_position", 42, "rpm"),
+            ],
+        )
+
+        self._run([session_frame], db_session)
+
+        rows = self._rows(db_session)
+        assert rows == {
+            "avg_left_torque_effectiveness": 72.5,
+            "avg_right_torque_effectiveness": 73.0,
+            "avg_left_pco": 0.0,
+            "time_standing": 99.012,
+            "stand_count": 6.0,
+            "threshold_power": 227.0,
+            "total_work": 1555781.0,
+            "workout_rpe": 20.0,
+            "workout_feel": 50.0,
+            "avg_power_position_seated": 166.0,
+            "avg_power_position_standing": 184.0,
+            "max_power_position_seated": 657.0,
+            # max_power_position_standing skipped: standing slot is None.
+            "avg_cadence_position_seated": 72.0,
+            "avg_cadence_position_standing": 63.0,
+            # max_cadence_position_seated/standing skipped: not a 2-tuple.
+        }
+        for value in rows.values():
+            assert isinstance(value, float)
+
+    def test_excludes_text_and_non_allowlisted_fields(self, db_session: Session):
+        """
+        `sport_profile_name` (text), `training_load_peak` (duplicates
+        `activity.activity_training_load`, confirmed for #91), and fields outside the
+        allowlist (e.g. `avg_heart_rate`, already captured elsewhere) never produce
+        supplemental rows.
+        """
+        _seed_activity(db_session)
+
+        session_frame = _make_frame(
+            "session",
+            [
+                _make_field("sport_profile_name", "ROAD", None),
+                _make_field("training_load_peak", 22.49, None),
+                _make_field("avg_heart_rate", 145.0, "bpm"),
+                _make_field("total_work", 246662, "J"),
+            ],
+        )
+
+        self._run([session_frame], db_session)
+
+        assert self._rows(db_session) == {"total_work": 246662.0}
+
+    def test_no_session_frame_produces_no_rows(self, db_session: Session):
+        """
+        A FIT file with only record/lap frames (e.g. a non-cycling activity with no
+        `session`-message allowlist fields) writes zero supplemental rows and does not
+        raise.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        record_frame = _make_frame(
+            "record",
+            [_make_field("timestamp", ts), _make_field("heart_rate", 150, "bpm")],
+        )
+
+        self._run([record_frame], db_session)
+
+        assert (
+            db_session.scalar(
+                select(func.count()).select_from(SupplementalActivityMetric)
+            )
+            == 0
+        )
+
+    def test_reprocessing_is_idempotent_and_updates_values(self, db_session: Session):
+        """
+        Re-running with updated session values upserts in place: no duplicate rows, and
+        the stored value reflects the latest run.
+        """
+        _seed_activity(db_session)
+
+        session_frame_v1 = _make_frame(
+            "session",
+            [
+                _make_field("total_work", 100000, "J"),
+                _make_field("stand_count", 4, None),
+            ],
+        )
+        self._run([session_frame_v1], db_session)
+
+        rows = self._rows(db_session)
+        assert rows == {"total_work": 100000.0, "stand_count": 4.0}
+
+        # Reprocess the same file: values change, same metric keys.
+        session_frame_v2 = _make_frame(
+            "session",
+            [
+                _make_field("total_work", 200000, "J"),
+                _make_field("stand_count", 4, None),
+            ],
+        )
+        self._run([session_frame_v2], db_session)
+
+        rows = self._rows(db_session)
+        assert len(rows) == 2  # No duplicates from the second run.
+        assert rows == {"total_work": 200000.0, "stand_count": 4.0}
+
+    def test_multiple_session_frames_last_one_wins_per_metric(
+        self, db_session: Session
+    ):
+        """
+        A multi-sport FIT file carries one `session` frame per leg.
+
+        The same metric name appearing in more than one frame resolves to the last
+        frame's value, matching how the Connect API's `activityTrainingLoad` for the
+        parent activity reflects the final leg's cumulative value rather than any single
+        leg's (verified against real multi-sport FIT files for #91).
+        """
+        _seed_activity(db_session)
+
+        swim_leg = _make_frame("session", [_make_field("total_work", 50000, "J")])
+        bike_leg = _make_frame("session", [_make_field("total_work", 300000, "J")])
+        run_leg = _make_frame("session", [_make_field("total_work", 450000, "J")])
+
+        self._run([swim_leg, bike_leg, run_leg], db_session)
+
+        rows = self._rows(db_session)
+        assert rows == {"total_work": 450000.0}
+
+    def test_does_not_disturb_other_supplemental_metric_rows(self, db_session: Session):
+        """
+        Upserting FIT session metrics does not touch a pre-existing
+        supplemental_activity_metric row for the same activity at a metric name the FIT
+        session path never produces (e.g. one written by the API-derived
+        `_process_supplemental_metrics` path).
+        """
+        _seed_activity(db_session)
+
+        db_session.execute(
+            insert(SupplementalActivityMetric),
+            [{"activity_id": 12345, "metric": "moving_duration", "value": 3600.0}],
+        )
+        db_session.commit()
+
+        session_frame = _make_frame("session", [_make_field("total_work", 100000, "J")])
+        self._run([session_frame], db_session)
+
+        assert self._rows(db_session) == {
+            "moving_duration": 3600.0,
+            "total_work": 100000.0,
+        }
 
 
 # --- Activity base upsert tests --------------------------------------------
