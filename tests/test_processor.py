@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from garmin_health_data.models import (
     HRV,
     Activity,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -655,6 +656,159 @@ class TestProcessFitFile:
         run_with_frames(run3_frames)
 
         assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
+
+    def test_process_fit_file_creates_activity_hrv(self, db_session: Session):
+        """
+        Hrv frames flatten into a single ordered activity_hrv row.
+
+        Each frame's `time` field is a tuple of up to 5 R-R intervals right-padded with
+        None; null padding is dropped and values are appended across frames in recorded
+        order, with interval_count matching the flattened length.
+        """
+        _seed_activity(db_session)
+
+        hrv_frame_1 = _make_frame(
+            "hrv", [_make_field("time", (0.528, 0.527, None, None, None))]
+        )
+        hrv_frame_2 = _make_frame(
+            "hrv", [_make_field("time", (0.531, None, None, None, None))]
+        )
+        hrv_frame_3 = _make_frame(
+            "hrv", [_make_field("time", (0.533, 0.539, None, None, None))]
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [hrv_frame_1, hrv_frame_2, hrv_frame_3]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.activity_id == 12345
+        assert row.interval_count == 5
+        # SQLAlchemy JSON auto-deserializes to a Python list on read.
+        assert isinstance(row.rr_json, list)
+        assert row.rr_json == pytest.approx([0.528, 0.527, 0.531, 0.533, 0.539])
+
+    def test_process_fit_file_no_hrv_skips_activity_hrv(self, db_session: Session):
+        """
+        Files with no hrv frames produce zero activity_hrv rows and do not error.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        record_frame = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([record_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
+
+    def test_process_fit_file_hrv_non_iterable_time_skipped(self, db_session: Session):
+        """
+        A malformed (non-iterable) hrv `time` value is skipped without aborting the
+        file; other valid hrv frames are still processed.
+        """
+        _seed_activity(db_session)
+
+        bad_frame = _make_frame("hrv", [_make_field("time", 0.5)])
+        good_frame = _make_frame(
+            "hrv", [_make_field("time", (0.52, 0.53, None, None, None))]
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [bad_frame, good_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 2
+        assert rows[0].rr_json == pytest.approx([0.52, 0.53])
+
+    def test_process_fit_file_reprocessing_updates_hrv(self, db_session: Session):
+        """
+        Re-running replaces the existing activity_hrv row (delete+insert).
+
+        Reprocessing identical frames is idempotent: still exactly one row with the
+        same content.
+        """
+        _seed_activity(db_session)
+
+        def run_with_frames(frames: list) -> None:
+            processor = self._make_processor()
+            with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+                mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+                mock_fitdecode.FitReader.return_value = _mock_fit_reader(frames)
+                processor._process_fit_file(Path(FIT_FILENAME), db_session)
+            db_session.commit()
+
+        frames = [
+            _make_frame("hrv", [_make_field("time", (0.5, 0.51, None, None, None))]),
+            _make_frame("hrv", [_make_field("time", (0.52, None, None, None, None))]),
+        ]
+
+        # First run: 3 intervals.
+        run_with_frames(frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 3
+        assert rows[0].rr_json == pytest.approx([0.5, 0.51, 0.52])
+
+        # Re-run identical frames: still exactly one row, same content
+        # (idempotent reprocessing).
+        run_with_frames(frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 3
+        assert rows[0].rr_json == pytest.approx([0.5, 0.51, 0.52])
+
+        # Re-run with different frames -> delete+insert replaces content.
+        new_frames = [
+            _make_frame("hrv", [_make_field("time", (0.6, None, None, None, None))]),
+        ]
+        run_with_frames(new_frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 1
+        assert rows[0].rr_json == pytest.approx([0.6])
+
+        # Re-run with no hrv frames at all -> existing row deleted, no new row.
+        no_hrv_frames = [
+            _make_frame(
+                "record",
+                [
+                    _make_field(
+                        "timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+                    ),
+                    _make_field("heart_rate", 150, "bpm"),
+                ],
+            ),
+        ]
+        run_with_frames(no_hrv_frames)
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
 
 
 # --- Swim length tests -------------------------------------------------------
@@ -2923,6 +3077,8 @@ class TestProcessTcxFile:
     def test_success_inserts_ts_lap_and_path(self, db_session: Session, tmp_path: Path):
         """
         Full TCX parse: correct ts_metric, lap_metric, and activity_path row counts.
+
+        TCX has no HRV message stream, so activity_hrv stays empty (unaffected).
         """
         _seed_activity(db_session)
         path = _write_tcx(tmp_path, _MINIMAL_TCX)
@@ -2944,6 +3100,8 @@ class TestProcessTcxFile:
         path_row = db_session.execute(select(ActivityPath)).scalars().first()
         assert path_row is not None
         assert path_row.point_count == 2
+        # TCX has no HRV concept.
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
 
     def test_ts_data_available_set_true(self, db_session: Session, tmp_path: Path):
         """

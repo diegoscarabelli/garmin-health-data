@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from garmin_health_data.models import (
     Activity,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -98,8 +99,8 @@ def test_delete_activity_cascades_to_all_children(
     """
     Deleting an activity removes rows in every activity-child table.
 
-    This exercises all 12 child FKs declared with `ON DELETE CASCADE`, including
-    `activity_ts_metric_downsampled` and the new `swim_length` table.
+    This exercises all 13 child FKs declared with `ON DELETE CASCADE`, including
+    `activity_ts_metric_downsampled`, `activity_hrv`, and `swim_length`.
     """
     activity = _make_activity(activity_id=1001, user_id=seeded_user)
     db_session.add(activity)
@@ -125,6 +126,7 @@ def test_delete_activity_cascades_to_all_children(
                 activity_id=1001, lap_idx=1, name="distance", value=100.0
             ),
             ActivityPath(activity_id=1001, path_json=[], point_count=0),
+            ActivityHrv(activity_id=1001, rr_json=[0.5, 0.51], interval_count=2),
             StrengthExercise(
                 activity_id=1001,
                 exercise_category="BENCH_PRESS",
@@ -159,6 +161,7 @@ def test_delete_activity_cascades_to_all_children(
         ActivitySplitMetric,
         ActivityLapMetric,
         ActivityPath,
+        ActivityHrv,
         StrengthExercise,
         StrengthSet,
         ActivityTsMetricDownsampled,
@@ -180,6 +183,7 @@ def test_delete_activity_cascades_to_all_children(
         ActivitySplitMetric,
         ActivityLapMetric,
         ActivityPath,
+        ActivityHrv,
         StrengthExercise,
         StrengthSet,
         ActivityTsMetricDownsampled,
