@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **FIT `session`-message metrics into `supplemental_activity_metric`** ([#91](https://github.com/diegoscarabelli/garmin-health-data/issues/91)): the FIT `session` message carries advanced fields the Garmin Connect API never exposes. `_process_fit_file` now reads an allowlist of them from the `session` frame and writes each as a `supplemental_activity_metric` row (`activity_id`, `metric`, `value`). Captured metrics: advanced cycling pedal dynamics (`avg_left/right_torque_effectiveness`, `avg_left/right_pedal_smoothness`, `avg_left/right_pco`), seated-vs-standing power and cadence (`avg_/max_power_position_seated/standing`, `avg_/max_cadence_position_seated/standing`, unpacked from the FIT 2-tuples), and mechanical work / subjective effort (`total_work`, `avg_vam`, `threshold_power`, `time_standing`, `stand_count`, `workout_feel`, `workout_rpe`, stored raw on Garmin's 0-100 scale). Written through the existing upsert path (keyed by `(activity_id, metric)`) so reprocessing is idempotent and never disturbs API-sourced rows. `training_load_peak` is excluded as a verified exact duplicate of `activity.activity_training_load` (checked across 128 activities); `sport_profile_name` (text) and the power-phase arrays are left out for now. FIT-only; TCX has no `session` message.
+
 ## [2.14.1] - 2026-08-16
 
 ### Fixed
