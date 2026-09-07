@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
 
 ## Features
 
-- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits, per-length pool swim data, beat-to-beat HRV, events) as local files and loads them into a SQLite database in one pass.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits, per-length pool swim data, beat-to-beat HRV, events, session metrics) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
@@ -275,7 +275,7 @@ Last Update Dates:
 # Check a specific database
 garmin info --db-path ~/my-garmin-data.db
 
-# Verify database integrity (expected schema table count + SQLite PRAGMA integrity_check)
+# Verify database integrity (schema table count + SQLite PRAGMA integrity_check)
 garmin verify
 ```
 
@@ -413,7 +413,7 @@ If all five strategies are exhausted without success (uncommon — typically onl
 
 Duplicates are prevented through a four-tier approach:
 
-1. **Activity metrics from FIT or TCX files** (time-series, laps, splits, swim lengths, events, HRV) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps, splits, lengths, or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits, swim lengths, and HRV are FIT-only (TCX has no split or length concept and no HRV message stream).
+1. **Activity metrics from FIT or TCX files** (time-series, laps, splits, swim lengths, events, HRV) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps, splits, lengths, or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits, swim lengths, events, and HRV are FIT-only (TCX has no split, length, or event concept and no HRV message stream).
 2. **JSON wellness time-series** (heart rate, sleep movement, stress, body battery, etc.): `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts.
 3. **Main records** (activities, sleep, user profile, menstrual cycle day, observed menstrual cycle summaries): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
 4. **Predicted menstrual cycle summaries** (`menstrual_cycle_summary` rows with `predicted_cycle = TRUE`): wipe-and-replace per extract. Garmin recomputes its projected start dates as new data is logged, so a pure upsert would accumulate stale predicted rows whose `start_date` PK no longer matches the latest projection. The processor `DELETE`s all predicted rows for the user before inserting the new set; observed (logged) cycles use pattern 3 and survive untouched.
@@ -448,13 +448,13 @@ garmin verify
 garmin verify --db-path ~/my-garmin-data.db
 ```
 
-Read-only. Counts the tables present in the database, compares against the expected schema count, and runs SQLite's `PRAGMA integrity_check`. Useful as a smoke test after a manual schema change, a backup restore, or a `garmin migrate-cascade` run.
+Read-only. Reports the number of tables defined in the schema and runs SQLite's `PRAGMA integrity_check`. Useful as a smoke test after a manual schema change, a backup restore, or a `garmin migrate-cascade` run.
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 
-Exits with code 1 if the schema integrity check fails or the database does not exist.
+Exits with code 1 if the database does not exist.
 
 ### Retention: `prune`, `downsample`, `migrate-cascade`
 
@@ -471,7 +471,7 @@ Both `prune` and `downsample` use the same date-range semantics as `extract`:
 
 #### `garmin prune`
 
-Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, HRV R-R interval series, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
+Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, swim lengths, events, HRV R-R interval series, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
@@ -560,7 +560,7 @@ The command is **idempotent** (a database that already has `parent_activity_id` 
 | **PERSONAL_RECORDS** | All-time bests across sports | As achieved |
 | **RACE_PREDICTIONS** | Predicted race times | Periodic updates |
 | **USER_PROFILE** | Demographics, fitness metrics | Periodic updates |
-| **ACTIVITY** | FIT (binary) or TCX (XML) activity files with detailed time-series sensor data | Per activity |
+| **ACTIVITY** | FIT (binary) or TCX (XML) activity files with detailed time-series sensor data (plus laps, splits, pool-swim lengths, events, HRV, and session metrics from FIT) | Per activity |
 
 ### Database Schema
 
@@ -629,9 +629,9 @@ activity (main activity records)
 ├── running_agg_metrics (running-specific aggregates)
 ├── strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
 ├── strength_set (per-set data: reps, weight, ML-classified exercise name)
+├── supplemental_activity_metric (additional activity metrics, incl. FIT session metrics)
 ├── swim_length (per-length pool swim data: stroke, timing, strokes, cadence)
-├── swimming_agg_metrics (swimming-specific aggregates)
-└── supplemental_activity_metric (additional activity metrics)
+└── swimming_agg_metrics (swimming-specific aggregates)
 ```
 
 *Foreign keys: `activity` → `user.user_id`; all child tables → `activity.activity_id`*
@@ -827,7 +827,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 
 - **Updatable data** (activities, user profile, training status): uses `ON CONFLICT UPDATE` to refresh data when reprocessing.
 - **Immutable time-series** (heart rate, sleep movement, stress): uses `ON CONFLICT DO NOTHING` to prevent duplicates.
-- **FIT activity metrics** (time-series, laps, splits): uses delete+insert for idempotent reprocessing. The `ts_data_available` flag tracks time-series data availability.
+- **FIT activity metrics** (time-series, laps, splits, swim lengths, events, HRV): uses delete+insert for idempotent reprocessing. The `ts_data_available` flag tracks time-series data availability.
 - **Latest flags**: manages `latest=True` flags for `user_profile`, `personal_record`, `race_predictions` to track most recent values.
 - **Referential integrity**: explicit foreign key relationships with cascade deletes.
 - **Fully idempotent**: safe to reprocess the same date range multiple times without creating duplicate data.

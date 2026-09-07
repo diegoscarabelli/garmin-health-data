@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS running_agg_metrics (
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
--- Supplemental activity metrics with flexible key-value storage. Allows for additional metrics not captured in the main tables.
+-- Supplemental activity metrics with flexible key-value storage for metrics not captured in the main tables. Most rows are Connect API activity fields; a FIT-only subset (advanced cycling pedal dynamics, seated/standing power and cadence, mechanical work, subjective effort) is read from the FIT session message and upserted by (activity_id, metric).
 CREATE TABLE IF NOT EXISTS supplemental_activity_metric (
     activity_id BIGINT NOT NULL          -- References activity(activity_id).
     , metric TEXT NOT NULL                 -- Name of the metric being stored.
