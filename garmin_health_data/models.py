@@ -1047,6 +1047,39 @@ class ActivityLapMetric(Base, InsertBase):
     units = Column(Text)
 
 
+class SwimLength(Base, InsertBase):
+    """
+    Per-length pool swim data extracted from activity FIT files.
+
+    One row per `length` FIT message (each pool wall-to-wall segment), covering both
+    active (swum) and idle (rest) lengths. Companion to the activity-level rollup in
+    SwimmingAggMetrics; preserves per-length SWOLF, pace, stroke type, and rest
+    intervals that the aggregate does not. Uses delete+insert for reprocessing.
+    """
+
+    __tablename__ = "swim_length"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    length_idx = Column(Integer, primary_key=True)
+
+    # Length metadata.
+    length_type = Column(Text)
+    swim_stroke = Column(Text)
+    start_time = Column(DateTime(timezone=True))
+
+    # Timing and effort.
+    total_timer_time = Column(Float)
+    total_elapsed_time = Column(Float)
+    total_strokes = Column(Integer)
+    avg_speed = Column(Float)
+    avg_swimming_cadence = Column(Float)
+    total_calories = Column(Float)
+
+
 class ActivityPath(Base, InsertBase):
     """
     Eagerly materialized GPS path for activities.
