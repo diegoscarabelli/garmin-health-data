@@ -1047,6 +1047,39 @@ class ActivityLapMetric(Base, InsertBase):
     units = Column(Text)
 
 
+class SwimLength(Base, InsertBase):
+    """
+    Per-length pool swim data extracted from activity FIT files.
+
+    One row per `length` FIT message (each pool wall-to-wall segment), covering both
+    active (swum) and idle (rest) lengths. Companion to the activity-level rollup in
+    SwimmingAggMetrics; preserves per-length SWOLF, pace, stroke type, and rest
+    intervals that the aggregate does not. Uses delete+insert for reprocessing.
+    """
+
+    __tablename__ = "swim_length"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    length_idx = Column(Integer, primary_key=True)
+
+    # Length metadata.
+    length_type = Column(Text)
+    swim_stroke = Column(Text)
+    start_time = Column(DateTime(timezone=True))
+
+    # Timing and effort.
+    total_timer_time = Column(Float)
+    total_elapsed_time = Column(Float)
+    total_strokes = Column(Integer)
+    avg_speed = Column(Float)
+    avg_swimming_cadence = Column(Float)
+    total_calories = Column(Float)
+
+
 class ActivityPath(Base, InsertBase):
     """
     Eagerly materialized GPS path for activities.
@@ -1086,6 +1119,85 @@ class ActivityPath(Base, InsertBase):
             name="activity_path_point_count_matches",
         ),
         Index("activity_path_point_count_idx", "point_count"),
+    )
+
+
+class ActivityEvent(Base, InsertBase):
+    """
+    Generic per-activity events extracted from activity FIT files.
+
+    Stores every FIT `event` message (gear changes, rider position changes, timer
+    start/stop, recovery heart rate, off-course alerts, and other subtypes) in file
+    order. The common fields (`event`, `event_type`, `timestamp`) are first-class
+    columns; the heterogeneous per-subtype fields live in `data_json`, so every event
+    kind, including unmapped or future firmware ones, is captured without recurring
+    schema changes. Uses delete+insert in _process_fit_file for reprocessing
+    idempotency; not populated by TCX processing.
+    """
+
+    __tablename__ = "activity_event"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    event_idx = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    event = Column(Text, nullable=False)
+    event_type = Column(Text)
+    data_json = Column(JSON(none_as_null=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_json IS NULL OR json_valid(data_json)",
+            name="activity_event_data_json_valid",
+        ),
+        CheckConstraint(
+            "data_json IS NULL OR json_type(data_json) = 'object'",
+            name="activity_event_data_json_is_object",
+        ),
+    )
+
+
+class ActivityHrv(Base, InsertBase):
+    """
+    Per-activity beat-to-beat R-R interval series (raw HRV) from activity FIT files.
+
+    Stores the ordered sequence of intervals between consecutive heartbeats in seconds,
+    as recorded by a compatible heart rate source throughout an activity. Distinct from
+    the sleep `HRV` table, which holds Garmin's overnight 5-minute HRV summary in
+    milliseconds keyed by `sleep_id`; this table holds raw beat-to-beat data in seconds
+    keyed by `activity_id`. One row per activity that has HRV data; activities without a
+    compatible HR source have no row. Uses delete+insert in `_process_fit_file` for
+    reprocessing idempotency. TCX files carry no HRV message stream, so this table is
+    populated from FIT files only.
+    """
+
+    __tablename__ = "activity_hrv"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    rr_json = Column(JSON, nullable=False)
+    interval_count = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "json_valid(rr_json)",
+            name="activity_hrv_rr_json_valid",
+        ),
+        CheckConstraint(
+            "json_type(rr_json) = 'array'",
+            name="activity_hrv_rr_json_is_array",
+        ),
+        CheckConstraint(
+            "json_array_length(rr_json) = interval_count",
+            name="activity_hrv_interval_count_matches",
+        ),
+        Index("activity_hrv_interval_count_idx", "interval_count"),
     )
 
 

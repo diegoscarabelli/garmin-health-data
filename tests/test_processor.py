@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 from garmin_health_data.models import (
     HRV,
     Activity,
+    ActivityEvent,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -36,6 +38,7 @@ from garmin_health_data.models import (
     StrengthExercise,
     StrengthSet,
     SupplementalActivityMetric,
+    SwimLength,
     User,
 )
 from garmin_health_data.constants import SEMICIRCLES_TO_DEGREES
@@ -655,6 +658,623 @@ class TestProcessFitFile:
         run_with_frames(run3_frames)
 
         assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
+
+    def test_process_fit_file_creates_activity_hrv(self, db_session: Session):
+        """
+        Hrv frames flatten into a single ordered activity_hrv row.
+
+        Each frame's `time` field is a tuple of up to 5 R-R intervals right-padded with
+        None; null padding is dropped and values are appended across frames in recorded
+        order, with interval_count matching the flattened length.
+        """
+        _seed_activity(db_session)
+
+        hrv_frame_1 = _make_frame(
+            "hrv", [_make_field("time", (0.528, 0.527, None, None, None))]
+        )
+        hrv_frame_2 = _make_frame(
+            "hrv", [_make_field("time", (0.531, None, None, None, None))]
+        )
+        hrv_frame_3 = _make_frame(
+            "hrv", [_make_field("time", (0.533, 0.539, None, None, None))]
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [hrv_frame_1, hrv_frame_2, hrv_frame_3]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.activity_id == 12345
+        assert row.interval_count == 5
+        # SQLAlchemy JSON auto-deserializes to a Python list on read.
+        assert isinstance(row.rr_json, list)
+        assert row.rr_json == pytest.approx([0.528, 0.527, 0.531, 0.533, 0.539])
+
+    def test_process_fit_file_no_hrv_skips_activity_hrv(self, db_session: Session):
+        """
+        Files with no hrv frames produce zero activity_hrv rows and do not error.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        record_frame = _make_frame(
+            "record",
+            [
+                _make_field("timestamp", ts),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([record_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
+
+    def test_process_fit_file_hrv_non_iterable_time_skipped(self, db_session: Session):
+        """
+        A malformed (non-iterable) hrv `time` value is skipped without aborting the
+        file; other valid hrv frames are still processed.
+        """
+        _seed_activity(db_session)
+
+        bad_frame = _make_frame("hrv", [_make_field("time", 0.5)])
+        good_frame = _make_frame(
+            "hrv", [_make_field("time", (0.52, 0.53, None, None, None))]
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [bad_frame, good_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 2
+        assert rows[0].rr_json == pytest.approx([0.52, 0.53])
+
+    def test_process_fit_file_reprocessing_updates_hrv(self, db_session: Session):
+        """
+        Re-running replaces the existing activity_hrv row (delete+insert).
+
+        Reprocessing identical frames is idempotent: still exactly one row with the
+        same content.
+        """
+        _seed_activity(db_session)
+
+        def run_with_frames(frames: list) -> None:
+            processor = self._make_processor()
+            with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+                mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+                mock_fitdecode.FitReader.return_value = _mock_fit_reader(frames)
+                processor._process_fit_file(Path(FIT_FILENAME), db_session)
+            db_session.commit()
+
+        frames = [
+            _make_frame("hrv", [_make_field("time", (0.5, 0.51, None, None, None))]),
+            _make_frame("hrv", [_make_field("time", (0.52, None, None, None, None))]),
+        ]
+
+        # First run: 3 intervals.
+        run_with_frames(frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 3
+        assert rows[0].rr_json == pytest.approx([0.5, 0.51, 0.52])
+
+        # Re-run identical frames: still exactly one row, same content
+        # (idempotent reprocessing).
+        run_with_frames(frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 3
+        assert rows[0].rr_json == pytest.approx([0.5, 0.51, 0.52])
+
+        # Re-run with different frames -> delete+insert replaces content.
+        new_frames = [
+            _make_frame("hrv", [_make_field("time", (0.6, None, None, None, None))]),
+        ]
+        run_with_frames(new_frames)
+        rows = db_session.execute(select(ActivityHrv)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].interval_count == 1
+        assert rows[0].rr_json == pytest.approx([0.6])
+
+        # Re-run with no hrv frames at all -> existing row deleted, no new row.
+        no_hrv_frames = [
+            _make_frame(
+                "record",
+                [
+                    _make_field(
+                        "timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+                    ),
+                    _make_field("heart_rate", 150, "bpm"),
+                ],
+            ),
+        ]
+        run_with_frames(no_hrv_frames)
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
+
+    def test_process_fit_file_creates_activity_event_rows(self, db_session: Session):
+        """
+        Event frames (gear change, rider position change, timer) produce ActivityEvent
+        rows with correct event_idx ordering, event/event_type columns, and data_json
+        contents built from the remaining named fields.
+        """
+        _seed_activity(db_session)
+
+        ts0 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts1 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+        ts2 = datetime(2024, 1, 1, 8, 0, 3, tzinfo=timezone.utc)
+
+        gear_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts0),
+                _make_field("event", "rear_gear_change"),
+                _make_field("event_type", "marker"),
+                _make_field("front_gear", 34),
+                _make_field("front_gear_num", 1),
+                _make_field("rear_gear", 15),
+                _make_field("rear_gear_num", 5),
+                _make_field("gear_change_data", 218107937),
+            ],
+        )
+        position_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts1),
+                _make_field("event", "rider_position_change"),
+                _make_field("event_type", "marker"),
+                _make_field("rider_position", "seated"),
+            ],
+        )
+        timer_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts2),
+                _make_field("event", "timer"),
+                _make_field("event_type", "start"),
+                _make_field("timer_trigger", "manual"),
+                _make_field("event_group", 0),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [gear_frame, position_frame, timer_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        events = (
+            db_session.execute(select(ActivityEvent).order_by(ActivityEvent.event_idx))
+            .scalars()
+            .all()
+        )
+        assert len(events) == 3
+
+        assert events[0].event_idx == 0
+        assert events[0].event == "rear_gear_change"
+        assert events[0].event_type == "marker"
+        # SQLite drops tzinfo on round-trip (same as ActivityTsMetric.timestamp).
+        assert events[0].timestamp == ts0.replace(tzinfo=None)
+        assert events[0].data_json == {
+            "front_gear": 34,
+            "front_gear_num": 1,
+            "rear_gear": 15,
+            "rear_gear_num": 5,
+            "gear_change_data": 218107937,
+        }
+
+        assert events[1].event_idx == 1
+        assert events[1].event == "rider_position_change"
+        assert events[1].event_type == "marker"
+        assert events[1].data_json == {"rider_position": "seated"}
+
+        assert events[2].event_idx == 2
+        assert events[2].event == "timer"
+        assert events[2].event_type == "start"
+        assert events[2].data_json == {"timer_trigger": "manual", "event_group": 0}
+
+    def test_process_fit_file_event_data_json_none_when_no_extra_fields(
+        self, db_session: Session
+    ):
+        """
+        An event frame with only timestamp/event/event_type fields stores data_json=None
+        rather than an empty dict.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        timer_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts),
+                _make_field("event", "timer"),
+                _make_field("event_type", "stop"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([timer_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        event = db_session.execute(select(ActivityEvent)).scalars().first()
+        assert event is not None
+        assert event.event == "timer"
+        assert event.event_type == "stop"
+        assert event.data_json is None
+
+    def test_process_fit_file_event_unmapped_int_stored_as_text(
+        self, db_session: Session
+    ):
+        """
+        Enum values fitdecode cannot name (e.g. unmapped event codes 39/55, as seen on
+        running activities) arrive as raw ints; they are stored as text so `event` stays
+        a uniform TEXT column.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        unmapped_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts),
+                _make_field("event", 39),
+                _make_field("data", 12345),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([unmapped_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        event = db_session.execute(select(ActivityEvent)).scalars().first()
+        assert event.event == "39"
+        assert event.event_type is None
+        assert event.data_json == {"data": 12345}
+
+    def test_process_fit_file_event_datetime_field_serialized_to_iso(
+        self, db_session: Session
+    ):
+        """
+        A datetime-valued field other than `timestamp` is serialized to an ISO 8601
+        string in data_json, since JSON has no native datetime type.
+
+        Defensive
+        coverage: no currently observed event subtype emits a second datetime field,
+        but a future firmware/subtype could.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        local_ts = datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc)
+        gear_frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts),
+                _make_field("event", "front_gear_change"),
+                _make_field("local_timestamp", local_ts),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([gear_frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        event = db_session.execute(select(ActivityEvent)).scalars().first()
+        assert event.data_json == {"local_timestamp": local_ts.isoformat()}
+
+    def test_process_fit_file_event_excludes_unknown_fields(self, db_session: Session):
+        """
+        Fields whose name contains "unknown" (fitdecode's placeholder for undocumented
+        field numbers) are excluded from data_json, matching the record/split/lap field-
+        filtering convention.
+        """
+        _seed_activity(db_session)
+
+        ts = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        frame = _make_frame(
+            "event",
+            [
+                _make_field("timestamp", ts),
+                _make_field("event", "recovery_hr"),
+                _make_field("unknown_87", 42),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader([frame])
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        event = db_session.execute(select(ActivityEvent)).scalars().first()
+        assert event.event == "recovery_hr"
+        assert event.data_json is None
+
+    def test_process_fit_file_event_reprocessing_idempotent(self, db_session: Session):
+        """
+        Re-running FIT processing for the same activity deletes prior activity_event
+        rows before inserting the new ones, so row count stays stable rather than
+        doubling.
+        """
+        _seed_activity(db_session)
+
+        ts0 = datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+        ts1 = datetime(2024, 1, 1, 8, 0, 2, tzinfo=timezone.utc)
+        frames = [
+            _make_frame(
+                "event",
+                [
+                    _make_field("timestamp", ts0),
+                    _make_field("event", "rear_gear_change"),
+                    _make_field("rear_gear", 15),
+                ],
+            ),
+            _make_frame(
+                "event",
+                [
+                    _make_field("timestamp", ts1),
+                    _make_field("event", "rider_position_change"),
+                    _make_field("rider_position", "standing"),
+                ],
+            ),
+        ]
+
+        def run() -> None:
+            processor = self._make_processor()
+            with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+                mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+                mock_fitdecode.FitReader.return_value = _mock_fit_reader(frames)
+                processor._process_fit_file(Path(FIT_FILENAME), db_session)
+            db_session.commit()
+
+        run()
+        assert db_session.scalar(select(func.count()).select_from(ActivityEvent)) == 2
+
+        run()
+        assert db_session.scalar(select(func.count()).select_from(ActivityEvent)) == 2
+
+
+# --- Swim length tests -------------------------------------------------------
+
+
+class TestProcessFitFileSwimLength:
+    """
+    Tests for per-length pool swim data (`length` FIT frames) in _process_fit_file.
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        """
+        Create a GarminProcessor with a dummy file set.
+        """
+        file_set = FileSet(file_paths=[], files={})
+        return GarminProcessor(file_set=file_set, session=MagicMock())
+
+    def test_process_fit_file_swim_length_active_and_idle(self, db_session: Session):
+        """
+        Active and idle length frames produce typed swim_length rows: the active length
+        carries stroke/timing/stroke-count data, and the idle length (which the device
+        never emits a swim_stroke field for) stores a NULL swim_stroke.
+        """
+        _seed_activity(db_session)
+
+        active_start = datetime(2024, 1, 1, 8, 0, 0)
+        idle_start = datetime(2024, 1, 1, 8, 0, 36)
+
+        active_frame = _make_frame(
+            "length",
+            [
+                _make_field("message_index", 0),
+                _make_field("length_type", "active"),
+                _make_field("swim_stroke", "freestyle"),
+                _make_field("start_time", active_start),
+                _make_field("total_timer_time", 36.0, "s"),
+                _make_field("total_elapsed_time", 36.0, "s"),
+                _make_field("total_strokes", 13),
+                _make_field("avg_speed", 0.635, "m/s"),
+                _make_field("avg_swimming_cadence", 22.0, "strokes/min"),
+            ],
+        )
+        # Idle (rest) lengths realistically carry no swim_stroke or stroke-
+        # count fields at all (the device simply doesn't emit them).
+        idle_frame = _make_frame(
+            "length",
+            [
+                _make_field("message_index", 1),
+                _make_field("length_type", "idle"),
+                _make_field("start_time", idle_start),
+                _make_field("total_timer_time", 15.0, "s"),
+                _make_field("total_elapsed_time", 15.0, "s"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [active_frame, idle_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = (
+            db_session.execute(select(SwimLength).order_by(SwimLength.length_idx))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+
+        active_row, idle_row = rows
+        assert active_row.length_idx == 0
+        assert active_row.length_type == "active"
+        assert active_row.swim_stroke == "freestyle"
+        # SQLite drops tzinfo on read-back; DB round trip yields a naive
+        # datetime holding the same UTC wall-clock value.
+        assert active_row.start_time == active_start
+        assert active_row.total_timer_time == 36.0
+        assert active_row.total_elapsed_time == 36.0
+        assert active_row.total_strokes == 13
+        assert active_row.avg_speed == 0.635
+        assert active_row.avg_swimming_cadence == 22.0
+        assert active_row.total_calories is None
+
+        assert idle_row.length_idx == 1
+        assert idle_row.length_type == "idle"
+        assert idle_row.swim_stroke is None
+        assert idle_row.start_time == idle_start
+        assert idle_row.total_timer_time == 15.0
+        assert idle_row.total_elapsed_time == 15.0
+        assert idle_row.total_strokes is None
+        assert idle_row.avg_speed is None
+        assert idle_row.avg_swimming_cadence is None
+
+    def test_process_fit_file_swim_length_idempotent_reprocessing(
+        self, db_session: Session
+    ):
+        """
+        Re-running deletes prior swim_length rows and inserts fresh data, mirroring the
+        delete+insert idempotency already covered for ts/lap/split metrics.
+        """
+        _seed_activity(db_session)
+
+        first_frames = [
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 0),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "freestyle"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 0)),
+                    _make_field("total_timer_time", 36.0, "s"),
+                    _make_field("total_strokes", 13),
+                ],
+            ),
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 1),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "breaststroke"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 36)),
+                    _make_field("total_timer_time", 40.0, "s"),
+                    _make_field("total_strokes", 9),
+                ],
+            ),
+        ]
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(first_frames)
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(SwimLength)) == 2
+
+        # Reprocess with a single, corrected length replacing the prior two.
+        second_frames = [
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 0),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "backstroke"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 0)),
+                    _make_field("total_timer_time", 30.0, "s"),
+                    _make_field("total_strokes", 11),
+                ],
+            ),
+        ]
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(second_frames)
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        rows = db_session.execute(select(SwimLength)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].length_idx == 0
+        assert rows[0].swim_stroke == "backstroke"
+        assert rows[0].total_timer_time == 30.0
+        assert rows[0].total_strokes == 11
+
+    def test_process_fit_file_no_length_frames_creates_no_swim_length_rows(
+        self, db_session: Session
+    ):
+        """
+        Non-swim activities (no length frames) leave swim_length empty and record/lap
+        processing is unaffected.
+        """
+        _seed_activity(db_session)
+
+        record_frame = _make_frame(
+            "record",
+            [
+                _make_field(
+                    "timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+                ),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+        lap_frame = _make_frame(
+            "lap",
+            [_make_field("total_elapsed_time", 300.0, "s")],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [record_frame, lap_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(SwimLength)) == 0
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 1
+        )
 
 
 # --- FIT session-frame supplemental metric tests ----------------------------
@@ -2934,6 +3554,8 @@ class TestProcessTcxFile:
     def test_success_inserts_ts_lap_and_path(self, db_session: Session, tmp_path: Path):
         """
         Full TCX parse: correct ts_metric, lap_metric, and activity_path row counts.
+
+        TCX has no HRV message stream, so activity_hrv stays empty (unaffected).
         """
         _seed_activity(db_session)
         path = _write_tcx(tmp_path, _MINIMAL_TCX)
@@ -2955,6 +3577,8 @@ class TestProcessTcxFile:
         path_row = db_session.execute(select(ActivityPath)).scalars().first()
         assert path_row is not None
         assert path_row.point_count == 2
+        # TCX has no HRV concept.
+        assert db_session.scalar(select(func.count()).select_from(ActivityHrv)) == 0
 
     def test_ts_data_available_set_true(self, db_session: Session, tmp_path: Path):
         """

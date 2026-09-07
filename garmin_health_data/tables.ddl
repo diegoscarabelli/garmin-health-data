@@ -778,6 +778,24 @@ CREATE TABLE IF NOT EXISTS activity_lap_metric (
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
+-- Per-length pool swim data extracted from activity FIT files, one row per length message (each pool wall-to-wall segment). Companion to the activity-level rollup in swimming_agg_metrics: preserves per-length SWOLF, pace, stroke type, and rest intervals the aggregate does not. Both active (swum) and idle (rest) lengths are stored.
+CREATE TABLE IF NOT EXISTS swim_length (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which swim activity this length belongs to.
+    , length_idx INTEGER NOT NULL          -- message_index; the length's position in the swim (0-based).
+    , length_type TEXT                     -- 'active' (a swum length) or 'idle' (a rest/pause between sets).
+    , swim_stroke TEXT                     -- Detected stroke (freestyle, backstroke, breaststroke, drill, ...). NULL for idle lengths.
+    , start_time DATETIME                  -- When the length started.
+    , total_timer_time FLOAT               -- Seconds to complete the length (moving time).
+    , total_elapsed_time FLOAT             -- Elapsed seconds including pauses.
+    , total_strokes INTEGER                -- Strokes taken during the length.
+    , avg_speed FLOAT                      -- Average speed for the length in m/s.
+    , avg_swimming_cadence FLOAT           -- Average cadence in strokes per minute.
+    , total_calories FLOAT                 -- Calories for the length (often NULL).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id, length_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+);
+
 -- Eagerly materialized GPS path for activities, populated during FIT file processing. Stores per-activity ordered coordinate sequences as a JSON array of [longitude, latitude] pairs in decimal degrees, sorted ascending by timestamp. One row per activity with GPS data; activities without GPS samples (e.g., indoor workouts) have no row.
 CREATE TABLE IF NOT EXISTS activity_path (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this GPS path belongs to. One row per activity.
@@ -795,6 +813,43 @@ CREATE TABLE IF NOT EXISTS activity_path (
 
 CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
 ON activity_path (point_count);
+
+-- Generic per-activity events extracted from activity FIT files, capturing every FIT `event` message (gear changes, rider position changes, timer start/stop, recovery heart rate, off-course alerts, and other subtypes). Each record represents a single event in file order. Event-specific fields (gear teeth/indices, rider_position, timer_trigger, data, ...) live in data_json so every event kind, including unmapped or future firmware ones, is captured without recurring schema changes.
+CREATE TABLE IF NOT EXISTS activity_event (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this event belongs to.
+    , event_idx INTEGER NOT NULL           -- Ordinal of the event within the activity (0-based), preserving FIT file order.
+    , timestamp DATETIME NOT NULL          -- When the event occurred.
+    , event TEXT NOT NULL                  -- Event kind (front_gear_change, rear_gear_change, rider_position_change, timer, recovery_hr, off_course, ...).
+    , event_type TEXT                      -- Event qualifier (start, stop, marker, ...).
+    , data_json JSON                       -- Remaining event-specific fields as a JSON object (gear teeth/indices, rider_position, timer_trigger, data, ...). NULL when the event carries no extra fields.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id, event_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+    , CONSTRAINT activity_event_data_json_valid CHECK (
+        data_json IS NULL OR JSON_VALID(data_json)
+    )
+    , CONSTRAINT activity_event_data_json_is_object CHECK (
+        data_json IS NULL OR JSON_TYPE(data_json) = 'object'
+    )
+);
+
+-- Per-activity beat-to-beat R-R interval series (raw HRV) extracted from activity FIT files. Stores the ordered sequence of intervals between consecutive heartbeats in seconds, as recorded by a compatible heart rate source during the activity. Distinct from the sleep `hrv` table, which holds Garmin''s overnight 5-minute HRV summary in milliseconds keyed by sleep_id; this table holds raw beat-to-beat data in seconds keyed by activity_id. One row per activity with HRV data; activities without a compatible HR source have no row. TCX files carry no HRV message stream, so this table is populated from FIT files only.
+CREATE TABLE IF NOT EXISTS activity_hrv (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). One row per activity.
+    , rr_json JSON NOT NULL              -- Ordered array of beat-to-beat R-R intervals in seconds, in recorded order.
+    , interval_count INTEGER NOT NULL    -- Number of R-R intervals in rr_json. Denormalized for cheap filtering.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+    , CONSTRAINT activity_hrv_rr_json_valid CHECK (JSON_VALID(rr_json))
+    , CONSTRAINT activity_hrv_rr_json_is_array CHECK (JSON_TYPE(rr_json) = 'array')
+    , CONSTRAINT activity_hrv_interval_count_matches CHECK (
+        JSON_ARRAY_LENGTH(rr_json) = interval_count
+    )
+);
+
+CREATE INDEX IF NOT EXISTS activity_hrv_interval_count_idx
+ON activity_hrv (interval_count);
 
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
 CREATE TABLE IF NOT EXISTS strength_exercise (
