@@ -3585,15 +3585,18 @@ class GarminProcessor(Processor):
                     # remaining values are appended in recorded order.
                     elif frame.name == "hrv":
                         for field in frame.fields:
-                            if field.name == "time" and field.value is not None:
-                                try:
-                                    rr_values.extend(
-                                        v for v in field.value if v is not None
-                                    )
-                                except TypeError:
-                                    # Non-iterable `time` value; skip this
-                                    # frame rather than abort the whole file.
-                                    continue
+                            if field.name == "time" and isinstance(
+                                field.value, (tuple, list)
+                            ):
+                                # Keep only numeric R-R intervals: drop the None
+                                # padding and any non-numeric entries, and coerce
+                                # to float for JSON serialization. bool is
+                                # excluded since it is a subclass of int.
+                                for interval in field.value:
+                                    if isinstance(
+                                        interval, (int, float)
+                                    ) and not isinstance(interval, bool):
+                                        rr_values.append(float(interval))
 
         # Convert FIT semicircles to decimal degrees for path materialization.
         gps_records_deg = [
