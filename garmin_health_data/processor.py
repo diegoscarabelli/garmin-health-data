@@ -3356,7 +3356,8 @@ class GarminProcessor(Processor):
         data.
 
         Processes FIT file using fitdecode library, extracts record, split, and lap
-        frames, and stores metrics via delete+insert for idempotent reprocessing.
+        frames, and stores those record/split/lap metrics via delete+insert for
+        idempotent reprocessing (the FIT `session` metrics below use upsert instead).
         Activities with GPS samples also get an eagerly materialized `ActivityPath` row
         holding an ordered [lon, lat] array sorted by timestamp, ready for downstream
         path-layer visualization. Updates `ts_data_available` flag based on whether
@@ -3606,7 +3607,9 @@ class GarminProcessor(Processor):
 
                         for metric_name in _FIT_SESSION_SCALAR_METRICS:
                             value = field_map.get(metric_name)
-                            if value is not None:
+                            # Only accept numeric values; skip anything float()
+                            # would reject, mirroring the record/split/lap paths.
+                            if isinstance(value, (int, float, bool)):
                                 session_fields[metric_name] = float(value)
 
                         for metric_name in _FIT_SESSION_POSITION_PAIR_METRICS:
@@ -3614,9 +3617,9 @@ class GarminProcessor(Processor):
                             if not isinstance(pair, (tuple, list)) or len(pair) != 2:
                                 continue
                             seated, standing = pair
-                            if seated is not None:
+                            if isinstance(seated, (int, float, bool)):
                                 session_fields[f"{metric_name}_seated"] = float(seated)
-                            if standing is not None:
+                            if isinstance(standing, (int, float, bool)):
                                 session_fields[f"{metric_name}_standing"] = float(
                                     standing
                                 )
