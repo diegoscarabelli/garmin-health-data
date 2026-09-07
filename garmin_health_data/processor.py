@@ -34,6 +34,7 @@ from garmin_health_data.constants import (
 from garmin_health_data.models import (
     Acclimation,
     Activity,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -3185,18 +3186,22 @@ class GarminProcessor(Processor):
         gps_records_deg: List[tuple],
         session: Session,
         split_metrics: Optional[List[ActivitySplitMetric]] = None,
+        rr_values: Optional[List[float]] = None,
     ) -> None:
         """
         Persist parsed activity metrics with idempotent delete+insert semantics.
 
-        Replaces all existing ts/split/lap/path rows for ``activity_id`` and bulk-
+        Replaces all existing ts/split/lap/path/hrv rows for ``activity_id`` and bulk-
         inserts the new ones. Coalesces duplicate ts_metrics by ``(timestamp, name)`` to
         avoid UNIQUE-constraint collisions. Materializes ``activity_path`` from
-        ``gps_records_deg`` (sorted by timestamp before insert). Updates
-        ``existing_activity.ts_data_available``.
+        ``gps_records_deg`` (sorted by timestamp before insert) and ``activity_hrv``
+        from ``rr_values``. Updates ``existing_activity.ts_data_available``.
 
         Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
         pass an empty list for formats that have splits but found none in this file.
+        Same convention for ``rr_values``: ``None`` for source formats with no HRV
+        message stream (e.g. TCX); an empty list for HRV-capable formats (FIT) that
+        found no ``hrv`` frames in this file.
 
         :param activity_id: Activity primary key.
         :param file_path: Source file path, used in log messages only.
@@ -3209,6 +3214,8 @@ class GarminProcessor(Processor):
         :param session: SQLAlchemy session.
         :param split_metrics: Split metric instances, or ``None`` if the source format
             has no splits.
+        :param rr_values: Beat-to-beat R-R intervals in seconds, in recorded order, or
+            ``None`` if the source format has no HRV message stream.
         """
         # Flush so any pending session state settles before bulk delete.
         session.flush()
@@ -3221,6 +3228,7 @@ class GarminProcessor(Processor):
             ActivitySplitMetric,
             ActivityLapMetric,
             ActivityPath,
+            ActivityHrv,
         ):
             session.execute(
                 delete(model)
@@ -3318,16 +3326,40 @@ class GarminProcessor(Processor):
                 fg="blue",
             )
 
+        if rr_values is not None:
+            if rr_values:
+                session.execute(
+                    insert(ActivityHrv),
+                    [
+                        {
+                            "activity_id": activity_id,
+                            "rr_json": rr_values,
+                            "interval_count": len(rr_values),
+                        }
+                    ],
+                )
+                click.echo(f"Processed {len(rr_values)} HRV R-R intervals.")
+            else:
+                # HRV is only present in activities recorded with a
+                # compatible heart rate source, so this is info rather than
+                # a warning.
+                click.secho(
+                    "ℹ️ No HRV data found, skipping activity_hrv materialization.",
+                    fg="blue",
+                )
+
     def _process_fit_file(self, file_path: Path, session: Session):
         """
         Process a FIT file and extract time-series, split, lap, and GPS path data.
 
-        Processes FIT file using fitdecode library, extracts record, split, and lap
+        Processes FIT file using fitdecode library, extracts record, split, lap, and hrv
         frames, and stores metrics via delete+insert for idempotent reprocessing.
         Activities with GPS samples also get an eagerly materialized `ActivityPath` row
         holding an ordered [lon, lat] array sorted by timestamp, ready for downstream
-        path-layer visualization. Updates `ts_data_available` flag based on whether
-        time-series records were found.
+        path-layer visualization. Activities with a compatible heart rate source also
+        get an eagerly materialized `ActivityHrv` row holding the ordered beat-to-beat
+        R-R interval series in seconds. Updates `ts_data_available` flag based on
+        whether time-series records were found.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -3376,6 +3408,7 @@ class GarminProcessor(Processor):
         ts_metrics = []
         split_metrics = []
         lap_metrics = []
+        rr_values: List[float] = []
         split_idx = 0
         lap_idx = 0
 
@@ -3546,6 +3579,25 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
+                    # Process hrv frames: beat-to-beat R-R intervals in seconds.
+                    # The `time` field is a tuple of up to 5 R-R intervals,
+                    # right-padded with None; null padding is dropped and the
+                    # remaining values are appended in recorded order.
+                    elif frame.name == "hrv":
+                        for field in frame.fields:
+                            if field.name == "time" and isinstance(
+                                field.value, (tuple, list)
+                            ):
+                                # Keep only numeric R-R intervals: drop the None
+                                # padding and any non-numeric entries, and coerce
+                                # to float for JSON serialization. bool is
+                                # excluded since it is a subclass of int.
+                                for interval in field.value:
+                                    if isinstance(
+                                        interval, (int, float)
+                                    ) and not isinstance(interval, bool):
+                                        rr_values.append(float(interval))
+
         # Convert FIT semicircles to decimal degrees for path materialization.
         gps_records_deg = [
             (
@@ -3565,6 +3617,7 @@ class GarminProcessor(Processor):
             gps_records_deg=gps_records_deg,
             session=session,
             split_metrics=split_metrics,
+            rr_values=rr_values,
         )
 
     def _process_activity_file(self, file_path: Path, session: Session):
@@ -3598,7 +3651,8 @@ class GarminProcessor(Processor):
         activity_lap_metric. Activities with GPS trackpoints also get a materialized
         activity_path row. Uses delete+insert for idempotent reprocessing.
 
-        TCX does not contain split data, so activity_split_metric is not populated.
+        TCX does not contain split data, so activity_split_metric is not populated. TCX
+        also has no HRV message stream, so activity_hrv is not populated.
 
         :param file_path: Path to the TCX file.
         :param session: SQLAlchemy Session object.
@@ -3787,7 +3841,9 @@ class GarminProcessor(Processor):
 
         # TCX coordinates are already in decimal degrees, and TCX has no split
         # concept (split_metrics=None suppresses both the insert and the
-        # "no split data" warning).
+        # "no split data" warning) and no HRV message stream (rr_values=None
+        # suppresses both the insert and the "no HRV data" message, the same
+        # way split_metrics=None does).
         self._persist_activity_metrics(
             activity_id=activity_id,
             file_path=file_path,
@@ -3797,4 +3853,5 @@ class GarminProcessor(Processor):
             gps_records_deg=gps_records,
             session=session,
             split_metrics=None,
+            rr_values=None,
         )

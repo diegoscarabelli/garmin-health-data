@@ -1089,6 +1089,47 @@ class ActivityPath(Base, InsertBase):
     )
 
 
+class ActivityHrv(Base, InsertBase):
+    """
+    Per-activity beat-to-beat R-R interval series (raw HRV) from activity FIT files.
+
+    Stores the ordered sequence of intervals between consecutive heartbeats in seconds,
+    as recorded by a compatible heart rate source throughout an activity. Distinct from
+    the sleep `HRV` table, which holds Garmin's overnight 5-minute HRV summary in
+    milliseconds keyed by `sleep_id`; this table holds raw beat-to-beat data in seconds
+    keyed by `activity_id`. One row per activity that has HRV data; activities without a
+    compatible HR source have no row. Uses delete+insert in `_process_fit_file` for
+    reprocessing idempotency. TCX files carry no HRV message stream, so this table is
+    populated from FIT files only.
+    """
+
+    __tablename__ = "activity_hrv"
+
+    activity_id = Column(
+        BigInteger,
+        ForeignKey("activity.activity_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    rr_json = Column(JSON, nullable=False)
+    interval_count = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "json_valid(rr_json)",
+            name="activity_hrv_rr_json_valid",
+        ),
+        CheckConstraint(
+            "json_type(rr_json) = 'array'",
+            name="activity_hrv_rr_json_is_array",
+        ),
+        CheckConstraint(
+            "json_array_length(rr_json) = interval_count",
+            name="activity_hrv_interval_count_matches",
+        ),
+        Index("activity_hrv_interval_count_idx", "interval_count"),
+    )
+
+
 class ActivityTsMetricDownsampled(Base, InsertBase):
     """
     Per-activity time-bucketed aggregates of `activity_ts_metric`.
