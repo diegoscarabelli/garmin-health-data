@@ -1113,12 +1113,16 @@ class ActivityEvent(Base, InsertBase):
     timestamp = Column(DateTime(timezone=True), nullable=False)
     event = Column(Text, nullable=False)
     event_type = Column(Text)
-    data_json = Column(JSON)
+    data_json = Column(JSON(none_as_null=True))
 
     __table_args__ = (
         CheckConstraint(
             "data_json IS NULL OR json_valid(data_json)",
             name="activity_event_data_json_valid",
+        ),
+        CheckConstraint(
+            "data_json IS NULL OR json_type(data_json) = 'object'",
+            name="activity_event_data_json_is_object",
         ),
     )
 

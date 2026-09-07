@@ -810,6 +810,9 @@ CREATE TABLE IF NOT EXISTS activity_event (
     , CONSTRAINT activity_event_data_json_valid CHECK (
         data_json IS NULL OR JSON_VALID(data_json)
     )
+    , CONSTRAINT activity_event_data_json_is_object CHECK (
+        data_json IS NULL OR JSON_TYPE(data_json) = 'object'
+    )
 );
 
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
