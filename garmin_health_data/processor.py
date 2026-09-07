@@ -3422,8 +3422,9 @@ class GarminProcessor(Processor):
         gps_records = []
 
         # Collect FIT `session`-message allowlisted metrics, keyed by metric
-        # name (see _FIT_SESSION_SCALAR_METRICS / _FIT_SESSION_POSITION_PAIR
-        # _METRICS above). Named `session_fields`, not `session`, so it
+        # name (see _FIT_SESSION_SCALAR_METRICS and
+        # _FIT_SESSION_POSITION_PAIR_METRICS above). Named `session_fields`, not
+        # `session`, so it
         # cannot shadow the SQLAlchemy `Session` parameter of this method. A
         # multi-sport FIT file carries one session frame per leg; keying by
         # metric name means a later leg's value for the same metric
@@ -3607,8 +3608,9 @@ class GarminProcessor(Processor):
 
                         for metric_name in _FIT_SESSION_SCALAR_METRICS:
                             value = field_map.get(metric_name)
-                            # Only accept numeric values; skip anything float()
-                            # would reject, mirroring the record/split/lap paths.
+                            # Accept only numeric int/float/bool values; skip
+                            # anything else so a stray non-numeric field cannot
+                            # raise and abort the whole file.
                             if isinstance(value, (int, float, bool)):
                                 session_fields[metric_name] = float(value)
 
