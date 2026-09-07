@@ -796,6 +796,17 @@ CREATE TABLE IF NOT EXISTS activity_path (
 CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
 ON activity_path (point_count);
 
+-- Per-activity beat-to-beat R-R interval series (raw HRV) extracted from activity FIT files. Stores the ordered sequence of intervals between consecutive heartbeats in seconds, as recorded by a compatible heart rate source during the activity. Distinct from the sleep `hrv` table, which holds Garmin''s overnight 5-minute HRV summary in milliseconds keyed by sleep_id; this table holds raw beat-to-beat data in seconds keyed by activity_id. One row per activity with HRV data; activities without a compatible HR source have no row. TCX files carry no HRV message stream, so this table is populated from FIT files only.
+CREATE TABLE IF NOT EXISTS activity_hrv (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). One row per activity.
+    , rr_json JSON NOT NULL              -- Ordered array of beat-to-beat R-R intervals in seconds, in recorded order.
+    , interval_count INTEGER NOT NULL    -- Number of R-R intervals in rr_json. Denormalized for cheap filtering.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+    , CONSTRAINT activity_hrv_rr_json_valid CHECK (JSON_VALID(rr_json))
+);
+
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
 CREATE TABLE IF NOT EXISTS strength_exercise (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this exercise belongs to.
