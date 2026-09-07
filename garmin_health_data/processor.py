@@ -3199,7 +3199,9 @@ class GarminProcessor(Processor):
 
         Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
         pass an empty list for formats that have splits but found none in this file.
-        Same convention for ``rr_values`` and formats with no HRV message stream.
+        Same convention for ``rr_values``: ``None`` for source formats with no HRV
+        message stream (e.g. TCX); an empty list for HRV-capable formats (FIT) that
+        found no ``hrv`` frames in this file.
 
         :param activity_id: Activity primary key.
         :param file_path: Source file path, used in log messages only.
@@ -3213,7 +3215,7 @@ class GarminProcessor(Processor):
         :param split_metrics: Split metric instances, or ``None`` if the source format
             has no splits.
         :param rr_values: Beat-to-beat R-R intervals in seconds, in recorded order, or
-            ``None``/empty if the source format or file has no HRV data.
+            ``None`` if the source format has no HRV message stream.
         """
         # Flush so any pending session state settles before bulk delete.
         session.flush()
@@ -3324,25 +3326,27 @@ class GarminProcessor(Processor):
                 fg="blue",
             )
 
-        if rr_values:
-            session.execute(
-                insert(ActivityHrv),
-                [
-                    {
-                        "activity_id": activity_id,
-                        "rr_json": rr_values,
-                        "interval_count": len(rr_values),
-                    }
-                ],
-            )
-            click.echo(f"Processed {len(rr_values)} HRV R-R intervals.")
-        else:
-            # HRV is only present in activities recorded with a compatible
-            # heart rate source, so this is info rather than a warning.
-            click.secho(
-                "ℹ️ No HRV data found, skipping activity_hrv materialization.",
-                fg="blue",
-            )
+        if rr_values is not None:
+            if rr_values:
+                session.execute(
+                    insert(ActivityHrv),
+                    [
+                        {
+                            "activity_id": activity_id,
+                            "rr_json": rr_values,
+                            "interval_count": len(rr_values),
+                        }
+                    ],
+                )
+                click.echo(f"Processed {len(rr_values)} HRV R-R intervals.")
+            else:
+                # HRV is only present in activities recorded with a
+                # compatible heart rate source, so this is info rather than
+                # a warning.
+                click.secho(
+                    "ℹ️ No HRV data found, skipping activity_hrv materialization.",
+                    fg="blue",
+                )
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
@@ -3835,7 +3839,8 @@ class GarminProcessor(Processor):
         # TCX coordinates are already in decimal degrees, and TCX has no split
         # concept (split_metrics=None suppresses both the insert and the
         # "no split data" warning) and no HRV message stream (rr_values=None
-        # is treated the same as an empty list: an info-level skip message).
+        # suppresses both the insert and the "no HRV data" message, the same
+        # way split_metrics=None does).
         self._persist_activity_metrics(
             activity_id=activity_id,
             file_path=file_path,

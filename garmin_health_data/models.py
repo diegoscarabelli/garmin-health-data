@@ -1118,6 +1118,15 @@ class ActivityHrv(Base, InsertBase):
             "json_valid(rr_json)",
             name="activity_hrv_rr_json_valid",
         ),
+        CheckConstraint(
+            "json_type(rr_json) = 'array'",
+            name="activity_hrv_rr_json_is_array",
+        ),
+        CheckConstraint(
+            "json_array_length(rr_json) = interval_count",
+            name="activity_hrv_interval_count_matches",
+        ),
+        Index("activity_hrv_interval_count_idx", "interval_count"),
     )
 
 

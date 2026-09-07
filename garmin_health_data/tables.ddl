@@ -805,7 +805,14 @@ CREATE TABLE IF NOT EXISTS activity_hrv (
     , PRIMARY KEY (activity_id)
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
     , CONSTRAINT activity_hrv_rr_json_valid CHECK (JSON_VALID(rr_json))
+    , CONSTRAINT activity_hrv_rr_json_is_array CHECK (JSON_TYPE(rr_json) = 'array')
+    , CONSTRAINT activity_hrv_interval_count_matches CHECK (
+        JSON_ARRAY_LENGTH(rr_json) = interval_count
+    )
 );
+
+CREATE INDEX IF NOT EXISTS activity_hrv_interval_count_idx
+ON activity_hrv (interval_count);
 
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
 CREATE TABLE IF NOT EXISTS strength_exercise (
