@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "garmin-health-data"
-version = "2.15.0"
+version = "2.16.0"
 description = "Download Garmin Connect health data as local files and load it into a SQLite database for analysis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +48,7 @@ dev = [
     "python-dotenv>=1.0",
     "black==25.9.0",
     "autoflake>=2.0",
-    "docformatter>=1.7",
+    "docformatter==1.7.7",
     "sqlfluff>=2.0",
     "pre-commit>=3.0",
     "flake8>=6.0",
