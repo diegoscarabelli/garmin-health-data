@@ -778,6 +778,24 @@ CREATE TABLE IF NOT EXISTS activity_lap_metric (
     , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
 );
 
+-- Per-length pool swim data extracted from activity FIT files, one row per length message (each pool wall-to-wall segment). Companion to the activity-level rollup in swimming_agg_metrics: preserves per-length SWOLF, pace, stroke type, and rest intervals the aggregate does not. Both active (swum) and idle (rest) lengths are stored.
+CREATE TABLE IF NOT EXISTS swim_length (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which swim activity this length belongs to.
+    , length_idx INTEGER NOT NULL          -- message_index; the length's position in the swim (0-based).
+    , length_type TEXT                     -- 'active' (a swum length) or 'idle' (a rest/pause between sets).
+    , swim_stroke TEXT                     -- Detected stroke (freestyle, backstroke, breaststroke, drill, ...). NULL for idle lengths.
+    , start_time DATETIME                  -- When the length started.
+    , total_timer_time FLOAT               -- Seconds to complete the length (moving time).
+    , total_elapsed_time FLOAT             -- Elapsed seconds including pauses.
+    , total_strokes INTEGER                -- Strokes taken during the length.
+    , avg_speed FLOAT                      -- Average speed for the length in m/s.
+    , avg_swimming_cadence FLOAT           -- Average cadence in strokes per minute.
+    , total_calories FLOAT                 -- Calories for the length (often NULL).
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id, length_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+);
+
 -- Eagerly materialized GPS path for activities, populated during FIT file processing. Stores per-activity ordered coordinate sequences as a JSON array of [longitude, latitude] pairs in decimal degrees, sorted ascending by timestamp. One row per activity with GPS data; activities without GPS samples (e.g., indoor workouts) have no row.
 CREATE TABLE IF NOT EXISTS activity_path (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this GPS path belongs to. One row per activity.

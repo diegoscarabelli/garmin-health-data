@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`swim_length` table for per-length pool swim data** ([#90](https://github.com/diegoscarabelli/garmin-health-data/issues/90)). FIT files record a `length` message for each pool length (each wall-to-wall segment) in a pool swim: `message_index`, `length_type` (`active` swum vs `idle` rest), `swim_stroke` (freestyle, backstroke, breaststroke, drill, ...), `start_time`, `total_timer_time`, `total_elapsed_time`, `total_strokes`, `avg_speed`, and `avg_swimming_cadence`. The FIT parser previously dropped these frames entirely, so pool swims kept only the activity-level rollup in `swimming_agg_metrics` (pool_length, active_lengths, avg SWOLF, ...). A new typed `swim_length` table — mirroring the existing `strength_set` precedent rather than the generic EAV lap/split tables, since `length` carries categorical fields (`length_type`, `swim_stroke`) and a datetime (`start_time`) that an EAV FLOAT `value` column can't hold — now captures every length, active and idle, enabling per-length SWOLF, pace, and rest-interval analysis that the aggregate rollup doesn't preserve. Populated in `_process_fit_file` alongside laps and splits, with the same delete+insert idempotent-reprocessing semantics; TCX has no length concept, so TCX-sourced activities store no rows.
+
 ## [2.14.1] - 2026-08-16
 
 ### Fixed

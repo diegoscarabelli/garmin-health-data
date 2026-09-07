@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
 
 ## Features
 
-- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits) as local files and loads them into a SQLite database in one pass.
+- 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits, per-length pool swim data) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
 - 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
@@ -413,7 +413,7 @@ If all five strategies are exhausted without success (uncommon — typically onl
 
 Duplicates are prevented through a four-tier approach:
 
-1. **Activity metrics from FIT or TCX files** (time-series, laps, splits) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits are FIT-only (TCX has no split concept).
+1. **Activity metrics from FIT or TCX files** (time-series, laps, splits, swim lengths) **and per-day menstrual cycle tags** (symptoms, moods, discharge): delete+insert pattern. Existing rows are deleted and fresh data re-inserted in the same transaction. For activity metrics this handles added/removed laps, splits, lengths, or records between reprocesses; the `ts_data_available` flag tracks whether time-series data exists. For menstrual cycle tags, it ensures user-removed symptoms/moods on Garmin Connect propagate to the local DB on the next extract. TCX is parsed for activities uploaded to Garmin Connect from older devices or third-party apps; splits and swim lengths are FIT-only (TCX has no split or length concept).
 2. **JSON wellness time-series** (heart rate, sleep movement, stress, body battery, etc.): `INSERT...ON CONFLICT DO NOTHING` for idempotent upserts.
 3. **Main records** (activities, sleep, user profile, menstrual cycle day, observed menstrual cycle summaries): `INSERT...ON CONFLICT DO UPDATE` to refresh existing records with new data.
 4. **Predicted menstrual cycle summaries** (`menstrual_cycle_summary` rows with `predicted_cycle = TRUE`): wipe-and-replace per extract. Garmin recomputes its projected start dates as new data is logged, so a pure upsert would accumulate stale predicted rows whose `start_date` PK no longer matches the latest projection. The processor `DELETE`s all predicted rows for the user before inserting the new set; observed (logged) cycles use pattern 3 and survive untouched.
@@ -564,7 +564,7 @@ The command is **idempotent** (a database that already has `parent_activity_id` 
 
 ### Database Schema
 
-The SQLite database contains 39 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 40 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -614,7 +614,7 @@ user (root table)
 
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (12 tables)**
+**Activities (13 tables)**
 
 ```
 activity (main activity records)
@@ -627,6 +627,7 @@ activity (main activity records)
 ├── running_agg_metrics (running-specific aggregates)
 ├── strength_exercise (per-exercise aggregates: sets, reps, volume, duration)
 ├── strength_set (per-set data: reps, weight, ML-classified exercise name)
+├── swim_length (per-length pool swim data: stroke, timing, strokes, cadence)
 ├── swimming_agg_metrics (swimming-specific aggregates)
 └── supplemental_activity_metric (additional activity metrics)
 ```
@@ -760,6 +761,7 @@ Check out [OpenETL's Garmin pipeline](https://github.com/diegoscarabelli/openetl
 - `running_agg_metrics`: running cadence, vertical oscillation, ground contact time, stride length, VO2 max.
 - `cycling_agg_metrics`: power metrics (avg/max/normalized), cadence, pedal dynamics, FTP.
 - `swimming_agg_metrics`: stroke count, SWOLF, pool length, stroke type.
+- `swim_length`: per-length breakdown of pool swims (stroke type, timing, stroke count, cadence, active/idle) from FIT `length` messages, the swimming analogue of lap/split data.
 - `strength_exercise`: per-exercise aggregates (sets, reps, volume, duration, max weight) from the activities list.
 - `strength_set`: per-set granular data (set type, duration, reps, weight, ML-classified exercise name/category) from the exercise sets API endpoint.
 

@@ -35,6 +35,7 @@ from garmin_health_data.models import (
     SpO2,
     StrengthExercise,
     StrengthSet,
+    SwimLength,
     User,
 )
 from garmin_health_data.constants import SEMICIRCLES_TO_DEGREES
@@ -654,6 +655,211 @@ class TestProcessFitFile:
         run_with_frames(run3_frames)
 
         assert db_session.scalar(select(func.count()).select_from(ActivityPath)) == 0
+
+
+# --- Swim length tests -------------------------------------------------------
+
+
+class TestProcessFitFileSwimLength:
+    """
+    Tests for per-length pool swim data (`length` FIT frames) in _process_fit_file.
+    """
+
+    def _make_processor(self) -> GarminProcessor:
+        """
+        Create a GarminProcessor with a dummy file set.
+        """
+        file_set = FileSet(file_paths=[], files={})
+        return GarminProcessor(file_set=file_set, session=MagicMock())
+
+    def test_process_fit_file_swim_length_active_and_idle(self, db_session: Session):
+        """
+        Active and idle length frames produce typed swim_length rows: the active length
+        carries stroke/timing/stroke-count data, and the idle length (which the device
+        never emits a swim_stroke field for) stores a NULL swim_stroke.
+        """
+        _seed_activity(db_session)
+
+        active_start = datetime(2024, 1, 1, 8, 0, 0)
+        idle_start = datetime(2024, 1, 1, 8, 0, 36)
+
+        active_frame = _make_frame(
+            "length",
+            [
+                _make_field("message_index", 0),
+                _make_field("length_type", "active"),
+                _make_field("swim_stroke", "freestyle"),
+                _make_field("start_time", active_start),
+                _make_field("total_timer_time", 36.0, "s"),
+                _make_field("total_elapsed_time", 36.0, "s"),
+                _make_field("total_strokes", 13),
+                _make_field("avg_speed", 0.635, "m/s"),
+                _make_field("avg_swimming_cadence", 22.0, "strokes/min"),
+            ],
+        )
+        # Idle (rest) lengths realistically carry no swim_stroke or stroke-
+        # count fields at all (the device simply doesn't emit them).
+        idle_frame = _make_frame(
+            "length",
+            [
+                _make_field("message_index", 1),
+                _make_field("length_type", "idle"),
+                _make_field("start_time", idle_start),
+                _make_field("total_timer_time", 15.0, "s"),
+                _make_field("total_elapsed_time", 15.0, "s"),
+            ],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [active_frame, idle_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+
+        db_session.commit()
+
+        rows = (
+            db_session.execute(select(SwimLength).order_by(SwimLength.length_idx))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 2
+
+        active_row, idle_row = rows
+        assert active_row.length_idx == 0
+        assert active_row.length_type == "active"
+        assert active_row.swim_stroke == "freestyle"
+        # SQLite drops tzinfo on read-back; DB round trip yields a naive
+        # datetime holding the same UTC wall-clock value.
+        assert active_row.start_time == active_start
+        assert active_row.total_timer_time == 36.0
+        assert active_row.total_elapsed_time == 36.0
+        assert active_row.total_strokes == 13
+        assert active_row.avg_speed == 0.635
+        assert active_row.avg_swimming_cadence == 22.0
+        assert active_row.total_calories is None
+
+        assert idle_row.length_idx == 1
+        assert idle_row.length_type == "idle"
+        assert idle_row.swim_stroke is None
+        assert idle_row.start_time == idle_start
+        assert idle_row.total_timer_time == 15.0
+        assert idle_row.total_elapsed_time == 15.0
+        assert idle_row.total_strokes is None
+        assert idle_row.avg_speed is None
+        assert idle_row.avg_swimming_cadence is None
+
+    def test_process_fit_file_swim_length_idempotent_reprocessing(
+        self, db_session: Session
+    ):
+        """
+        Re-running deletes prior swim_length rows and inserts fresh data, mirroring the
+        delete+insert idempotency already covered for ts/lap/split metrics.
+        """
+        _seed_activity(db_session)
+
+        first_frames = [
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 0),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "freestyle"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 0)),
+                    _make_field("total_timer_time", 36.0, "s"),
+                    _make_field("total_strokes", 13),
+                ],
+            ),
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 1),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "breaststroke"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 36)),
+                    _make_field("total_timer_time", 40.0, "s"),
+                    _make_field("total_strokes", 9),
+                ],
+            ),
+        ]
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(first_frames)
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(SwimLength)) == 2
+
+        # Reprocess with a single, corrected length replacing the prior two.
+        second_frames = [
+            _make_frame(
+                "length",
+                [
+                    _make_field("message_index", 0),
+                    _make_field("length_type", "active"),
+                    _make_field("swim_stroke", "backstroke"),
+                    _make_field("start_time", datetime(2024, 1, 1, 8, 0, 0)),
+                    _make_field("total_timer_time", 30.0, "s"),
+                    _make_field("total_strokes", 11),
+                ],
+            ),
+        ]
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(second_frames)
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        rows = db_session.execute(select(SwimLength)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].length_idx == 0
+        assert rows[0].swim_stroke == "backstroke"
+        assert rows[0].total_timer_time == 30.0
+        assert rows[0].total_strokes == 11
+
+    def test_process_fit_file_no_length_frames_creates_no_swim_length_rows(
+        self, db_session: Session
+    ):
+        """
+        Non-swim activities (no length frames) leave swim_length empty and record/lap
+        processing is unaffected.
+        """
+        _seed_activity(db_session)
+
+        record_frame = _make_frame(
+            "record",
+            [
+                _make_field(
+                    "timestamp", datetime(2024, 1, 1, 8, 0, 1, tzinfo=timezone.utc)
+                ),
+                _make_field("heart_rate", 150, "bpm"),
+            ],
+        )
+        lap_frame = _make_frame(
+            "lap",
+            [_make_field("total_elapsed_time", 300.0, "s")],
+        )
+
+        processor = self._make_processor()
+        with patch("garmin_health_data.processor.fitdecode") as mock_fitdecode:
+            mock_fitdecode.FIT_FRAME_DATA = fitdecode.FIT_FRAME_DATA
+            mock_fitdecode.FitReader.return_value = _mock_fit_reader(
+                [record_frame, lap_frame]
+            )
+            processor._process_fit_file(Path(FIT_FILENAME), db_session)
+        db_session.commit()
+
+        assert db_session.scalar(select(func.count()).select_from(SwimLength)) == 0
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityTsMetric)) == 1
+        )
+        assert (
+            db_session.scalar(select(func.count()).select_from(ActivityLapMetric)) == 1
+        )
 
 
 # --- Activity base upsert tests --------------------------------------------
