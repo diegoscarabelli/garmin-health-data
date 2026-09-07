@@ -378,7 +378,10 @@ class SupplementalActivityMetric(Base, UpsertBase):
     Supplemental activity aggregate metrics.
 
     This table captures any remaining metrics not covered by the main Activity table or
-    sport-specific aggregate tables using a flexible key-value structure.
+    sport-specific aggregate tables using a flexible key-value structure. Most rows are
+    Connect API activity fields; a FIT-only subset (advanced cycling pedal dynamics,
+    seated/standing power and cadence, mechanical work, and subjective effort) is read
+    from the FIT `session` message and upserted by `(activity_id, metric)`.
     """
 
     __tablename__ = "supplemental_activity_metric"

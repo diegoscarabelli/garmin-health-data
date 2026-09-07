@@ -3427,8 +3427,8 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series, split, lap, length, event, session,
-        and GPS path data.
+        Process a FIT file and extract time-series, split, lap, length, event, hrv,
+        session, and GPS path data.
 
         Uses the fitdecode library to extract record, split, lap, length, and event
         frames, storing those metrics via delete+insert for idempotent reprocessing.
@@ -3965,8 +3965,9 @@ class GarminProcessor(Processor):
         activity_lap_metric. Activities with GPS trackpoints also get a materialized
         activity_path row. Uses delete+insert for idempotent reprocessing.
 
-        TCX does not contain split data, so activity_split_metric is not populated. TCX
-        also has no HRV message stream, so activity_hrv is not populated.
+        TCX has no split, length, or event data, so activity_split_metric, swim_length,
+        and activity_event are not populated. TCX also has no HRV message stream, so
+        activity_hrv is not populated.
 
         :param file_path: Path to the TCX file.
         :param session: SQLAlchemy Session object.
@@ -4153,13 +4154,10 @@ class GarminProcessor(Processor):
                         except (ValueError, TypeError):
                             pass
 
-        # TCX coordinates are already in decimal degrees, and TCX has no split
-        # or event concept (split_metrics=None and event_rows=None suppress
-        # both the inserts and the "no data found" warnings).
-        # concept (split_metrics=None suppresses both the insert and the
-        # "no split data" warning) and no HRV message stream (rr_values=None
-        # suppresses both the insert and the "no HRV data" message, the same
-        # way split_metrics=None does).
+        # TCX coordinates are already in decimal degrees. TCX has no split,
+        # length, event, or HRV data, so the corresponding arguments are left
+        # None/empty below, suppressing both the inserts and the "no data
+        # found" messages for those metric types.
         self._persist_activity_metrics(
             activity_id=activity_id,
             file_path=file_path,
