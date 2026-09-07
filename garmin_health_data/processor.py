@@ -170,6 +170,38 @@ _MULTISPORT_SWIMMING_AGG_MAP = {
     "strokes": "totalNumberOfStrokes",
 }
 
+# FIT `session`-message scalar fields that are FIT-only (not captured by the Connect
+# API path into activity / cycling_agg_metrics / running_agg_metrics /
+# swimming_agg_metrics): advanced cycling pedal dynamics, mechanical work, and
+# subjective effort (see #91). Written 1:1 into supplemental_activity_metric, with the
+# field name reused as the metric name.
+_FIT_SESSION_SCALAR_METRICS = [
+    "avg_left_torque_effectiveness",
+    "avg_right_torque_effectiveness",
+    "avg_left_pedal_smoothness",
+    "avg_right_pedal_smoothness",
+    "avg_left_pco",
+    "avg_right_pco",
+    "time_standing",
+    "stand_count",
+    "threshold_power",
+    "avg_vam",
+    "total_work",
+    "workout_feel",
+    "workout_rpe",
+]
+
+# FIT `session`-message seated/standing pair fields (see #91). Each value is a
+# 2-element ``(seated, standing)`` tuple; unpacked into two
+# supplemental_activity_metric rows named ``<field>_seated`` / ``<field>_standing``,
+# skipping either slot that is None.
+_FIT_SESSION_POSITION_PAIR_METRICS = [
+    "avg_power_position",
+    "max_power_position",
+    "avg_cadence_position",
+    "max_cadence_position",
+]
+
 
 class GarminProcessor(Processor):
     """
@@ -3320,14 +3352,19 @@ class GarminProcessor(Processor):
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
-        Process a FIT file and extract time-series, split, lap, and GPS path data.
+        Process a FIT file and extract time-series, split, lap, session, and GPS path
+        data.
 
         Processes FIT file using fitdecode library, extracts record, split, and lap
         frames, and stores metrics via delete+insert for idempotent reprocessing.
         Activities with GPS samples also get an eagerly materialized `ActivityPath` row
         holding an ordered [lon, lat] array sorted by timestamp, ready for downstream
         path-layer visualization. Updates `ts_data_available` flag based on whether
-        time-series records were found.
+        time-series records were found. Also extracts an allowlist of FIT-only
+        `session`-message fields (advanced cycling pedal dynamics, mechanical work,
+        subjective effort; see `_FIT_SESSION_SCALAR_METRICS` and
+        `_FIT_SESSION_POSITION_PAIR_METRICS`) and upserts them into
+        `supplemental_activity_metric` via `_persist_fit_session_metrics`.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -3382,6 +3419,17 @@ class GarminProcessor(Processor):
         # Collect per-frame GPS samples for activity_path materialization.
         # Each element is (timestamp, lon_semicircles, lat_semicircles).
         gps_records = []
+
+        # Collect FIT `session`-message allowlisted metrics, keyed by metric
+        # name (see _FIT_SESSION_SCALAR_METRICS / _FIT_SESSION_POSITION_PAIR
+        # _METRICS above). Named `session_fields`, not `session`, so it
+        # cannot shadow the SQLAlchemy `Session` parameter of this method. A
+        # multi-sport FIT file carries one session frame per leg; keying by
+        # metric name means a later leg's value for the same metric
+        # overwrites an earlier leg's, matching how the Connect API's own
+        # `activityTrainingLoad` for the parent activity reflects the final
+        # leg's cumulative session value rather than any single leg's.
+        session_fields: Dict[str, float] = {}
 
         with fitdecode.FitReader(file_path) as fit:
             for frame in fit:
@@ -3546,6 +3594,33 @@ class GarminProcessor(Processor):
                                     # Skip fields that can't be converted to float.
                                     continue
 
+                    # Process session frames: pull the allowlisted FIT-only
+                    # fields (see module-level constants above) into
+                    # `session_fields`. Everything else in `session` restates
+                    # columns already populated from the Connect API
+                    # (distance/speed/HR/power/etc. in `activity` and the
+                    # sport-specific agg tables) and is intentionally not
+                    # collected here.
+                    elif frame.name == "session":
+                        field_map = {field.name: field.value for field in frame.fields}
+
+                        for metric_name in _FIT_SESSION_SCALAR_METRICS:
+                            value = field_map.get(metric_name)
+                            if value is not None:
+                                session_fields[metric_name] = float(value)
+
+                        for metric_name in _FIT_SESSION_POSITION_PAIR_METRICS:
+                            pair = field_map.get(metric_name)
+                            if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+                                continue
+                            seated, standing = pair
+                            if seated is not None:
+                                session_fields[f"{metric_name}_seated"] = float(seated)
+                            if standing is not None:
+                                session_fields[f"{metric_name}_standing"] = float(
+                                    standing
+                                )
+
         # Convert FIT semicircles to decimal degrees for path materialization.
         gps_records_deg = [
             (
@@ -3566,6 +3641,63 @@ class GarminProcessor(Processor):
             session=session,
             split_metrics=split_metrics,
         )
+
+        self._persist_fit_session_metrics(
+            activity_id=activity_id,
+            session_fields=session_fields,
+            session=session,
+        )
+
+    def _persist_fit_session_metrics(
+        self,
+        activity_id: int,
+        session_fields: Dict[str, float],
+        session: Session,
+    ) -> None:
+        """
+        Upsert FIT `session`-message metrics into supplemental_activity_metric.
+
+        Writes the FIT-only fields collected from the `session` frame(s) by
+        `_process_fit_file` (advanced cycling pedal dynamics, mechanical work,
+        subjective effort) using the same upsert-by-`(activity_id, metric)` pattern as
+        the Connect API path (`_process_supplemental_metrics`). Because these metric
+        names are never written by that API path, this upsert can never collide with
+        or overwrite its rows.
+
+        Upsert (rather than delete+insert) keeps reprocessing idempotent here: the set
+        of session fields present in a given FIT file is deterministic across
+        reprocesses of that same file, so re-upserting always writes the same values
+        for the same `(activity_id, metric)` keys, with no duplicate or stale rows.
+        This mirrors `_process_supplemental_metrics`, which has the same property and
+        the same limitation: a metric row from a prior run is not deleted if a later
+        run's source data no longer includes that field.
+
+        :param activity_id: Activity primary key.
+        :param session_fields: Metric name -> value collected from the FIT `session`
+            frame(s). Empty for activities with no session frame, or none of the
+            allowlisted fields (e.g. most non-cycling activities), in which case this
+            is a no-op.
+        :param session: SQLAlchemy Session object.
+        """
+        if not session_fields:
+            return
+
+        records = [
+            SupplementalActivityMetric(
+                activity_id=activity_id,
+                metric=metric_name,
+                value=value,
+            )
+            for metric_name, value in session_fields.items()
+        ]
+
+        upsert_model_instances(
+            session=session,
+            model_instances=records,
+            conflict_columns=["activity_id", "metric"],
+            on_conflict_update=True,
+        )
+        click.echo(f"Processed {len(records)} FIT session supplemental metrics.")
 
     def _process_activity_file(self, file_path: Path, session: Session):
         """
