@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`activity_event` table captures all FIT `event` messages** ([#88](https://github.com/diegoscarabelli/garmin-health-data/issues/88)). FIT files emit an `event` message for gear changes, rider position changes, timer start/stop, recovery heart rate, off-course alerts, and other subtypes; the parser previously handled only `record`/`split`/`lap` frames and silently dropped every `event` message. `_process_fit_file` now extracts each event frame into a new `activity_event` table: the common `event`/`event_type`/`timestamp` fields are first-class columns, while every other named field (gear teeth/indices, `rider_position`, `timer_trigger`, ...) lands in a `data_json` JSON column, so any current or future event subtype is captured without further schema changes. `event_idx` (not `timestamp`) anchors the primary key because two events can share a timestamp (e.g. a simultaneous gear change and rider-position change). Uses the same delete+insert idempotent-reprocessing pattern as the other FIT-derived tables; not populated by TCX processing, which has no event concept.
+
 ## [2.14.1] - 2026-08-16
 
 ### Fixed

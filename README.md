@@ -564,7 +564,7 @@ The command is **idempotent** (a database that already has `parent_activity_id` 
 
 ### Database Schema
 
-The SQLite database contains 39 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
+The SQLite database contains 40 tables organized by category. The complete schema is defined in [garmin_health_data/tables.ddl](garmin_health_data/tables.ddl) following the same pattern as the [openetl project](https://github.com/diegoscarabelli/openetl). The schema includes inline documentation comments for all tables and columns, which are preserved in the SQLite database itself:
 
 ```bash
 # View schema for a specific table
@@ -585,7 +585,7 @@ The database schema has been adapted from the original PostgreSQL/TimescaleDB [s
 - **Converted SERIAL to AUTOINCREMENT** — PostgreSQL `SERIAL` types converted to SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`.
 - **Replaced TimescaleDB hypertables** — time-series tables use regular SQLite tables with indexes on timestamp columns for efficient queries.
 - **SQLite-compatible upsert syntax** — uses SQLite's `INSERT ... ON CONFLICT` for handling duplicate records.
-- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`). The global SQLite >= 3.35 requirement under [Requirements](#requirements) is necessary but not sufficient: JSON1 functions are enabled by default in modern CPython builds but can be omitted in some custom or stripped-down SQLite builds. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support:
+- **JSON over JSONB** — PostgreSQL `JSONB` columns (e.g., `activity_path.path_json`, `activity_event.data_json`) are stored in SQLite as `JSON`/TEXT. CHECK constraints rely on SQLite JSON functions (`json_valid`, `json_type`, `json_array_length`). The global SQLite >= 3.35 requirement under [Requirements](#requirements) is necessary but not sufficient: JSON1 functions are enabled by default in modern CPython builds but can be omitted in some custom or stripped-down SQLite builds. If `CREATE TABLE` fails with errors about missing `json_valid` or `json_type`, verify JSON support:
 
   ```bash
   python - <<'PY'
@@ -614,10 +614,11 @@ user (root table)
 
 *Foreign keys: `user_profile` → `user.user_id`*
 
-**Activities (12 tables)**
+**Activities (13 tables)**
 
 ```
 activity (main activity records)
+├── activity_event (generic per-activity events: gear changes, rider position, timer, ...)
 ├── activity_lap_metric (lap-by-lap metrics)
 ├── activity_path (eagerly materialized GPS path as JSON array)
 ├── activity_split_metric (split data)

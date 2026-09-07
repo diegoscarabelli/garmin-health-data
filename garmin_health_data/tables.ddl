@@ -796,6 +796,22 @@ CREATE TABLE IF NOT EXISTS activity_path (
 CREATE INDEX IF NOT EXISTS activity_path_point_count_idx
 ON activity_path (point_count);
 
+-- Generic per-activity events extracted from activity FIT files, capturing every FIT `event` message (gear changes, rider position changes, timer start/stop, recovery heart rate, off-course alerts, and other subtypes). Each record represents a single event in file order. Event-specific fields (gear teeth/indices, rider_position, timer_trigger, data, ...) live in data_json so every event kind, including unmapped or future firmware ones, is captured without recurring schema changes.
+CREATE TABLE IF NOT EXISTS activity_event (
+    activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this event belongs to.
+    , event_idx INTEGER NOT NULL           -- Ordinal of the event within the activity (0-based), preserving FIT file order.
+    , timestamp DATETIME NOT NULL          -- When the event occurred.
+    , event TEXT NOT NULL                  -- Event kind (front_gear_change, rear_gear_change, rider_position_change, timer, recovery_hr, off_course, ...).
+    , event_type TEXT                      -- Event qualifier (start, stop, marker, ...).
+    , data_json JSON                       -- Remaining event-specific fields as a JSON object (gear teeth/indices, rider_position, timer_trigger, data, ...). NULL when the event carries no extra fields.
+    , create_ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Timestamp when the record was created in the database.
+    , PRIMARY KEY (activity_id, event_idx)
+    , FOREIGN KEY (activity_id) REFERENCES activity (activity_id) ON DELETE CASCADE
+    , CONSTRAINT activity_event_data_json_valid CHECK (
+        data_json IS NULL OR JSON_VALID(data_json)
+    )
+);
+
 -- Strength training per-exercise aggregates from Garmin Connect summarizedExerciseSets. Each row represents one exercise type within a strength training activity, capturing sets, reps, volume, duration, and max weight.
 CREATE TABLE IF NOT EXISTS strength_exercise (
     activity_id BIGINT NOT NULL          -- References activity(activity_id). Identifies which activity this exercise belongs to.
