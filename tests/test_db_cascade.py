@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from garmin_health_data.models import (
     Activity,
     ActivityEvent,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -33,6 +34,7 @@ from garmin_health_data.models import (
     StrengthExercise,
     StrengthSet,
     SupplementalActivityMetric,
+    SwimLength,
     SwimmingAggMetrics,
     User,
 )
@@ -98,8 +100,9 @@ def test_delete_activity_cascades_to_all_children(
     """
     Deleting an activity removes rows in every activity-child table.
 
-    This exercises all 12 child FKs declared with `ON DELETE CASCADE`, including
-    `activity_ts_metric_downsampled` and the new `activity_event` table.
+    This exercises all 14 child FKs declared with `ON DELETE CASCADE`, including
+    `activity_ts_metric_downsampled`, `activity_hrv`, `swim_length`, and
+    `activity_event`.
     """
     activity = _make_activity(activity_id=1001, user_id=seeded_user)
     db_session.add(activity)
@@ -125,6 +128,7 @@ def test_delete_activity_cascades_to_all_children(
                 activity_id=1001, lap_idx=1, name="distance", value=100.0
             ),
             ActivityPath(activity_id=1001, path_json=[], point_count=0),
+            ActivityHrv(activity_id=1001, rr_json=[0.5, 0.51], interval_count=2),
             StrengthExercise(
                 activity_id=1001,
                 exercise_category="BENCH_PRESS",
@@ -146,6 +150,12 @@ def test_delete_activity_cascades_to_all_children(
                 event="timer",
                 event_type="start",
             ),
+            SwimLength(
+                activity_id=1001,
+                length_idx=0,
+                length_type="active",
+                swim_stroke="freestyle",
+            ),
         ]
     )
     db_session.commit()
@@ -160,10 +170,12 @@ def test_delete_activity_cascades_to_all_children(
         ActivitySplitMetric,
         ActivityLapMetric,
         ActivityPath,
+        ActivityHrv,
         StrengthExercise,
         StrengthSet,
         ActivityTsMetricDownsampled,
         ActivityEvent,
+        SwimLength,
     ):
         count = db_session.query(model).filter_by(activity_id=1001).count()
         assert count == 1, f"{model.__name__} child was not inserted."
@@ -181,10 +193,12 @@ def test_delete_activity_cascades_to_all_children(
         ActivitySplitMetric,
         ActivityLapMetric,
         ActivityPath,
+        ActivityHrv,
         StrengthExercise,
         StrengthSet,
         ActivityTsMetricDownsampled,
         ActivityEvent,
+        SwimLength,
     ):
         count = db_session.query(model).filter_by(activity_id=1001).count()
         assert (

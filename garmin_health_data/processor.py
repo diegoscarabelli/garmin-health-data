@@ -35,6 +35,7 @@ from garmin_health_data.models import (
     Acclimation,
     Activity,
     ActivityEvent,
+    ActivityHrv,
     ActivityLapMetric,
     ActivityPath,
     ActivitySplitMetric,
@@ -65,6 +66,7 @@ from garmin_health_data.models import (
     StrengthSet,
     Stress,
     SupplementalActivityMetric,
+    SwimLength,
     SwimmingAggMetrics,
     TrainingLoad,
     TrainingReadiness,
@@ -3187,19 +3189,25 @@ class GarminProcessor(Processor):
         session: Session,
         split_metrics: Optional[List[ActivitySplitMetric]] = None,
         event_rows: Optional[List[ActivityEvent]] = None,
+        length_metrics: Optional[List[SwimLength]] = None,
+        rr_values: Optional[List[float]] = None,
     ) -> None:
         """
         Persist parsed activity metrics with idempotent delete+insert semantics.
 
-        Replaces all existing ts/split/lap/path/event rows for ``activity_id`` and bulk-
-        inserts the new ones. Coalesces duplicate ts_metrics by ``(timestamp, name)`` to
-        avoid UNIQUE-constraint collisions. Materializes ``activity_path`` from
-        ``gps_records_deg`` (sorted by timestamp before insert). Updates
+        Replaces all existing ts/split/lap/length/path/event/hrv rows for
+        ``activity_id`` and bulk-inserts the new ones. Coalesces duplicate ts_metrics by
+        ``(timestamp, name)`` to avoid UNIQUE-constraint collisions. Materializes
+        ``activity_path`` from ``gps_records_deg`` (sorted by timestamp before insert)
+        and ``activity_hrv`` from ``rr_values``. Updates
         ``existing_activity.ts_data_available``.
 
         Pass ``split_metrics=None`` for source formats with no split concept (e.g. TCX);
         pass an empty list for formats that have splits but found none in this file.
         Likewise, pass ``event_rows=None`` for source formats with no event concept.
+        Same convention for ``length_metrics`` (swim pool-length data, FIT-only) and for
+        ``rr_values``: ``None`` for source formats with no HRV message stream (e.g.
+        TCX); an empty list for HRV-capable formats (FIT) that found no ``hrv`` frames.
 
         :param activity_id: Activity primary key.
         :param file_path: Source file path, used in log messages only.
@@ -3214,20 +3222,27 @@ class GarminProcessor(Processor):
             has no splits.
         :param event_rows: Event instances, or ``None`` if the source format has no
             event concept (e.g. TCX).
+        :param length_metrics: Swim length instances, or ``None`` if the source format
+            has no length concept.
+        :param rr_values: Beat-to-beat R-R intervals in seconds, in recorded order, or
+            ``None`` if the source format has no HRV message stream.
         """
         # Flush so any pending session state settles before bulk delete.
         session.flush()
 
         # Idempotent delete: drop all existing rows for this activity. Splits
         # and events are deleted unconditionally so reprocessing as a
+        # and lengths are deleted unconditionally so reprocessing as a
         # different format (e.g. FIT → TCX) cleanly removes rows that no
         # longer apply.
         for model in (
             ActivityTsMetric,
             ActivitySplitMetric,
             ActivityLapMetric,
+            SwimLength,
             ActivityPath,
             ActivityEvent,
+            ActivityHrv,
         ):
             session.execute(
                 delete(model)
@@ -3300,6 +3315,23 @@ class GarminProcessor(Processor):
         else:
             click.secho("⚠️ No lap data found.", fg="yellow")
 
+        if length_metrics is not None:
+            if length_metrics:
+                length_keys = [
+                    c.key
+                    for c in SwimLength.__table__.columns
+                    if c.server_default is None
+                ]
+                session.execute(
+                    insert(SwimLength),
+                    [{k: getattr(m, k) for k in length_keys} for m in length_metrics],
+                )
+                click.echo(f"Processed {len(length_metrics)} swim length records.")
+            else:
+                # Non-swim activities legitimately have no length data, so
+                # this is info rather than a warning.
+                click.secho("ℹ️ No swim length data found.", fg="blue")
+
         if gps_records_deg:
             # Sort ascending by timestamp so path order matches activity
             # progress (frame iteration is not guaranteed monotonic).
@@ -3339,6 +3371,27 @@ class GarminProcessor(Processor):
                 click.echo(f"Processed {len(event_rows)} event records.")
             else:
                 click.secho("⚠️ No event data found.", fg="yellow")
+        if rr_values is not None:
+            if rr_values:
+                session.execute(
+                    insert(ActivityHrv),
+                    [
+                        {
+                            "activity_id": activity_id,
+                            "rr_json": rr_values,
+                            "interval_count": len(rr_values),
+                        }
+                    ],
+                )
+                click.echo(f"Processed {len(rr_values)} HRV R-R intervals.")
+            else:
+                # HRV is only present in activities recorded with a
+                # compatible heart rate source, so this is info rather than
+                # a warning.
+                click.secho(
+                    "ℹ️ No HRV data found, skipping activity_hrv materialization.",
+                    fg="blue",
+                )
 
     def _process_fit_file(self, file_path: Path, session: Session):
         """
@@ -3354,6 +3407,14 @@ class GarminProcessor(Processor):
         eagerly materialized `ActivityPath` row holding an ordered [lon, lat] array
         sorted by timestamp, ready for downstream path-layer visualization. Updates
         `ts_data_available` flag based on whether time-series records were found.
+        Processes FIT file using fitdecode library, extracts record, split, lap, and hrv
+        frames, and stores metrics via delete+insert for idempotent reprocessing.
+        Activities with GPS samples also get an eagerly materialized `ActivityPath` row
+        holding an ordered [lon, lat] array sorted by timestamp, ready for downstream
+        path-layer visualization. Activities with a compatible heart rate source also
+        get an eagerly materialized `ActivityHrv` row holding the ordered beat-to-beat
+        R-R interval series in seconds. Updates `ts_data_available` flag based on
+        whether time-series records were found.
 
         :param file_path: Path to the FIT file.
         :param session: SQLAlchemy Session object.
@@ -3403,6 +3464,8 @@ class GarminProcessor(Processor):
         split_metrics = []
         lap_metrics = []
         event_rows = []
+        length_metrics = []
+        rr_values: List[float] = []
         split_idx = 0
         lap_idx = 0
         event_idx = 0
@@ -3630,6 +3693,93 @@ class GarminProcessor(Processor):
                                 )
                             )
                             event_idx += 1
+                    # Process length frames: one per pool length (each
+                    # wall-to-wall segment), active (swum) or idle (rest).
+                    # Unlike lap/split, length carries categorical fields
+                    # (length_type, swim_stroke) and a datetime (start_time)
+                    # that the generic name/value EAV pattern above can't
+                    # hold, so fields are extracted by name into a typed
+                    # SwimLength row instead.
+                    elif frame.name == "length":
+                        length_idx = None
+                        length_type_value = None
+                        swim_stroke_value = None
+                        start_time_value = None
+                        total_timer_time_value = None
+                        total_elapsed_time_value = None
+                        total_strokes_value = None
+                        avg_speed_value = None
+                        avg_swimming_cadence_value = None
+                        total_calories_value = None
+
+                        for field in frame.fields:
+                            if field.name is None or field.value is None:
+                                continue
+                            try:
+                                if field.name == "message_index":
+                                    length_idx = int(field.value)
+                                elif field.name == "length_type":
+                                    length_type_value = str(field.value)
+                                elif field.name == "swim_stroke":
+                                    swim_stroke_value = str(field.value)
+                                elif field.name == "start_time":
+                                    start_time_value = field.value.replace(
+                                        tzinfo=timezone.utc
+                                    )
+                                elif field.name == "total_timer_time":
+                                    total_timer_time_value = float(field.value)
+                                elif field.name == "total_elapsed_time":
+                                    total_elapsed_time_value = float(field.value)
+                                elif field.name == "total_strokes":
+                                    total_strokes_value = int(field.value)
+                                elif field.name == "avg_speed":
+                                    avg_speed_value = float(field.value)
+                                elif field.name == "avg_swimming_cadence":
+                                    avg_swimming_cadence_value = float(field.value)
+                                elif field.name == "total_calories":
+                                    total_calories_value = float(field.value)
+                            except (ValueError, TypeError, AttributeError):
+                                # Skip fields that can't be converted to the
+                                # expected type.
+                                continue
+
+                        # message_index is required (primary key component
+                        # alongside activity_id); skip malformed length
+                        # frames that lack it.
+                        if length_idx is not None:
+                            length_metrics.append(
+                                SwimLength(
+                                    activity_id=activity_id,
+                                    length_idx=length_idx,
+                                    length_type=length_type_value,
+                                    swim_stroke=swim_stroke_value,
+                                    start_time=start_time_value,
+                                    total_timer_time=total_timer_time_value,
+                                    total_elapsed_time=total_elapsed_time_value,
+                                    total_strokes=total_strokes_value,
+                                    avg_speed=avg_speed_value,
+                                    avg_swimming_cadence=avg_swimming_cadence_value,
+                                    total_calories=total_calories_value,
+                                )
+                            )
+                    # Process hrv frames: beat-to-beat R-R intervals in seconds.
+                    # The `time` field is a tuple of up to 5 R-R intervals,
+                    # right-padded with None; null padding is dropped and the
+                    # remaining values are appended in recorded order.
+                    elif frame.name == "hrv":
+                        for field in frame.fields:
+                            if field.name == "time" and isinstance(
+                                field.value, (tuple, list)
+                            ):
+                                # Keep only numeric R-R intervals: drop the None
+                                # padding and any non-numeric entries, and coerce
+                                # to float for JSON serialization. bool is
+                                # excluded since it is a subclass of int.
+                                for interval in field.value:
+                                    if isinstance(
+                                        interval, (int, float)
+                                    ) and not isinstance(interval, bool):
+                                        rr_values.append(float(interval))
 
         # Convert FIT semicircles to decimal degrees for path materialization.
         gps_records_deg = [
@@ -3651,6 +3801,8 @@ class GarminProcessor(Processor):
             session=session,
             split_metrics=split_metrics,
             event_rows=event_rows,
+            length_metrics=length_metrics,
+            rr_values=rr_values,
         )
 
     def _process_activity_file(self, file_path: Path, session: Session):
@@ -3684,7 +3836,8 @@ class GarminProcessor(Processor):
         activity_lap_metric. Activities with GPS trackpoints also get a materialized
         activity_path row. Uses delete+insert for idempotent reprocessing.
 
-        TCX does not contain split data, so activity_split_metric is not populated.
+        TCX does not contain split data, so activity_split_metric is not populated. TCX
+        also has no HRV message stream, so activity_hrv is not populated.
 
         :param file_path: Path to the TCX file.
         :param session: SQLAlchemy Session object.
@@ -3874,6 +4027,10 @@ class GarminProcessor(Processor):
         # TCX coordinates are already in decimal degrees, and TCX has no split
         # or event concept (split_metrics=None and event_rows=None suppress
         # both the inserts and the "no data found" warnings).
+        # concept (split_metrics=None suppresses both the insert and the
+        # "no split data" warning) and no HRV message stream (rr_values=None
+        # suppresses both the insert and the "no HRV data" message, the same
+        # way split_metrics=None does).
         self._persist_activity_metrics(
             activity_id=activity_id,
             file_path=file_path,
@@ -3884,4 +4041,5 @@ class GarminProcessor(Processor):
             session=session,
             split_metrics=None,
             event_rows=None,
+            rr_values=None,
         )
