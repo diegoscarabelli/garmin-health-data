@@ -728,33 +728,33 @@ split below; garmin-health-data anchors both for reference.
 
 #### SQLite-based data warehouses
 
-| Feature                                 | garmin-health-data           | garmindb                           | garmy                        | garmin-givemydata                                        | garmin-local-mcp                       |
-| --------------------------------------- | ---------------------------- | ---------------------------------- | ---------------------------- | -------------------------------------------------------- | -------------------------------------- |
-| **Interface**                           | CLI                          | CLI                                | CLI + Python API + MCP       | CLI + MCP                                                | CLI + MCP                              |
-| **Setup complexity**                    | ✅ Single command            | ⚠️ Config file + 2 commands        | ✅ Single command            | ⚠️ Single command, requires Chrome                       | ✅ Single command                      |
-| **Storage**                             | SQLite database              | SQLite database                    | SQLite (optional)            | SQLite + raw FIT files                                   | SQLite + raw JSON snapshots            |
-| **Cross-platform**                      | ✅                           | ✅                                 | ✅                           | ✅                                                       | ✅                                     |
-| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive             | ⚠️ Basic coverage                  | ⚠️ Basic coverage            | ✅ Comprehensive                                         | ✅ Comprehensive (~35+ daily metrics)  |
-| **Sleep data granularity**              | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular         | ⚠️ 1 table, daily aggregate  | ⚠️ Stage durations only, no per-minute table             | ⚠️ Daily/summary only                  |
-| **FIT file time-series data**           | ✅ All metrics (EAV schema)  | ⚠️ Limited (~10 core fields)       | ❌ API-only (no FIT files)   | ⚠️ Fixed-column trackpoints, no running/cycling dynamics | ❌ Summary only, no GPS/sample streams |
-| **Power meter & advanced metrics**      | ✅ Full support              | ❌ Not captured                    | ❌ API limitations           | ⚠️ Basic power value only                                | ❌ Not captured                        |
-| **Database schema quality**             | ✅ Normalized, 42 tables     | ⚠️ ~31 tables, mixed normalization | ❌ Very simple               | ⚠️ 50 tables, fixed columns                              | ⚠️ Simple, rebuildable from raw JSON   |
-| **Duplicate prevention**                | ✅ Explicit SQL ON CONFLICT  | ⚠️ ORM merge (undocumented)        | ✅ ORM merge + sync tracking | ✅ Explicit upserts                                      | ✅ Idempotent sync                     |
-| **Auto-resume**                         | ✅                           | ✅                                 | ✅                           | ✅                                                       | ✅                                     |
-| **Active maintenance**                  | ✅                           | ✅                                 | ✅                           | ✅                                                       | ✅                                     |
+| Feature | garmin-health-data | garmindb | garmy | garmin-givemydata | garmin-local-mcp |
+| --- | --- | --- | --- | --- | --- |
+| **Interface** | CLI | CLI | CLI + Python API + MCP | CLI + MCP | CLI + MCP |
+| **Setup complexity** | ✅ Single command | ⚠️ Config file + 2 commands | ✅ Single command | ⚠️ Single command, requires Chrome | ✅ Single command |
+| **Storage** | SQLite database | SQLite database | SQLite (optional) | SQLite + raw FIT files | SQLite + raw JSON snapshots |
+| **Cross-platform** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive | ⚠️ Basic coverage | ⚠️ Basic coverage | ✅ Comprehensive | ✅ Comprehensive (~35+ daily metrics) |
+| **Sleep data granularity** | ✅ 7 tables, 1-min intervals | ⚠️ 2 tables, less granular | ⚠️ 1 table, daily aggregate | ⚠️ Stage durations only, no per-minute table | ⚠️ Daily/summary only |
+| **FIT file time-series data** | ✅ All metrics (EAV schema) | ⚠️ Limited (~10 core fields) | ❌ API-only (no FIT files) | ⚠️ Fixed-column trackpoints, no running/cycling dynamics | ❌ Summary only, no GPS/sample streams |
+| **Power meter & advanced metrics** | ✅ Full support | ❌ Not captured | ❌ API limitations | ⚠️ Basic power value only | ❌ Not captured |
+| **Database schema quality** | ✅ Normalized, 42 tables | ⚠️ ~31 tables, mixed normalization | ❌ Very simple | ⚠️ 50 tables, fixed columns | ⚠️ Simple, rebuildable from raw JSON |
+| **Duplicate prevention** | ✅ Explicit SQL ON CONFLICT | ⚠️ ORM merge (undocumented) | ✅ ORM merge + sync tracking | ✅ Explicit upserts | ✅ Idempotent sync |
+| **Auto-resume** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Active maintenance** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 #### File-export & GUI tools
 
-| Feature                                 | garmin-health-data                       | garminexport       | garmin-fetch       | Garmin Local Archive                      |
-| --------------------------------------- | ---------------------------------------- | ------------------ | ------------------ | ----------------------------------------- |
-| **Interface**                           | CLI                                      | CLI                | GUI                | GUI + MCP                                 |
-| **Setup complexity**                    | ✅ Single command                        | ✅ Single command  | ⚠️ Manual setup    | ✅ Standalone EXE, no setup               |
-| **Storage**                             | SQLite database                          | File export        | Excel export       | JSON + Excel + HTML (no DB)               |
-| **Cross-platform**                      | ✅                                       | ✅                 | ✅                 | ❌ Windows only                           |
-| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive                         | ❌ Activities only | ❌ Activities only | ✅ Comprehensive + weather/pollen context |
-| **FIT / activity time-series data**     | ✅ All metrics (EAV schema)              | ❌                 | ❌                 | ❌ API-only, no FIT parsing               |
-| **Resumable / deduplicated sync**       | ✅ Explicit SQL ON CONFLICT, auto-resume | ✅ Auto-resume     | ❌                 | ✅ Per-day checkpointing                  |
-| **Active maintenance**                  | ✅                                       | ❌                 | ⚠️ Limited         | ✅                                        |
+| Feature | garmin-health-data | garminexport | garmin-fetch | Garmin Local Archive |
+| --- | --- | --- | --- | --- |
+| **Interface** | CLI | CLI | GUI | GUI + MCP |
+| **Setup complexity** | ✅ Single command | ✅ Single command | ⚠️ Manual setup | ✅ Standalone EXE, no setup |
+| **Storage** | SQLite database | File export | Excel export | JSON + Excel + HTML (no DB) |
+| **Cross-platform** | ✅ | ✅ | ✅ | ❌ Windows only |
+| **Health metrics (sleep, HRV, stress)** | ✅ Comprehensive | ❌ Activities only | ❌ Activities only | ✅ Comprehensive + weather/pollen context |
+| **FIT / activity time-series data** | ✅ All metrics (EAV schema) | ❌ | ❌ | ❌ API-only, no FIT parsing |
+| **Resumable / deduplicated sync** | ✅ Explicit SQL ON CONFLICT, auto-resume | ✅ Auto-resume | ❌ | ✅ Per-day checkpointing |
+| **Active maintenance** | ✅ | ❌ | ⚠️ Limited | ✅ |
 
 <details>
 <summary><strong>Schema deep-dive: garmin-health-data vs garmindb vs garmy</strong></summary>
