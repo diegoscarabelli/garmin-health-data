@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `garmin verify` now exits with code 1 when SQLite reports an integrity failure and prints every returned diagnostic. Previously it printed only the first error and exited with code 0, so scripts could treat a failed check as successful.
+
 ## [2.16.0] - 2026-09-07
 
 ### Added

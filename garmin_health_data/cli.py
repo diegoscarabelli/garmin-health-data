@@ -978,9 +978,13 @@ def info(ctx: click.Context, db_path: str):
     help="Path to SQLite database file.",
 )
 @click.pass_context
-def verify(ctx: click.Context, db_path: str):
+def verify(ctx: click.Context, db_path: str) -> None:
     """
     Verify database integrity and structure.
+
+    :param ctx: Click context used to signal a failed integrity check.
+    :param db_path: Path to the SQLite database file.
+    :return: None.
     """
     if not database_exists(db_path):
         click.secho(f"❌ Database not found: {db_path}", fg="red")
@@ -999,11 +1003,14 @@ def verify(ctx: click.Context, db_path: str):
         click.echo(f"✅ Found {len(tables)} tables")
 
         # Run SQLite integrity check.
-        result = session.execute(text("PRAGMA integrity_check")).fetchone()
-        if result[0] == "ok":
-            click.secho("✅ Database integrity check passed", fg="green")
-        else:
-            click.secho(f"❌ Database integrity check failed: {result[0]}", fg="red")
+        results = session.execute(text("PRAGMA integrity_check")).scalars().all()
+
+    if results == ["ok"]:
+        click.secho("✅ Database integrity check passed", fg="green")
+    else:
+        for error in results:
+            click.secho(f"❌ Database integrity check failed: {error}", fg="red")
+        ctx.exit(1)
 
     click.echo()
 

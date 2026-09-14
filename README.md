@@ -454,7 +454,8 @@ Read-only. Reports the number of tables defined in the schema and runs SQLite's 
 | --- | --- | --- |
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 
-Exits with code 1 if the database does not exist.
+Exits with code 0 when the integrity check passes. If it fails, prints every returned
+diagnostic and exits with code 1. A missing database also exits with code 1.
 
 ### Retention: `prune`, `downsample`, `migrate-cascade`
 
