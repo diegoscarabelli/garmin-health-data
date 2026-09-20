@@ -2,7 +2,9 @@
 Tests for CLI commands.
 """
 
+import sqlite3
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -44,6 +46,38 @@ def test_verify_runs_integrity_check(tmp_path):
 
     assert result.exit_code == 0
     assert "Database integrity check passed" in result.output
+
+
+@pytest.mark.parametrize("error_count", [1, 2])
+def test_verify_reports_integrity_errors(tmp_path: Path, error_count: int) -> None:
+    """
+    Report every integrity error and fail without changing the database.
+
+    :param tmp_path: Temporary directory for the database.
+    :param error_count: Number of invalid rows to insert.
+    :return: None.
+    """
+    db_path = tmp_path / "test.db"
+    create_tables(str(db_path))
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE integrity_fixture (value INTEGER CHECK (value > 0))"
+        )
+        # Persist invalid rows so a new connection detects real SQLite errors.
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.executemany(
+            "INSERT INTO integrity_fixture VALUES (?)", [(0,)] * error_count
+        )
+    original_bytes = db_path.read_bytes()
+
+    result = CliRunner().invoke(verify, ["--db-path", str(db_path)])
+
+    assert result.output.count("CHECK constraint failed in integrity_fixture") == (
+        error_count
+    )
+    assert "Database integrity check passed" not in result.output
+    assert result.exit_code == 1
+    assert db_path.read_bytes() == original_bytes
 
 
 def test_verify_nonexistent_db(tmp_path):
