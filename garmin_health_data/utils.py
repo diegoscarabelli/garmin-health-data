@@ -70,14 +70,22 @@ def format_duration(seconds: float) -> str:
     :return: Formatted duration string (e.g., "2h 15m").
     """
     if seconds < 60:
-        return f"{seconds:.0f}s"
+        rounded = int(round(seconds))
+        if rounded >= 60:
+            return "1m"
+        return f"{rounded}s"
     elif seconds < 3600:
-        minutes = seconds / 60
-        return f"{minutes:.0f}m"
+        minutes = int(round(seconds / 60))
+        if minutes >= 60:
+            return "1h 0m"
+        return f"{minutes}m"
     else:
-        hours = seconds / 3600
-        minutes = (seconds % 3600) / 60
-        return f"{hours:.0f}h {minutes:.0f}m"
+        hours = int(seconds // 3600)
+        minutes = int(round((seconds % 3600) / 60))
+        if minutes >= 60:
+            hours += 1
+            minutes = 0
+        return f"{hours}h {minutes}m"
 
 
 def format_count(count: int) -> str:

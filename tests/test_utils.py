@@ -58,6 +58,16 @@ def test_format_duration():
     assert format_duration(7200) == "2h 0m"
 
 
+def test_format_duration_rounding_overflow():
+    """
+    Test rounding near unit boundaries carries over instead of
+    emitting invalid values like "60s", "60m" or "2h 60m".
+    """
+    assert format_duration(59.5) == "1m"
+    assert format_duration(3599.9) == "1h 0m"
+    assert format_duration(7199.9) == "2h 0m"
+
+
 def test_format_count():
     """
     Test formatting numbers with separators.
