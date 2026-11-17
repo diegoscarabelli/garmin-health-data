@@ -166,7 +166,7 @@ class TestGetLastUpdateDates:
 
         :param db_engine: Database engine fixture.
         """
-        temp_db_path = str(db_engine.url).replace("sqlite:///", "")
+        temp_db_path = db_engine.url.database
         dates = get_last_update_dates(temp_db_path)
 
         # All dates should be None for empty database.
@@ -204,7 +204,7 @@ class TestGetRecordCounts:
 
         :param db_engine: Database engine fixture.
         """
-        temp_db_path = str(db_engine.url).replace("sqlite:///", "")
+        temp_db_path = db_engine.url.database
         counts = get_record_counts(temp_db_path)
 
         # All counts should be 0 for empty database.
@@ -229,7 +229,7 @@ class TestGetRecordCounts:
         db_session.add(user)
         db_session.commit()
 
-        temp_db_path = str(db_engine.url).replace("sqlite:///", "")
+        temp_db_path = db_engine.url.database
         counts = get_record_counts(temp_db_path)
 
         assert counts["users"] == 1
