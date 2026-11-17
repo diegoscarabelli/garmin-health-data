@@ -23,9 +23,11 @@ from garmin_health_data.models import (
     ActivityTsMetricDownsampled,
     User,
 )
+from garmin_health_data.retention import operations
 from garmin_health_data.retention.operations import (
     InsufficientDiskSpaceError,
     downsample_activities,
+    free_page_stats,
     prune_ts_metrics,
     vacuum_database,
 )
@@ -802,3 +804,61 @@ def test_vacuum_missing_database_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         vacuum_database(str(missing))
     assert not missing.exists()
+
+
+def test_free_page_stats_reports_prune_freed_pages(temp_db_path, db_engine, db_session):
+    """
+    free_page_stats reports the pages a prune freed and their share of the file.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    assert free_page_stats(temp_db_path)["freelist_count"] == 0
+
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    stats = free_page_stats(temp_db_path)
+
+    assert stats["freelist_count"] > 0
+    assert stats["free_bytes"] == stats["freelist_count"] * stats["page_size"]
+    assert stats["free_fraction"] == stats["freelist_count"] / stats["page_count"]
+
+
+def test_vacuum_checks_temp_dir_on_separate_filesystem(
+    temp_db_path, db_engine, db_session, tmp_path
+):
+    """
+    When SQLite's temp directory is on another filesystem, each location is checked
+    separately and a short temp directory is named in the error.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    temp_dir = SimpleNamespace(stat=lambda: SimpleNamespace(st_dev=-1))
+
+    def fake_disk_usage(location):
+        free = 0 if location is temp_dir else 10**12
+        return SimpleNamespace(total=10**12, used=0, free=free)
+
+    with (
+        patch.object(operations, "_sqlite_temp_dir", return_value=temp_dir),
+        patch(
+            "garmin_health_data.retention.operations.shutil.disk_usage",
+            side_effect=fake_disk_usage,
+        ),
+    ):
+        with pytest.raises(InsufficientDiskSpaceError) as exc_info:
+            vacuum_database(temp_db_path)
+
+    assert exc_info.value.location is temp_dir
+
+
+def test_sqlite_temp_dir_order(monkeypatch, tmp_path):
+    """
+    SQLITE_TMPDIR wins when set; with no usable directory the fallback is ".".
+    """
+    monkeypatch.setattr(operations.os, "name", "posix")
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
+    assert operations._sqlite_temp_dir() == tmp_path
+
+    monkeypatch.delenv("SQLITE_TMPDIR")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    with patch.object(operations.Path, "is_dir", return_value=False):
+        assert operations._sqlite_temp_dir() == Path(".")

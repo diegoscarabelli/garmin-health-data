@@ -219,7 +219,7 @@ $ garmin extract
 `activity_ts_metric` (per-second sensor data parsed from FIT or TCX activity files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
 
 - **`garmin downsample`** aggregates per-second readings into time buckets and writes them to a separate `activity_ts_metric_downsampled` table. Source rows are never modified by this command.
-- **`garmin prune`** deletes per-second source rows for activities in a date range, then vacuums the database so the file actually shrinks. The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
+- **`garmin prune`** deletes per-second source rows for activities in a date range, then vacuums the database so the file actually shrinks (when at least 10% of it is free). The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
 - **`garmin vacuum`** shrinks the file on demand, for example after `prune --no-vacuum`.
 
 #### Manual one-off run
@@ -246,7 +246,7 @@ garmin extract \
     --prune-older-than 1y
 ```
 
-The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race. When the prune deletes rows, the database is vacuumed afterwards (skip with `--no-vacuum`).
+The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race. When the prune leaves at least 10% of the file free, the database is vacuumed afterwards (skip with `--no-vacuum`).
 
 #### Safety rails
 
@@ -323,7 +323,7 @@ Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/
 | `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
 | `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | Before extracting, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
 | `--downsample-grain GRAIN` | Required when `--downsample-older-than` is set | Bucket grain for the auto downsample (e.g., `60s`, `5m`). |
-| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`, then vacuum the database when rows were deleted. |
+| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`, then vacuum the database when at least 10% of it is free. |
 | `--no-vacuum` | Flag | Skip the vacuum that follows `--prune-older-than`. |
 
 <details>
@@ -477,7 +477,7 @@ Both `prune` and `downsample` use the same date-range semantics as `extract`:
 
 Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, swim lengths, events, HRV R-R interval series, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
 
-After a delete, prune runs [`garmin vacuum`](#garmin-vacuum) under the same lock and prints the space reclaimed. If the vacuum is skipped for lack of disk space or fails, the deleted rows stay deleted, prune still exits 0, and it prints a warning with the `garmin vacuum` command to run later.
+After a delete, prune runs [`garmin vacuum`](#garmin-vacuum) under the same lock and prints the space reclaimed, but only when free pages are at least 10% of the file; below that it prints how much is reclaimable and skips, so a small daily prune does not rewrite the whole file. If the vacuum is skipped for lack of disk space or fails, the deleted rows stay deleted, prune still exits 0, and it prints a warning with the `garmin vacuum` command to run later.
 
 | Flag | Type | Purpose |
 | --- | --- | --- |
@@ -491,7 +491,7 @@ After a delete, prune runs [`garmin vacuum`](#garmin-vacuum) under the same lock
 
 #### `garmin vacuum`
 
-SQLite keeps the pages freed by a delete inside the database file for reuse, so the file does not shrink until it is rebuilt with `VACUUM`. This command runs that rebuild under the lifecycle lock and prints the size before and after. Use it after `prune --no-vacuum`, after re-running `downsample` (which replaces bucket rows), or on a database pruned by an older version.
+SQLite keeps the pages freed by a delete inside the database file for reuse, so the file does not shrink until it is rebuilt with `VACUUM`. This command always runs that rebuild, regardless of how much is free, under the lifecycle lock and prints the size before and after. Use it after `prune --no-vacuum`, after re-running `downsample` (which replaces bucket rows), or on a database pruned by an older version.
 
 `VACUUM` temporarily needs free disk space of about twice the size of the remaining data (a temporary copy plus a journal). The command checks first and exits 1 without writing when space is short; a failed vacuum also exits 1 and leaves the database unchanged.
 

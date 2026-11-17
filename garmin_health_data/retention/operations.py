@@ -16,7 +16,8 @@ Public entry points:
   and rewritten in a single transaction; activities with no source rows are
   excluded from the replace set so their pre-existing buckets are preserved).
 - :func:`vacuum_database` rebuilds the database file with ``VACUUM`` so the pages
-  freed by a prune are returned to the filesystem.
+  freed by a prune are returned to the filesystem; :func:`free_page_stats` reports
+  how much it would reclaim.
 """
 
 import os
@@ -1096,6 +1097,55 @@ def _check_vacuum_disk_space(db_file: Path, live_bytes: int) -> None:
             raise InsufficientDiskSpaceError(required, free, location)
 
 
+# Automatic vacuums (after ``prune`` and ``extract --prune-older-than``) run only
+# when free pages make up at least this fraction of the file. ``VACUUM`` rewrites
+# the whole file, so rebuilding it for a sliver of reclaimable space (as a daily
+# rolling-window prune would) costs far more than it saves. ``garmin vacuum``
+# ignores the threshold.
+AUTO_VACUUM_MIN_FREE_FRACTION = 0.10
+
+
+def _read_page_stats(conn: sqlite3.Connection) -> dict:
+    """
+    Read page counts from an open connection.
+
+    :param conn: Open SQLite connection.
+    :return: Dict with ``"page_size"``, ``"page_count"``, ``"freelist_count"``,
+        ``"free_bytes"``, and ``"free_fraction"`` (free pages over all pages, 0.0 for an
+        empty file).
+    """
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+    freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    return {
+        "page_size": page_size,
+        "page_count": page_count,
+        "freelist_count": freelist,
+        "free_bytes": freelist * page_size,
+        "free_fraction": freelist / page_count if page_count else 0.0,
+    }
+
+
+def free_page_stats(db_path: str) -> dict:
+    """
+    Report how much of the database file is free pages that ``VACUUM`` would reclaim.
+
+    :param db_path: Path to the SQLite database file.
+    :return: Dict with ``"page_size"``, ``"page_count"``, ``"freelist_count"``,
+        ``"free_bytes"``, and ``"free_fraction"``.
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    :raises sqlite3.Error: when SQLite cannot read the page counts.
+    """
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+    conn = sqlite3.connect(str(db_file), isolation_level=None)
+    try:
+        return _read_page_stats(conn)
+    finally:
+        conn.close()
+
+
 def vacuum_database(db_path: str) -> dict:
     """
     Rebuild the database file with ``VACUUM`` to return free pages to the disk.
@@ -1126,9 +1176,10 @@ def vacuum_database(db_path: str) -> dict:
     size_before = db_file.stat().st_size
     conn = sqlite3.connect(str(db_file), isolation_level=None)
     try:
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
-        freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        stats = _read_page_stats(conn)
+        page_size = stats["page_size"]
+        page_count = stats["page_count"]
+        freelist = stats["freelist_count"]
         journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
 
         _check_vacuum_disk_space(db_file, (page_count - freelist) * page_size)

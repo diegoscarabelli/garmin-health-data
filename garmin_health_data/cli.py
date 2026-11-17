@@ -46,10 +46,12 @@ from garmin_health_data.lifecycle import (
 from garmin_health_data.processor import GarminProcessor
 from garmin_health_data.processor_helpers import FileSet
 from garmin_health_data.retention.operations import (
+    AUTO_VACUUM_MIN_FREE_FRACTION,
     InsufficientDiskSpaceError,
     downsample_activities,
     migrate_cascade,
     migrate_multisport,
+    free_page_stats,
     prune_ts_metrics,
     vacuum_database,
 )
@@ -263,7 +265,8 @@ def auth(
     help="Before extracting, delete activity_ts_metric rows for activities "
     "older than DURATION (e.g., 90d, 6m, 1y). Runs after --downsample-older-than "
     "if both are given, so today's prune does not strand a bucket aggregation. "
-    "Vacuums the database afterwards to shrink the file (see --no-vacuum).",
+    "Then vacuums the database to shrink the file when at least "
+    f"{AUTO_VACUUM_MIN_FREE_FRACTION:.0%} of it is free (see --no-vacuum).",
 )
 @click.option(
     "--no-vacuum",
@@ -1112,17 +1115,28 @@ def _vacuum_after_prune(db_path: str) -> None:
     """
     Vacuum the database after a prune, reporting failures as warnings.
 
-    The prune's deletes are already committed when this runs, and a failed or
-    skipped ``VACUUM`` leaves the database intact, so problems are printed as
-    warnings with a hint to run ``garmin vacuum`` later instead of failing the
-    command. The caller must already hold the lifecycle lock.
+    Skips the vacuum when free pages are under ``AUTO_VACUUM_MIN_FREE_FRACTION`` of
+    the file, so a small rolling-window prune does not rewrite the whole file. The
+    prune's deletes are already committed when this runs, and a failed or skipped
+    ``VACUUM`` leaves the database intact, so problems are printed as warnings with
+    a hint to run ``garmin vacuum`` later instead of failing the command. The caller
+    must already hold the lifecycle lock.
 
     :param db_path: Path to the SQLite database file.
     :return: None.
     """
-    click.echo("🗜️  Vacuuming database to reclaim disk space...")
     hint = f"Run `garmin vacuum --db-path {db_path}` later to shrink the file."
     try:
+        stats = free_page_stats(db_path)
+        if stats["free_fraction"] < AUTO_VACUUM_MIN_FREE_FRACTION:
+            click.secho(
+                f"ℹ️  Skipped vacuum: only {format_file_size(stats['free_bytes'])} "
+                f"({stats['free_fraction']:.0%}) reclaimable; run `garmin vacuum` "
+                f"to force.",
+                fg="cyan",
+            )
+            return
+        click.echo("🗜️  Vacuuming database to reclaim disk space...")
         result = vacuum_database(db_path)
     except InsufficientDiskSpaceError as e:
         click.secho(
@@ -1222,7 +1236,8 @@ def prune(
     Activity rows themselves, splits, laps, agg metrics, paths, and downsampled buckets
     are preserved. Range semantics match ``extract``: --end-date is exclusive, --start-
     date is inclusive, with the same-day special case. After deleting, the database is
-    vacuumed so the file shrinks (skip with --no-vacuum).
+    vacuumed so the file shrinks when at least 10% of it is free (skip with --no-
+    vacuum; force with ``garmin vacuum``).
     """
     accounts_list = _parse_accounts_option(accounts)
     start_d = start_date.date() if start_date else None
@@ -1437,7 +1452,8 @@ def vacuum_cmd(db_path: str) -> None:
     Rebuild the database file to return free space to the disk.
 
     SQLite keeps the space freed by deletes inside the file. ``prune`` vacuums
-    automatically; run this after ``prune --no-vacuum``, after ``downsample``, or on a
+    automatically when at least 10% of the file is free; this command always runs.
+    Use it after ``prune --no-vacuum``, after ``downsample``, or on a
     database pruned by an older version. Needs free disk space of up to about twice
     the size of the remaining data while it runs.
     """

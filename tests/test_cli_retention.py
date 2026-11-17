@@ -577,23 +577,27 @@ def test_extract_auto_downsample_actually_runs(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _seed_bulky_db(db_path: Path, start: datetime, rows: int = 5000) -> None:
+def _seed_bulky_db(
+    db_path: Path, start: datetime, rows: int = 5000, activity_id: int = 999
+) -> None:
     """
-    Build a database with one activity holding enough ts-metric rows to span many pages,
-    so a prune frees space that a vacuum can measurably reclaim.
+    Add one activity holding enough ts-metric rows to span many pages, so a prune frees
+    space that a vacuum can measurably reclaim. Safe to call repeatedly on the same
+    database with distinct activity ids.
 
     :param db_path: Path to the SQLite database file.
     :param start: Activity start_ts.
     :param rows: Number of per-second heart-rate rows to insert.
+    :param activity_id: Activity primary key.
     """
     create_tables(str(db_path))
     engine = get_engine(str(db_path))
     with Session(engine) as session:
-        session.add(User(user_id=99))
+        session.merge(User(user_id=99))
         session.commit()
         session.add(
             Activity(
-                activity_id=999,
+                activity_id=activity_id,
                 user_id=99,
                 activity_type_id=1,
                 activity_type_key="running",
@@ -609,7 +613,7 @@ def _seed_bulky_db(db_path: Path, start: datetime, rows: int = 5000) -> None:
             insert(ActivityTsMetric),
             [
                 {
-                    "activity_id": 999,
+                    "activity_id": activity_id,
                     "timestamp": start + timedelta(seconds=sec),
                     "name": "heart_rate",
                     "value": 140.0,
@@ -879,3 +883,84 @@ def test_extract_auto_prune_nothing_deleted_does_not_vacuum(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     vacuum.assert_not_called()
+
+
+def _seed_small_prune_db(db_path: Path, small_start: datetime) -> None:
+    """
+    Seed a small activity to prune next to a large recent one that stays, so the prune
+    frees well under the auto-vacuum threshold.
+
+    :param db_path: Path to the SQLite database file.
+    :param small_start: Start of the small activity that the prune will hit.
+    """
+    _seed_bulky_db(db_path, small_start, rows=500, activity_id=1)
+    _seed_bulky_db(
+        db_path,
+        datetime.now(timezone.utc) - timedelta(days=1),
+        rows=20000,
+        activity_id=2,
+    )
+
+
+def _freelist_count(db_path: Path) -> int:
+    """
+    Read the database's free-page count.
+
+    :param db_path: Path to the SQLite database file.
+    :return: Number of pages on the free list.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return conn.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_prune_below_threshold_skips_vacuum(tmp_path: Path):
+    """
+    When the prune frees under the threshold, the vacuum is skipped with a note.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_small_prune_db(db, _JAN_START)
+
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = CliRunner().invoke(cli, _PRUNE_ARGS + ["--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    assert "Skipped vacuum: only" in result.output
+    assert "garmin vacuum" in result.output
+    vacuum.assert_not_called()
+
+
+def test_extract_auto_prune_below_threshold_skips_vacuum(tmp_path: Path):
+    """
+    `extract --prune-older-than` also skips the vacuum below the threshold.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_small_prune_db(db, datetime.now(timezone.utc) - timedelta(days=400))
+
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = _invoke_extract_prune(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert "Skipped vacuum: only" in result.output
+    vacuum.assert_not_called()
+
+
+def test_vacuum_command_ignores_threshold(tmp_path: Path):
+    """
+    `garmin vacuum` runs even when free pages are under the auto-vacuum threshold.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_small_prune_db(db, _JAN_START)
+    runner = CliRunner()
+    pruned = runner.invoke(cli, _PRUNE_ARGS + ["--db-path", str(db), "--no-vacuum"])
+    assert pruned.exit_code == 0, pruned.output
+    assert _freelist_count(db) > 0
+
+    result = runner.invoke(cli, ["vacuum", "--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Reclaimed" in result.output
+    assert _freelist_count(db) == 0
