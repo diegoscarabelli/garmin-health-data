@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`garmin vacuum` command** rebuilds the database with SQLite's `VACUUM` and reports the size before and after. Use it on databases pruned by earlier versions, after `prune --no-vacuum`, or after re-running `downsample`. It checks free disk space first (`VACUUM` needs roughly twice the size of the remaining data) and exits 1 without writing when space is short.
+
 ### Fixed
+
+- **`garmin prune` now shrinks the database file** ([#102](https://github.com/diegoscarabelli/garmin-health-data/issues/102)). SQLite keeps pages freed by `DELETE` inside the file for reuse, and nothing ran `VACUUM`, so a prune left the file size unchanged (a 36.7 MB test database stayed at 36.7 MB after pruning every `activity_ts_metric` row, and dropped to 0.6 MB after `VACUUM`). `garmin prune` and `garmin extract --prune-older-than` now vacuum after a delete that removed rows, under the same lifecycle lock, and print the space reclaimed; `--no-vacuum` on either command skips it. If disk space is short or the vacuum fails, the deleted rows stay deleted, the command still exits 0, and a warning names the `garmin vacuum` command to run later. Dry runs do not vacuum.
 
 - `garmin verify` now exits with code 1 when SQLite reports an integrity failure and prints every returned diagnostic. Previously it printed only the first error and exited with code 0, so scripts could treat a failed check as successful.
 
