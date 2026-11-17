@@ -7,15 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-11-17
+
 ### Added
 
-- **`garmin vacuum` command** rebuilds the database with SQLite's `VACUUM` and reports the size before and after. Use it on databases pruned by earlier versions, after `prune --no-vacuum`, or after re-running `downsample`. It checks free disk space first (`VACUUM` needs roughly twice the size of the remaining data) and exits 1 without writing when space is short.
+- **`garmin vacuum` command** ([#102](https://github.com/diegoscarabelli/garmin-health-data/issues/102)) rebuilds the database with SQLite's `VACUUM` and reports the size before and after. Use it on databases pruned by earlier versions, after `prune --no-vacuum`, or after re-running `downsample`. It checks free disk space first (`VACUUM` needs roughly twice the size of the remaining data) and exits 1 without writing when space is short.
 
 ### Fixed
 
 - **`garmin prune` now shrinks the database file** ([#102](https://github.com/diegoscarabelli/garmin-health-data/issues/102)). SQLite keeps pages freed by `DELETE` inside the file for reuse, and nothing ran `VACUUM`, so a prune left the file size unchanged (a 36.7 MB test database stayed at 36.7 MB after pruning every `activity_ts_metric` row, and dropped to 0.6 MB after `VACUUM`). `garmin prune` and `garmin extract --prune-older-than` now vacuum after a delete, under the same lifecycle lock, and print the space reclaimed. The automatic vacuum runs only when free pages are at least 10% of the file, so a small daily rolling-window prune does not rewrite the whole file (`garmin vacuum` always runs); `--no-vacuum` on either command skips it. If disk space is short or the vacuum fails, the deleted rows stay deleted, the command still exits 0, and a warning names the `garmin vacuum` command to run later. Dry runs do not vacuum.
 
-- `garmin verify` now exits with code 1 when SQLite reports an integrity failure and prints every returned diagnostic. Previously it printed only the first error and exited with code 0, so scripts could treat a failed check as successful.
+- **`garmin verify` now fails when SQLite reports integrity errors** ([#99](https://github.com/diegoscarabelli/garmin-health-data/pull/99)). It exits with code 1 and prints every diagnostic `PRAGMA integrity_check` returns. Previously it printed only the first error and exited with code 0, so scripts could treat a failed check as successful. Contributed by @bensynapse.
+
+### Documentation
+
+- **Expanded comparison table in the README** ([#97](https://github.com/diegoscarabelli/garmin-health-data/pull/97)). More alternative tools are compared, split into SQLite-based data warehouses and file-export and GUI tools so each table stays readable, including as plain text. Contributed by @bombsimon.
 
 ## [2.16.0] - 2026-09-07
 
@@ -472,7 +478,10 @@ All data can be re-downloaded from Garmin Connect. This is the cleanest upgrade 
 - Flexible authentication with OAuth tokens.
 - Comprehensive documentation and examples.
 
-[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.14.0...HEAD
+[Unreleased]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.17.0...HEAD
+[2.17.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.16.0...v2.17.0
+[2.16.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.15.0...v2.16.0
+[2.14.1]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.14.0...v2.14.1
 [2.14.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/diegoscarabelli/garmin-health-data/compare/v2.11.2...v2.12.0
