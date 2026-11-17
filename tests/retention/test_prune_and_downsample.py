@@ -6,6 +6,7 @@ Together these cover the SQL behavior the CLI commands rely on. The CLI tests in
 formatting); these tests assert the underlying mutation semantics.
 """
 
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -850,11 +851,11 @@ def test_vacuum_checks_temp_dir_on_separate_filesystem(
     assert exc_info.value.location is temp_dir
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Unix VFS search order only.")
 def test_sqlite_temp_dir_order(monkeypatch, tmp_path):
     """
     SQLITE_TMPDIR wins when set; with no usable directory the fallback is ".".
     """
-    monkeypatch.setattr(operations.os, "name", "posix")
     monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
     assert operations._sqlite_temp_dir() == tmp_path
 
