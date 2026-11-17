@@ -6,8 +6,12 @@ Together these cover the SQL behavior the CLI commands rely on. The CLI tests in
 formatting); these tests assert the underlying mutation semantics.
 """
 
+import sqlite3
 from datetime import date, datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Tuple
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import insert
@@ -20,8 +24,10 @@ from garmin_health_data.models import (
     User,
 )
 from garmin_health_data.retention.operations import (
+    InsufficientDiskSpaceError,
     downsample_activities,
     prune_ts_metrics,
+    vacuum_database,
 )
 
 
@@ -690,3 +696,109 @@ def test_downsample_creates_new_table_on_pre_2_9_db(tmp_path):
         .fetchall()
     )
     assert ("activity_ts_metric_downsampled",) in post_tables
+
+
+# ---------------------------------------------------------------------------
+# vacuum_database
+# ---------------------------------------------------------------------------
+
+
+def _seed_bulky_activity(session: Session, rows: int = 5000) -> None:
+    """
+    Seed one activity with enough ts-metric rows to span many database pages.
+
+    :param session: Active SQLAlchemy session.
+    :param rows: Number of per-second heart-rate rows to insert.
+    """
+    user_id = _seed_user(session)
+    start = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+    _seed_activity(session, 1, user_id, start, duration_minutes=rows // 60 + 1)
+    _seed_ts_metrics(
+        session,
+        1,
+        [
+            (
+                datetime.fromtimestamp(start.timestamp() + sec, tz=timezone.utc),
+                "heart_rate",
+                140.0,
+                "bpm",
+            )
+            for sec in range(rows)
+        ],
+    )
+
+
+def test_vacuum_shrinks_file_after_prune(temp_db_path, db_engine, db_session):
+    """
+    A prune alone leaves the file size unchanged; vacuum returns the freed pages.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    size_seeded = Path(temp_db_path).stat().st_size
+
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    assert Path(temp_db_path).stat().st_size == size_seeded
+
+    result = vacuum_database(temp_db_path)
+
+    assert result["size_before"] == size_seeded
+    assert result["size_after"] < size_seeded
+    assert result["bytes_reclaimed"] == size_seeded - result["size_after"]
+    assert result["pages_reclaimed"] > 0
+    assert Path(temp_db_path).stat().st_size == result["size_after"]
+    conn = sqlite3.connect(temp_db_path)
+    try:
+        assert conn.execute("PRAGMA freelist_count").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_vacuum_wal_mode_truncates_wal(temp_db_path, db_engine, db_session):
+    """
+    In WAL mode the vacuum is checkpointed, so the main file shrinks and the WAL is
+    truncated.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    db_engine.dispose()
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+
+    result = vacuum_database(temp_db_path)
+
+    assert result["size_after"] < result["size_before"]
+    wal = Path(temp_db_path + "-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_vacuum_insufficient_disk_space_skips(temp_db_path, db_engine, db_session):
+    """
+    When free disk space is short, vacuum raises before touching the database.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    size_before = Path(temp_db_path).stat().st_size
+
+    with patch(
+        "garmin_health_data.retention.operations.shutil.disk_usage",
+        return_value=SimpleNamespace(total=1, used=1, free=0),
+    ):
+        with pytest.raises(InsufficientDiskSpaceError) as exc_info:
+            vacuum_database(temp_db_path)
+
+    assert exc_info.value.free_bytes == 0
+    assert exc_info.value.required_bytes > 0
+    assert Path(temp_db_path).stat().st_size == size_before
+
+
+def test_vacuum_missing_database_raises(tmp_path):
+    """
+    A missing database path raises FileNotFoundError instead of creating a file.
+    """
+    missing = tmp_path / "missing.db"
+    with pytest.raises(FileNotFoundError):
+        vacuum_database(str(missing))
+    assert not missing.exists()

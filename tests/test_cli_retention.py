@@ -1,6 +1,6 @@
 """
-Smoke tests for the retention CLI commands (prune, downsample, migrate-cascade) and the
-extract auto-flag validation.
+Smoke tests for the retention CLI commands (prune, downsample, vacuum, migrate-cascade)
+and the extract auto-flag validation.
 
 The SQL semantics are exhaustively covered by
 ``tests/retention/test_prune_and_downsample.py`` and
@@ -8,8 +8,11 @@ The SQL semantics are exhaustively covered by
 parameter parsing, prompt flow, output formatting, and flag-pairing rules.
 """
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from click.testing import CliRunner
 from sqlalchemy import insert
@@ -567,3 +570,312 @@ def test_extract_auto_downsample_actually_runs(tmp_path: Path):
         assert bucket.bucket_seconds == 60
         assert bucket.sample_count == 3
     engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Vacuum after prune, and garmin vacuum
+# ---------------------------------------------------------------------------
+
+
+def _seed_bulky_db(db_path: Path, start: datetime, rows: int = 5000) -> None:
+    """
+    Build a database with one activity holding enough ts-metric rows to span many pages,
+    so a prune frees space that a vacuum can measurably reclaim.
+
+    :param db_path: Path to the SQLite database file.
+    :param start: Activity start_ts.
+    :param rows: Number of per-second heart-rate rows to insert.
+    """
+    create_tables(str(db_path))
+    engine = get_engine(str(db_path))
+    with Session(engine) as session:
+        session.add(User(user_id=99))
+        session.commit()
+        session.add(
+            Activity(
+                activity_id=999,
+                user_id=99,
+                activity_type_id=1,
+                activity_type_key="running",
+                event_type_id=1,
+                event_type_key="other",
+                start_ts=start,
+                end_ts=start + timedelta(seconds=rows),
+                timezone_offset_hours=0.0,
+            )
+        )
+        session.commit()
+        session.execute(
+            insert(ActivityTsMetric),
+            [
+                {
+                    "activity_id": 999,
+                    "timestamp": start + timedelta(seconds=sec),
+                    "name": "heart_rate",
+                    "value": 140.0,
+                    "units": "bpm",
+                }
+                for sec in range(rows)
+            ],
+        )
+        session.commit()
+    engine.dispose()
+
+
+_JAN_START = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+_PRUNE_ARGS = ["prune", "--end-date", "2026-01-31", "--yes"]
+_NO_DISK = SimpleNamespace(total=1, used=1, free=0)
+
+
+def test_prune_vacuums_by_default(tmp_path: Path):
+    """
+    A real prune that deletes rows vacuums afterwards and reports the reclaimed size.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    size_before = db.stat().st_size
+
+    result = CliRunner().invoke(cli, _PRUNE_ARGS + ["--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    assert "Reclaimed" in result.output
+    assert db.stat().st_size < size_before
+
+
+def test_prune_no_vacuum_leaves_size_unchanged(tmp_path: Path):
+    """
+    --no-vacuum deletes the rows but skips the vacuum, so the file keeps its size.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    size_before = db.stat().st_size
+
+    result = CliRunner().invoke(
+        cli, _PRUNE_ARGS + ["--db-path", str(db), "--no-vacuum"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    assert "Vacuuming" not in result.output
+    assert db.stat().st_size == size_before
+
+
+def test_prune_dry_run_does_not_vacuum(tmp_path: Path):
+    """
+    --dry-run mentions the vacuum a real run would do but does not run it.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = CliRunner().invoke(
+            cli,
+            [
+                "prune",
+                "--db-path",
+                str(db),
+                "--end-date",
+                "2026-01-31",
+                "--dry-run",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "would then vacuum" in result.output
+    vacuum.assert_not_called()
+
+
+def test_prune_nothing_to_prune_does_not_vacuum(tmp_path: Path):
+    """
+    When no rows are in range, prune returns early without vacuuming.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = CliRunner().invoke(
+            cli,
+            ["prune", "--db-path", str(db), "--end-date", "2025-01-01", "--yes"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to prune" in result.output
+    vacuum.assert_not_called()
+
+
+def test_prune_insufficient_disk_skips_vacuum(tmp_path: Path):
+    """
+    Short free disk space skips the vacuum with a hint, and prune still succeeds.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    size_before = db.stat().st_size
+
+    with patch(
+        "garmin_health_data.retention.operations.shutil.disk_usage",
+        return_value=_NO_DISK,
+    ):
+        result = CliRunner().invoke(cli, _PRUNE_ARGS + ["--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    assert "Skipped vacuum: not enough free disk space" in result.output
+    assert "garmin vacuum" in result.output
+    assert db.stat().st_size == size_before
+    engine = get_engine(str(db))
+    with Session(engine) as session:
+        assert session.query(ActivityTsMetric).count() == 0
+    engine.dispose()
+
+
+def test_prune_vacuum_failure_is_a_warning(tmp_path: Path):
+    """
+    A SQLite error during the vacuum is reported as a warning; the committed prune
+    stands and the command exits 0.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+
+    with patch(
+        "garmin_health_data.cli.vacuum_database",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        result = CliRunner().invoke(cli, _PRUNE_ARGS + ["--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    assert "Vacuum failed (database is locked)" in result.output
+    assert "garmin vacuum" in result.output
+
+
+def test_vacuum_command_reclaims_space(tmp_path: Path):
+    """
+    `garmin vacuum` shrinks a database that was pruned without vacuuming.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    runner = CliRunner()
+    pruned = runner.invoke(cli, _PRUNE_ARGS + ["--db-path", str(db), "--no-vacuum"])
+    assert pruned.exit_code == 0, pruned.output
+    size_before = db.stat().st_size
+
+    result = runner.invoke(cli, ["vacuum", "--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Reclaimed" in result.output
+    assert db.stat().st_size < size_before
+
+
+def test_vacuum_command_missing_db_aborts_cleanly(tmp_path: Path):
+    """
+    A non-existent --db-path aborts with the same hint as the other retention commands.
+    """
+    result = CliRunner().invoke(
+        cli, ["vacuum", "--db-path", str(tmp_path / "does-not-exist.db")]
+    )
+    assert result.exit_code != 0
+    assert "Database not found" in result.output
+    assert "garmin extract" in result.output
+
+
+def test_vacuum_command_insufficient_disk_aborts(tmp_path: Path):
+    """
+    `garmin vacuum` with short free disk space exits non-zero without writing.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START)
+    size_before = db.stat().st_size
+
+    with patch(
+        "garmin_health_data.retention.operations.shutil.disk_usage",
+        return_value=_NO_DISK,
+    ):
+        result = CliRunner().invoke(cli, ["vacuum", "--db-path", str(db)])
+
+    assert result.exit_code != 0
+    assert "Not enough free disk space" in result.output
+    assert db.stat().st_size == size_before
+
+
+def test_vacuum_command_sqlite_error_aborts(tmp_path: Path):
+    """
+    `garmin vacuum` exits non-zero with a clear message when SQLite fails.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START, rows=10)
+
+    with patch(
+        "garmin_health_data.cli.vacuum_database",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        result = CliRunner().invoke(cli, ["vacuum", "--db-path", str(db)])
+
+    assert result.exit_code != 0
+    assert "Vacuum failed (database is locked)" in result.output
+
+
+def _invoke_extract_prune(tmp_path: Path, *extra: str):
+    """
+    Run `extract --process-only --prune-older-than 30d` against an empty ingest/.
+
+    :param tmp_path: Directory holding the database and lifecycle folders.
+    :param extra: Additional CLI arguments.
+    :return: Click result.
+    """
+    (tmp_path / "garmin_files" / "ingest").mkdir(parents=True)
+    (tmp_path / "garmin_files" / "process").mkdir(parents=True)
+    return CliRunner().invoke(
+        cli,
+        [
+            "extract",
+            "--process-only",
+            "--db-path",
+            str(tmp_path / "garmin.db"),
+            "--prune-older-than",
+            "30d",
+            *extra,
+        ],
+    )
+
+
+def test_extract_auto_prune_vacuums(tmp_path: Path):
+    """
+    `extract --prune-older-than` vacuums after deleting rows.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, datetime.now(timezone.utc) - timedelta(days=400))
+    size_before = db.stat().st_size
+
+    result = _invoke_extract_prune(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert "Reclaimed" in result.output
+    assert db.stat().st_size < size_before
+
+
+def test_extract_auto_prune_no_vacuum(tmp_path: Path):
+    """
+    `extract --prune-older-than --no-vacuum` deletes rows without vacuuming.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, datetime.now(timezone.utc) - timedelta(days=400))
+
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = _invoke_extract_prune(tmp_path, "--no-vacuum")
+
+    assert result.exit_code == 0, result.output
+    assert "Deleted" in result.output
+    vacuum.assert_not_called()
+
+
+def test_extract_auto_prune_nothing_deleted_does_not_vacuum(tmp_path: Path):
+    """
+    When the auto prune deletes nothing, extract does not vacuum.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, datetime.now(timezone.utc) - timedelta(days=1), rows=10)
+
+    with patch("garmin_health_data.cli.vacuum_database") as vacuum:
+        result = _invoke_extract_prune(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    vacuum.assert_not_called()
