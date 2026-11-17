@@ -15,12 +15,17 @@ Public entry points:
   replace semantics (target activities have their existing downsampled rows wiped
   and rewritten in a single transaction; activities with no source rows are
   excluded from the replace set so their pre-existing buckets are preserved).
+- :func:`vacuum_database` rebuilds the database file with ``VACUUM`` so the pages
+  freed by a prune are returned to the filesystem; :func:`free_page_stats` reports
+  how much it would reclaim.
 """
 
+import os
 import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
@@ -1012,4 +1017,194 @@ def downsample_activities(
         "rows_inserted": rows_inserted,
         "metric_strategies": metric_strategies,
         "dry_run": False,
+    }
+
+
+class InsufficientDiskSpaceError(RuntimeError):
+    """
+    Raised when there is not enough free disk space to run ``VACUUM`` safely.
+
+    :ivar required_bytes: Estimated free bytes ``VACUUM`` needs.
+    :ivar free_bytes: Free bytes available where ``VACUUM`` writes.
+    :ivar location: Directory whose filesystem is short of space.
+    """
+
+    def __init__(self, required_bytes: int, free_bytes: int, location: Path) -> None:
+        """
+        Build the error with the space figures callers print.
+
+        :param required_bytes: Estimated free bytes ``VACUUM`` needs.
+        :param free_bytes: Free bytes available where ``VACUUM`` writes.
+        :param location: Directory whose filesystem is short of space.
+        """
+        self.required_bytes = required_bytes
+        self.free_bytes = free_bytes
+        self.location = location
+        super().__init__(
+            f"Not enough free disk space to vacuum: needs about "
+            f"{required_bytes} bytes in {location}, {free_bytes} available."
+        )
+
+
+def _sqlite_temp_dir() -> Path:
+    """
+    Return the directory SQLite uses for the temporary copy ``VACUUM`` builds.
+
+    Mirrors SQLite's Unix VFS search order (``SQLITE_TMPDIR``, ``TMPDIR``,
+    ``/var/tmp``, ``/usr/tmp``, ``/tmp``); on Windows SQLite uses the system temp
+    path, which :func:`tempfile.gettempdir` also returns.
+
+    :return: Existing directory used for SQLite temporary files.
+    """
+    if os.name == "nt":
+        return Path(tempfile.gettempdir())
+    candidates = [
+        os.environ.get("SQLITE_TMPDIR"),
+        os.environ.get("TMPDIR"),
+        "/var/tmp",
+        "/usr/tmp",
+        "/tmp",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+    return Path(".")
+
+
+def _check_vacuum_disk_space(db_file: Path, live_bytes: int) -> None:
+    """
+    Ensure the filesystems ``VACUUM`` writes to have room for it.
+
+    ``VACUUM`` writes the live data twice: a temporary copy in SQLite's temp
+    directory, then a journal (rollback or WAL) next to the database while the
+    copy is written back. Each needs roughly the size of the live (non-free)
+    pages, so the database's directory needs ``live_bytes`` and the temp
+    directory needs another ``live_bytes``, or ``2 * live_bytes`` when both sit
+    on the same filesystem. A 10% margin covers page overhead.
+
+    :param db_file: Resolved path of the database file.
+    :param live_bytes: Bytes held by in-use pages (page count minus free pages).
+    :raises InsufficientDiskSpaceError: when either filesystem is short of space.
+    """
+    need = int(live_bytes * 1.1)
+    db_dir = db_file.parent
+    temp_dir = _sqlite_temp_dir()
+    same_fs = db_dir.stat().st_dev == temp_dir.stat().st_dev
+    checks = [(db_dir, 2 * need)] if same_fs else [(db_dir, need), (temp_dir, need)]
+    for location, required in checks:
+        free = shutil.disk_usage(location).free
+        if free < required:
+            raise InsufficientDiskSpaceError(required, free, location)
+
+
+# Automatic vacuums (after ``prune`` and ``extract --prune-older-than``) run only
+# when free pages make up at least this fraction of the file. ``VACUUM`` rewrites
+# the whole file, so rebuilding it for a sliver of reclaimable space (as a daily
+# rolling-window prune would) costs far more than it saves. ``garmin vacuum``
+# ignores the threshold.
+AUTO_VACUUM_MIN_FREE_FRACTION = 0.10
+
+# Seconds ``vacuum_database`` waits for other connections to release the database
+# before ``VACUUM`` or the WAL checkpoint gives up.
+_VACUUM_BUSY_TIMEOUT_SECONDS = 30.0
+
+
+def _read_page_stats(conn: sqlite3.Connection) -> dict:
+    """
+    Read page counts from an open connection.
+
+    :param conn: Open SQLite connection.
+    :return: Dict with ``"page_size"``, ``"page_count"``, ``"freelist_count"``,
+        ``"free_bytes"``, and ``"free_fraction"`` (free pages over all pages, 0.0 for an
+        empty file).
+    """
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+    freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    return {
+        "page_size": page_size,
+        "page_count": page_count,
+        "freelist_count": freelist,
+        "free_bytes": freelist * page_size,
+        "free_fraction": freelist / page_count if page_count else 0.0,
+    }
+
+
+def free_page_stats(db_path: str) -> dict:
+    """
+    Report how much of the database file is free pages that ``VACUUM`` would reclaim.
+
+    :param db_path: Path to the SQLite database file.
+    :return: Dict with ``"page_size"``, ``"page_count"``, ``"freelist_count"``,
+        ``"free_bytes"``, and ``"free_fraction"``.
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    :raises sqlite3.Error: when SQLite cannot read the page counts.
+    """
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+    conn = sqlite3.connect(str(db_file), isolation_level=None)
+    try:
+        return _read_page_stats(conn)
+    finally:
+        conn.close()
+
+
+def vacuum_database(db_path: str) -> dict:
+    """
+    Rebuild the database file with ``VACUUM`` to return free pages to the disk.
+
+    SQLite keeps pages freed by ``DELETE`` inside the file for reuse, so the file
+    does not shrink after a prune until it is vacuumed. Runs on its own autocommit
+    connection (``VACUUM`` cannot run inside a transaction). Callers must not hold
+    an open transaction on the database; idle pooled connections are fine.
+
+    Checks free disk space first and raises without touching the database when it
+    is short. ``VACUUM`` is atomic: if it fails part-way (disk full, database
+    locked), the database is left as it was. In WAL mode the WAL is checkpointed
+    and truncated afterwards so the main file reflects the new size.
+
+    :param db_path: Path to the SQLite database file.
+    :return: Summary dict with keys ``"size_before"`` and ``"size_after"`` (main
+        database file size in bytes), ``"bytes_reclaimed"``, and
+        ``"pages_reclaimed"`` (free-list pages before the vacuum), and ``"wal_busy"``
+        (True when, in WAL mode, another connection kept the WAL from being
+        truncated, so the vacuumed pages stay in the WAL until a later checkpoint).
+    :raises FileNotFoundError: when ``db_path`` does not exist.
+    :raises InsufficientDiskSpaceError: when there is not enough free disk space.
+    :raises sqlite3.Error: when SQLite fails to vacuum (for example, locked).
+    :raises OSError: when file or disk-usage information cannot be read.
+    """
+    db_file = Path(db_path).expanduser().resolve()
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file not found: {db_file}")
+
+    size_before = db_file.stat().st_size
+    wal_busy = False
+    conn = sqlite3.connect(
+        str(db_file), isolation_level=None, timeout=_VACUUM_BUSY_TIMEOUT_SECONDS
+    )
+    try:
+        stats = _read_page_stats(conn)
+        page_size = stats["page_size"]
+        page_count = stats["page_count"]
+        freelist = stats["freelist_count"]
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        _check_vacuum_disk_space(db_file, (page_count - freelist) * page_size)
+
+        conn.execute("VACUUM")
+        if str(journal_mode).lower() == "wal":
+            busy = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+            wal_busy = bool(busy)
+    finally:
+        conn.close()
+
+    size_after = db_file.stat().st_size
+    return {
+        "size_before": size_before,
+        "size_after": size_after,
+        "bytes_reclaimed": max(size_before - size_after, 0),
+        "pages_reclaimed": freelist,
+        "wal_busy": wal_busy,
     }

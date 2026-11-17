@@ -6,8 +6,13 @@ Together these cover the SQL behavior the CLI commands rely on. The CLI tests in
 formatting); these tests assert the underlying mutation semantics.
 """
 
+import os
+import sqlite3
 from datetime import date, datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Tuple
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import insert
@@ -19,9 +24,13 @@ from garmin_health_data.models import (
     ActivityTsMetricDownsampled,
     User,
 )
+from garmin_health_data.retention import operations
 from garmin_health_data.retention.operations import (
+    InsufficientDiskSpaceError,
     downsample_activities,
+    free_page_stats,
     prune_ts_metrics,
+    vacuum_database,
 )
 
 
@@ -690,3 +699,203 @@ def test_downsample_creates_new_table_on_pre_2_9_db(tmp_path):
         .fetchall()
     )
     assert ("activity_ts_metric_downsampled",) in post_tables
+
+
+# ---------------------------------------------------------------------------
+# vacuum_database
+# ---------------------------------------------------------------------------
+
+
+def _seed_bulky_activity(session: Session, rows: int = 5000) -> None:
+    """
+    Seed one activity with enough ts-metric rows to span many database pages.
+
+    :param session: Active SQLAlchemy session.
+    :param rows: Number of per-second heart-rate rows to insert.
+    """
+    user_id = _seed_user(session)
+    start = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+    _seed_activity(session, 1, user_id, start, duration_minutes=rows // 60 + 1)
+    _seed_ts_metrics(
+        session,
+        1,
+        [
+            (
+                datetime.fromtimestamp(start.timestamp() + sec, tz=timezone.utc),
+                "heart_rate",
+                140.0,
+                "bpm",
+            )
+            for sec in range(rows)
+        ],
+    )
+
+
+def test_vacuum_shrinks_file_after_prune(temp_db_path, db_engine, db_session):
+    """
+    A prune alone leaves the file size unchanged; vacuum returns the freed pages.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    size_seeded = Path(temp_db_path).stat().st_size
+
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    assert Path(temp_db_path).stat().st_size == size_seeded
+
+    result = vacuum_database(temp_db_path)
+
+    assert result["size_before"] == size_seeded
+    assert result["size_after"] < size_seeded
+    assert result["bytes_reclaimed"] == size_seeded - result["size_after"]
+    assert result["pages_reclaimed"] > 0
+    assert Path(temp_db_path).stat().st_size == result["size_after"]
+    conn = sqlite3.connect(temp_db_path)
+    try:
+        assert conn.execute("PRAGMA freelist_count").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_vacuum_wal_mode_truncates_wal(temp_db_path, db_engine, db_session):
+    """
+    In WAL mode the vacuum is checkpointed, so the main file shrinks and the WAL is
+    truncated.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    db_engine.dispose()
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+
+    result = vacuum_database(temp_db_path)
+
+    assert result["size_after"] < result["size_before"]
+    wal = Path(temp_db_path + "-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_vacuum_insufficient_disk_space_skips(temp_db_path, db_engine, db_session):
+    """
+    When free disk space is short, vacuum raises before touching the database.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    size_before = Path(temp_db_path).stat().st_size
+
+    with patch(
+        "garmin_health_data.retention.operations.shutil.disk_usage",
+        return_value=SimpleNamespace(total=1, used=1, free=0),
+    ):
+        with pytest.raises(InsufficientDiskSpaceError) as exc_info:
+            vacuum_database(temp_db_path)
+
+    assert exc_info.value.free_bytes == 0
+    assert exc_info.value.required_bytes > 0
+    assert Path(temp_db_path).stat().st_size == size_before
+
+
+def test_vacuum_missing_database_raises(tmp_path):
+    """
+    A missing database path raises FileNotFoundError instead of creating a file.
+    """
+    missing = tmp_path / "missing.db"
+    with pytest.raises(FileNotFoundError):
+        vacuum_database(str(missing))
+    assert not missing.exists()
+
+
+def test_free_page_stats_reports_prune_freed_pages(temp_db_path, db_engine, db_session):
+    """
+    free_page_stats reports the pages a prune freed and their share of the file.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    assert free_page_stats(temp_db_path)["freelist_count"] == 0
+
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    stats = free_page_stats(temp_db_path)
+
+    assert stats["freelist_count"] > 0
+    assert stats["free_bytes"] == stats["freelist_count"] * stats["page_size"]
+    assert stats["free_fraction"] == stats["freelist_count"] / stats["page_count"]
+
+
+def test_vacuum_checks_temp_dir_on_separate_filesystem(
+    temp_db_path, db_engine, db_session, tmp_path
+):
+    """
+    When SQLite's temp directory is on another filesystem, each location is checked
+    separately and a short temp directory is named in the error.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    temp_dir = SimpleNamespace(stat=lambda: SimpleNamespace(st_dev=-1))
+
+    def fake_disk_usage(location):
+        free = 0 if location is temp_dir else 10**12
+        return SimpleNamespace(total=10**12, used=0, free=free)
+
+    with (
+        patch.object(operations, "_sqlite_temp_dir", return_value=temp_dir),
+        patch(
+            "garmin_health_data.retention.operations.shutil.disk_usage",
+            side_effect=fake_disk_usage,
+        ),
+    ):
+        with pytest.raises(InsufficientDiskSpaceError) as exc_info:
+            vacuum_database(temp_db_path)
+
+    assert exc_info.value.location is temp_dir
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix VFS search order only.")
+def test_sqlite_temp_dir_order(monkeypatch, tmp_path):
+    """
+    SQLITE_TMPDIR wins when set; with no usable directory the fallback is ".".
+    """
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
+    assert operations._sqlite_temp_dir() == tmp_path
+
+    monkeypatch.delenv("SQLITE_TMPDIR")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    with patch.object(operations.Path, "is_dir", return_value=False):
+        assert operations._sqlite_temp_dir() == Path(".")
+
+
+def test_vacuum_wal_reports_busy_checkpoint(
+    temp_db_path, db_engine, db_session, monkeypatch
+):
+    """
+    In WAL mode, a reader holding the database keeps the WAL from being truncated; the
+    vacuum still succeeds and reports the busy checkpoint.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    db_engine.dispose()
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    monkeypatch.setattr(operations, "_VACUUM_BUSY_TIMEOUT_SECONDS", 0.1)
+
+    reader = sqlite3.connect(temp_db_path, isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM activity").fetchone()
+        result = vacuum_database(temp_db_path)
+    finally:
+        reader.close()
+
+    assert result["wal_busy"] is True
+
+
+def test_vacuum_rollback_journal_reports_not_busy(temp_db_path, db_engine, db_session):
+    """
+    Outside WAL mode there is no checkpoint, so wal_busy is False.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    assert vacuum_database(temp_db_path)["wal_busy"] is False

@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/65023665-fa7a-4bbf-85d6-c3d4a3145171
 - 🏥 **Comprehensive data**: a single `garmin extract` command downloads sleep, HRV, stress, body battery, heart rate, respiration, VO2 max, training metrics, menstrual cycle, and activity files in FIT or TCX format (time-series, laps, splits, per-length pool swim data, beat-to-beat HRV, events, session metrics) as local files and loads them into a SQLite database in one pass.
 - 👥 **Multi-account**: one database across multiple Garmin Connect accounts (e.g. family members). Run `garmin auth` once per account; extraction discovers and processes them automatically.
 - 🛡️ **Resilient pipeline**: four-folder lifecycle (`ingest/process/storage/quarantine`), auto-resume from the last update, crash recovery, and per-date / per-data-type / per-activity / per-FileSet failure isolation. Original files are preserved on disk for offline backup and post-mortem inspection.
-- 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
+- 🗜️ **Bounded disk usage**: `garmin downsample` aggregates per-second sensor data into time-bucketed records, and `garmin prune` deletes the source rows and shrinks the database file. Together they let you run a multi-year history without unbounded growth (`activity_ts_metric` is ~93% of typical DB size).
 - 🔐 **Self-contained Garmin client**: bundled SSO/MFA login client, with no third-party Garmin Connect client library dependency.
 - 🖥️ **Cross-platform**: macOS, Linux, Windows. Python 3.10+.
 
@@ -219,7 +219,8 @@ $ garmin extract
 `activity_ts_metric` (per-second sensor data parsed from FIT or TCX activity files) accounts for ~93% of typical database growth. Two commands let you control it without touching any summary, sleep, or biometric tables:
 
 - **`garmin downsample`** aggregates per-second readings into time buckets and writes them to a separate `activity_ts_metric_downsampled` table. Source rows are never modified by this command.
-- **`garmin prune`** deletes per-second source rows for activities in a date range. The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
+- **`garmin prune`** deletes per-second source rows for activities in a date range, then vacuums the database so the file actually shrinks (when at least 10% of it is free). The downsampled buckets created above survive the prune, so the two compose: downsample first to preserve trends as low-resolution archive, then prune to reclaim disk.
+- **`garmin vacuum`** shrinks the file on demand, for example after `prune --no-vacuum`.
 
 #### Manual one-off run
 
@@ -245,7 +246,7 @@ garmin extract \
     --prune-older-than 1y
 ```
 
-The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race.
+The cutoff is computed as `today - DURATION` (`90d`, `6m`, `1y` are all valid). Retention runs after extraction processing, inside the same lifecycle lock, so concurrent invocations cannot race. When the prune leaves at least 10% of the file free, the database is vacuumed afterwards (skip with `--no-vacuum`).
 
 #### Safety rails
 
@@ -254,7 +255,7 @@ Both standalone commands print a row-count preview before any write. `garmin dow
 - `--dry-run` reports what would change and exits without writing.
 - `--yes` / `-y` skips the interactive confirmation prompt for scripted use.
 
-> Full flag tables, the per-metric strategy registry, bucket alignment rules: see [Retention reference](#retention-prune-downsample-migrate-cascade).
+> Full flag tables, the per-metric strategy registry, bucket alignment rules: see [Retention reference](#retention-prune-vacuum-downsample-migrate-cascade).
 
 ### Inspecting your data
 
@@ -291,9 +292,10 @@ The data lives in a single SQLite file (default `./garmin_data.db`). Query it wi
 | [`garmin extract`](#garmin-extract) | Download data from Garmin Connect and load it into the SQLite database. The default workflow. Supports rolling-window auto retention via opt-in flags. | [extract](#garmin-extract) |
 | [`garmin info`](#garmin-info) | Show row counts, last-update dates, and DB size. Read-only. | [info](#garmin-info) |
 | [`garmin verify`](#garmin-verify) | Check schema integrity and run SQLite's `PRAGMA integrity_check`. Read-only. | [verify](#garmin-verify) |
-| [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-downsample-migrate-cascade) |
-| [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-downsample-migrate-cascade) |
-| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-downsample-migrate-cascade) |
+| [`garmin downsample`](#garmin-downsample) | Aggregate `activity_ts_metric` into time-bucketed records in `activity_ts_metric_downsampled`. Source rows are not modified. | [retention](#retention-prune-vacuum-downsample-migrate-cascade) |
+| [`garmin prune`](#garmin-prune) | Delete `activity_ts_metric` rows for activities in a date range and vacuum the file. The disk-reclaim partner of `downsample`. | [retention](#retention-prune-vacuum-downsample-migrate-cascade) |
+| [`garmin vacuum`](#garmin-vacuum) | Rebuild the database file to return space freed by deletes to the disk. | [retention](#retention-prune-vacuum-downsample-migrate-cascade) |
+| [`garmin migrate-cascade`](#garmin-migrate-cascade) | One-shot retrofit of `ON DELETE CASCADE` onto pre-2.9 databases. Run once after upgrading from 2.8.x or earlier. | [retention](#retention-prune-vacuum-downsample-migrate-cascade) |
 | [`garmin migrate-multisport`](#garmin-migrate-multisport) | Add `activity.parent_activity_id` and relax the `(user_id, start_ts)` uniqueness to a partial index (multi-sport support). Runs automatically on `extract`; available for explicit control (e.g. `--dry-run`). | — |
 
 All commands accept `--db-path PATH` (defaults to `./garmin_data.db`). Run any command with `--help` to see its full flag list.
@@ -319,9 +321,10 @@ Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 | `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
 | `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
-| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | Before extracting, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
+| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | After processing, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
 | `--downsample-grain GRAIN` | Required when `--downsample-older-than` is set | Bucket grain for the auto downsample (e.g., `60s`, `5m`). |
-| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. |
+| `--prune-older-than DURATION` | Optional | After processing (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`, then vacuum the database when at least 10% of it is free. |
+| `--no-vacuum` | Flag | Skip the vacuum that follows `--prune-older-than`. Only applies with `--prune-older-than`. |
 
 <details>
 <summary><strong>File lifecycle</strong></summary>
@@ -457,7 +460,7 @@ Read-only. Reports the number of tables defined in the schema and runs SQLite's 
 Exits with code 0 when the integrity check passes. If it fails, prints every returned
 diagnostic and exits with code 1. A missing database also exits with code 1.
 
-### Retention: `prune`, `downsample`, `migrate-cascade`
+### Retention: `prune`, `vacuum`, `downsample`, `migrate-cascade`
 
 `activity_ts_metric` (per-second sensor data parsed from FIT or TCX activity files) is the only table whose long-run growth typically matters; on a representative database it accounts for ~93% of disk usage. The retention commands target it directly and leave every other table untouched.
 
@@ -474,6 +477,8 @@ Both `prune` and `downsample` use the same date-range semantics as `extract`:
 
 Deletes rows from `activity_ts_metric` for activities in range. Activity rows themselves, splits, laps, agg metrics, paths, swim lengths, events, HRV R-R interval series, sleep details, biometric series, and the downsampled buckets table are all preserved. By default, prints the matching row count and prompts before deleting.
 
+After a delete, prune runs [`garmin vacuum`](#garmin-vacuum) under the same lock and prints the space reclaimed, but only when free pages are at least 10% of the file; below that it prints how much is reclaimable and skips, so a small daily prune does not rewrite the whole file. If the vacuum is skipped for lack of disk space or fails, the deleted rows stay deleted, prune still exits 0, and it prints a warning with the `garmin vacuum` command to run later.
+
 | Flag | Type | Purpose |
 | --- | --- | --- |
 | `--end-date YYYY-MM-DD` | Required, exclusive | End of the range. |
@@ -481,7 +486,18 @@ Deletes rows from `activity_ts_metric` for activities in range. Activity rows th
 | `--accounts ID` | Repeatable or comma-separated | Scope to specific Garmin user IDs. |
 | `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
 | `--dry-run` | Flag | Report row count without deleting. |
+| `--no-vacuum` | Flag | Skip the vacuum after the delete. |
 | `--yes` / `-y` | Flag | Skip the confirmation prompt. |
+
+#### `garmin vacuum`
+
+SQLite keeps the pages freed by a delete inside the database file for reuse, so the file does not shrink until it is rebuilt with `VACUUM`. This command always runs that rebuild, regardless of how much is free, under the lifecycle lock and prints the size before and after. Use it after `prune --no-vacuum`, after re-running `downsample` (which replaces bucket rows), or on a database pruned by an older version.
+
+`VACUUM` temporarily needs free disk space of about twice the size of the remaining data (a temporary copy plus a journal). The command checks first and exits 1 without writing when space is short; a failed vacuum also exits 1 and leaves the database unchanged.
+
+| Flag | Type | Purpose |
+| --- | --- | --- |
+| `--db-path PATH` | File path | Defaults to `./garmin_data.db`. |
 
 #### `garmin downsample`
 
