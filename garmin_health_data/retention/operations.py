@@ -1104,6 +1104,10 @@ def _check_vacuum_disk_space(db_file: Path, live_bytes: int) -> None:
 # ignores the threshold.
 AUTO_VACUUM_MIN_FREE_FRACTION = 0.10
 
+# Seconds ``vacuum_database`` waits for other connections to release the database
+# before ``VACUUM`` or the WAL checkpoint gives up.
+_VACUUM_BUSY_TIMEOUT_SECONDS = 30.0
+
 
 def _read_page_stats(conn: sqlite3.Connection) -> dict:
     """
@@ -1163,7 +1167,9 @@ def vacuum_database(db_path: str) -> dict:
     :param db_path: Path to the SQLite database file.
     :return: Summary dict with keys ``"size_before"`` and ``"size_after"`` (main
         database file size in bytes), ``"bytes_reclaimed"``, and
-        ``"pages_reclaimed"`` (free-list pages before the vacuum).
+        ``"pages_reclaimed"`` (free-list pages before the vacuum), and ``"wal_busy"``
+        (True when, in WAL mode, another connection kept the WAL from being
+        truncated, so the vacuumed pages stay in the WAL until a later checkpoint).
     :raises FileNotFoundError: when ``db_path`` does not exist.
     :raises InsufficientDiskSpaceError: when there is not enough free disk space.
     :raises sqlite3.Error: when SQLite fails to vacuum (for example, locked).
@@ -1174,7 +1180,10 @@ def vacuum_database(db_path: str) -> dict:
         raise FileNotFoundError(f"Database file not found: {db_file}")
 
     size_before = db_file.stat().st_size
-    conn = sqlite3.connect(str(db_file), isolation_level=None)
+    wal_busy = False
+    conn = sqlite3.connect(
+        str(db_file), isolation_level=None, timeout=_VACUUM_BUSY_TIMEOUT_SECONDS
+    )
     try:
         stats = _read_page_stats(conn)
         page_size = stats["page_size"]
@@ -1186,7 +1195,8 @@ def vacuum_database(db_path: str) -> dict:
 
         conn.execute("VACUUM")
         if str(journal_mode).lower() == "wal":
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            busy = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+            wal_busy = bool(busy)
     finally:
         conn.close()
 
@@ -1196,4 +1206,5 @@ def vacuum_database(db_path: str) -> dict:
         "size_after": size_after,
         "bytes_reclaimed": max(size_before - size_after, 0),
         "pages_reclaimed": freelist,
+        "wal_busy": wal_busy,
     }

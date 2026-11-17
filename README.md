@@ -321,10 +321,10 @@ Performs a fresh interactive login and stores OAuth tokens in `~/.garminconnect/
 | `--db-path PATH` | File path | SQLite database file. Defaults to `./garmin_data.db`. |
 | `--extract-only` | Flag | Download to `garmin_files/ingest/` and stop; do not load into the DB. |
 | `--process-only` | Flag | Skip the API; load whatever is currently in `garmin_files/ingest/`. Does not require authentication. Mutually exclusive with `--extract-only`. |
-| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | Before extracting, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
+| `--downsample-older-than DURATION` | Optional, requires `--downsample-grain` | After processing, downsample `activity_ts_metric` rows for activities with `start_ts < today - DURATION`. Accepts `90d`, `6m`, `1y`. |
 | `--downsample-grain GRAIN` | Required when `--downsample-older-than` is set | Bucket grain for the auto downsample (e.g., `60s`, `5m`). |
-| `--prune-older-than DURATION` | Optional | Before extracting (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`, then vacuum the database when at least 10% of it is free. |
-| `--no-vacuum` | Flag | Skip the vacuum that follows `--prune-older-than`. |
+| `--prune-older-than DURATION` | Optional | After processing (and after the auto downsample, if both are set), delete `activity_ts_metric` rows for activities with `start_ts < today - DURATION`, then vacuum the database when at least 10% of it is free. |
+| `--no-vacuum` | Flag | Skip the vacuum that follows `--prune-older-than`. Only applies with `--prune-older-than`. |
 
 <details>
 <summary><strong>File lifecycle</strong></summary>

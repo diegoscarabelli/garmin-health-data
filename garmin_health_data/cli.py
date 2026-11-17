@@ -49,9 +49,9 @@ from garmin_health_data.retention.operations import (
     AUTO_VACUUM_MIN_FREE_FRACTION,
     InsufficientDiskSpaceError,
     downsample_activities,
+    free_page_stats,
     migrate_cascade,
     migrate_multisport,
-    free_page_stats,
     prune_ts_metrics,
     vacuum_database,
 )
@@ -246,7 +246,7 @@ def auth(
     "--downsample-older-than",
     "downsample_older_than",
     type=DURATION,
-    help="Before extracting, downsample activity_ts_metric rows for activities "
+    help="After processing, downsample activity_ts_metric rows for activities "
     "older than DURATION (e.g., 90d, 6m, 1y). Requires --downsample-grain. The "
     "cutoff date is computed as `today - DURATION` and used as an exclusive "
     "end date for the downsample run.",
@@ -262,7 +262,7 @@ def auth(
     "--prune-older-than",
     "prune_older_than",
     type=DURATION,
-    help="Before extracting, delete activity_ts_metric rows for activities "
+    help="After processing, delete activity_ts_metric rows for activities "
     "older than DURATION (e.g., 90d, 6m, 1y). Runs after --downsample-older-than "
     "if both are given, so today's prune does not strand a bucket aggregation. "
     "Then vacuums the database to shrink the file when at least "
@@ -274,7 +274,7 @@ def auth(
     is_flag=True,
     default=False,
     help="Skip the VACUUM that follows --prune-older-than. The file keeps its "
-    "size until `garmin vacuum` runs.",
+    "size until `garmin vacuum` runs. Only applies with --prune-older-than.",
 )
 def extract(
     start_date: Optional[datetime],
@@ -1109,6 +1109,12 @@ def _print_vacuum_result(result: dict) -> None:
         f"{format_file_size(result['size_after'])}).",
         fg="green",
     )
+    if result.get("wal_busy"):
+        click.secho(
+            "⚠️  The WAL file could not be truncated because another connection "
+            "is reading the database; it shrinks at the next checkpoint.",
+            fg="yellow",
+        )
 
 
 def _vacuum_after_prune(db_path: str) -> None:
@@ -1125,14 +1131,15 @@ def _vacuum_after_prune(db_path: str) -> None:
     :param db_path: Path to the SQLite database file.
     :return: None.
     """
-    hint = f"Run `garmin vacuum --db-path {db_path}` later to shrink the file."
+    vacuum_command = f"garmin vacuum --db-path {db_path}"
+    hint = f"Run `{vacuum_command}` later to shrink the file."
     try:
         stats = free_page_stats(db_path)
         if stats["free_fraction"] < AUTO_VACUUM_MIN_FREE_FRACTION:
             click.secho(
                 f"ℹ️  Skipped vacuum: only {format_file_size(stats['free_bytes'])} "
-                f"({stats['free_fraction']:.0%}) reclaimable; run `garmin vacuum` "
-                f"to force.",
+                f"({stats['free_fraction']:.0%}) reclaimable; run "
+                f"`{vacuum_command}` to force.",
                 fg="cyan",
             )
             return
@@ -1264,7 +1271,10 @@ def prune(
                 fg="cyan",
             )
             if result["rows_affected"] > 0 and not no_vacuum:
-                click.echo("   A real run would then vacuum the database.")
+                click.echo(
+                    "   A real run would then vacuum the database if at least "
+                    f"{AUTO_VACUUM_MIN_FREE_FRACTION:.0%} of the file is free."
+                )
             return
 
         # Real run: preview row count first, then prompt unless --yes. Both

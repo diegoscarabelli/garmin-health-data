@@ -862,3 +862,39 @@ def test_sqlite_temp_dir_order(monkeypatch, tmp_path):
     monkeypatch.delenv("TMPDIR", raising=False)
     with patch.object(operations.Path, "is_dir", return_value=False):
         assert operations._sqlite_temp_dir() == Path(".")
+
+
+def test_vacuum_wal_reports_busy_checkpoint(
+    temp_db_path, db_engine, db_session, monkeypatch
+):
+    """
+    In WAL mode, a reader holding the database keeps the WAL from being truncated; the
+    vacuum still succeeds and reports the busy checkpoint.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    db_engine.dispose()
+    conn = sqlite3.connect(temp_db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    prune_ts_metrics(temp_db_path, end=date(2026, 1, 31))
+    monkeypatch.setattr(operations, "_VACUUM_BUSY_TIMEOUT_SECONDS", 0.1)
+
+    reader = sqlite3.connect(temp_db_path, isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM activity").fetchone()
+        result = vacuum_database(temp_db_path)
+    finally:
+        reader.close()
+
+    assert result["wal_busy"] is True
+
+
+def test_vacuum_rollback_journal_reports_not_busy(temp_db_path, db_engine, db_session):
+    """
+    Outside WAL mode there is no checkpoint, so wal_busy is False.
+    """
+    _seed_bulky_activity(db_session)
+    db_session.close()
+    assert vacuum_database(temp_db_path)["wal_busy"] is False

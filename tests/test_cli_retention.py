@@ -685,7 +685,7 @@ def test_prune_dry_run_does_not_vacuum(tmp_path: Path):
         )
 
     assert result.exit_code == 0, result.output
-    assert "would then vacuum" in result.output
+    assert "would then vacuum the database if at least 10%" in result.output
     vacuum.assert_not_called()
 
 
@@ -929,7 +929,7 @@ def test_prune_below_threshold_skips_vacuum(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "Deleted" in result.output
     assert "Skipped vacuum: only" in result.output
-    assert "garmin vacuum" in result.output
+    assert f"garmin vacuum --db-path {db}" in result.output
     vacuum.assert_not_called()
 
 
@@ -964,3 +964,25 @@ def test_vacuum_command_ignores_threshold(tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "Reclaimed" in result.output
     assert _freelist_count(db) == 0
+
+
+def test_vacuum_command_warns_when_wal_busy(tmp_path: Path):
+    """
+    `garmin vacuum` warns when the WAL could not be truncated.
+    """
+    db = tmp_path / "garmin.db"
+    _seed_bulky_db(db, _JAN_START, rows=10)
+    busy_result = {
+        "size_before": 100,
+        "size_after": 50,
+        "bytes_reclaimed": 50,
+        "pages_reclaimed": 1,
+        "wal_busy": True,
+    }
+
+    with patch("garmin_health_data.cli.vacuum_database", return_value=busy_result):
+        result = CliRunner().invoke(cli, ["vacuum", "--db-path", str(db)])
+
+    assert result.exit_code == 0, result.output
+    assert "Reclaimed" in result.output
+    assert "WAL file could not be truncated" in result.output
